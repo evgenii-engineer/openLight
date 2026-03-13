@@ -1,19 +1,28 @@
 # openLight
 
-`openLight` is a lightweight Telegram-first agent for Raspberry Pi.
+Lightweight Telegram-first AI agent for Raspberry Pi, built in Go and designed to run with a local LLM.
 
-It is built for the practical case where frameworks like OpenClaw are simply too heavy: one small machine, a few useful tools, optional local LLM help, and predictable behaviour.
+`openLight` is a practical alternative to heavier agent frameworks like OpenClaw. It focuses on the simple local loop that people actually want on a Raspberry Pi: system checks, service control, notes, and lightweight chat through Telegram, without dragging in a full autonomous stack.
 
-## What It Is
+- Telegram-first interface
+- Local LLM via Ollama
+- Raspberry Pi friendly
+- SQLite storage
+- Small skill-based architecture
 
-`openLight` is a small Go service that runs on Raspberry Pi, talks through a Telegram bot, stores state in SQLite, and exposes a focused set of operational skills:
+## Why It Exists
 
-- inspect machine health
-- check and manage whitelisted services
-- save and delete notes
-- talk to a local LLM through Ollama
+Most AI-agent frameworks are built for broad automation, multi-step planning, or cloud-heavy workflows. That is useful, but it is often too much for an edge device.
 
-The project is intentionally narrow. It is not a full autonomous agent platform. It is a practical operator loop for a single box.
+`openLight` takes the opposite approach:
+
+- one machine
+- one Telegram interface
+- a small toolset
+- optional local intelligence
+- predictable behaviour first, LLM second
+
+It is not trying to be a general autonomous platform. It is trying to be a useful bot you can actually run on a Raspberry Pi every day.
 
 ## Demo / Use Cases
 
