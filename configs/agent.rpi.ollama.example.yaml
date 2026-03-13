@@ -1,22 +1,49 @@
-telegram_bot_token: "123456:replace-me"
-allowed_user_ids:
-  - 111111111
-allowed_chat_ids:
-  - 111111111
-sqlite_path: "/home/damk/openlight/data/agent.db"
-allowed_services:
-  - tailscale
-  - jellyfin
-llm_enabled: true
-llm_provider: "ollama"
-llm_endpoint: "http://127.0.0.1:11434"
-llm_model: "qwen2.5:0.5b"
-chat_history_limit: 6
-chat_history_chars: 900
-chat_max_response_chars: 400
-log_level: "info"
-request_timeout: 10s
-poll_timeout: 25s
-telegram_api_base_url: "https://api.telegram.org"
-service_log_lines: 100
-notes_list_limit: 20
+telegram:
+  bot_token: "123456:replace-me"
+  api_base_url: "https://api.telegram.org"
+  mode: "polling"
+  poll_timeout: 25s
+  webhook:
+    url: "https://bot.example.com/openlight/webhook"
+    listen_addr: ":8081"
+    secret_token: ""
+    drop_pending_updates: false
+
+auth:
+  allowed_user_ids:
+    - 111111111
+  allowed_chat_ids:
+    - 111111111
+
+storage:
+  sqlite_path: "/home/damk/openlight/data/agent.db"
+
+services:
+  allowed:
+    - tailscale
+    - jellyfin
+  log_lines: 100
+
+llm:
+  enabled: true
+  provider: "ollama"
+  endpoint: "http://127.0.0.1:11434"
+  model: "qwen2.5:0.5b"
+  execute_threshold: 0.80
+  clarify_threshold: 0.60
+  decision_input_chars: 160
+  decision_num_predict: 64
+
+chat:
+  history_limit: 6
+  history_chars: 900
+  max_response_chars: 400
+
+notes:
+  list_limit: 20
+
+agent:
+  request_timeout: 10s
+
+log:
+  level: "info"

@@ -82,9 +82,11 @@ Bot: Service restarted: tailscale
 
 First, create your local config and fill in `configs/agent.rpi.yaml` with:
 
-- `telegram_bot_token`
-- `allowed_user_ids`
-- `allowed_chat_ids`
+- `telegram.bot_token`
+- `auth.allowed_user_ids`
+- `auth.allowed_chat_ids`
+
+By default the bot uses Telegram long polling with `telegram.mode: "polling"`.
 
 Then bring the agent up in 3 commands:
 
@@ -216,19 +218,54 @@ If you want a compact operator bot, `openLight` is the simpler fit.
 Example Ollama config:
 
 ```yaml
-llm_enabled: true
-llm_provider: "ollama"
-llm_endpoint: "http://127.0.0.1:11434"
-llm_model: "qwen2.5:0.5b"
-chat_history_limit: 6
-chat_history_chars: 900
-chat_max_response_chars: 400
+llm:
+  enabled: true
+  provider: "ollama"
+  endpoint: "http://127.0.0.1:11434"
+  model: "qwen2.5:0.5b"
+  execute_threshold: 0.80
+  clarify_threshold: 0.60
+
+chat:
+  history_limit: 6
+  history_chars: 900
+  max_response_chars: 400
 ```
 
 Templates:
 
 - [agent.example.yaml](./configs/agent.example.yaml)
 - [agent.rpi.ollama.example.yaml](./configs/agent.rpi.ollama.example.yaml)
+
+## Telegram Webhooks
+
+`openLight` supports both transport modes:
+
+- `telegram.mode: "polling"` for the current simple `getUpdates` flow
+- `telegram.mode: "webhook"` for inbound Telegram webhooks
+
+Webhook mode needs a public `https://...` URL that Telegram can reach. Example:
+
+```yaml
+telegram:
+  bot_token: "123456:replace-me"
+  api_base_url: "https://api.telegram.org"
+  mode: "webhook"
+  poll_timeout: 25s
+  webhook:
+    url: "https://bot.example.com/openlight/webhook"
+    listen_addr: ":8081"
+    secret_token: "replace-me"
+    drop_pending_updates: false
+```
+
+In webhook mode the agent will:
+
+- start a local HTTP server on `telegram.webhook.listen_addr`
+- call Telegram `setWebhook` on startup
+- validate `X-Telegram-Bot-Api-Secret-Token` when `secret_token` is set
+
+If you switch back to polling, the agent automatically calls `deleteWebhook` on startup so `getUpdates` works again.
 
 ## Build And Test
 
@@ -248,12 +285,12 @@ GOCACHE=/tmp/go-build GOSUMDB=off go test ./...
 - service skills
 - notes add/list/delete
 - rule-based routing
-- Ollama chat and intent fallback
+- Ollama chat and structured decision fallback
 - Raspberry Pi deploy scripts and systemd unit
 
 ### Next
 
-- structured tool calling for LLM decisions
+- richer structured decision routing for local LLMs
 - better observability and runtime diagnostics
 - web search skill
 - safer shell and file-oriented tools
@@ -262,7 +299,7 @@ GOCACHE=/tmp/go-build GOSUMDB=off go test ./...
 ## Security Notes
 
 - secrets live in config or environment, not in code
-- service operations are restricted to `allowed_services`
+- service operations are restricted to `services.allowed`
 - user/chat access is whitelist-based
 - no uncontrolled shell execution for service commands
 

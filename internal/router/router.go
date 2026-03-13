@@ -20,13 +20,20 @@ const (
 )
 
 type Decision struct {
-	Mode      Mode
-	SkillName string
-	Args      map[string]string
+	Mode                  Mode
+	SkillName             string
+	Args                  map[string]string
+	Confidence            float64
+	NeedsClarification    bool
+	ClarificationQuestion string
 }
 
 func (d Decision) Matched() bool {
 	return strings.TrimSpace(d.SkillName) != ""
+}
+
+func (d Decision) ShouldClarify() bool {
+	return d.NeedsClarification && strings.TrimSpace(d.ClarificationQuestion) != ""
 }
 
 type Classifier interface {

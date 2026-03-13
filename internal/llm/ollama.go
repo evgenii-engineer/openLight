@@ -15,6 +15,8 @@ import (
 
 const ollamaKeepAlive = "30m"
 
+const defaultDecisionNumPredict = 64
+
 type OllamaProvider struct {
 	endpoint string
 	model    string
@@ -33,11 +35,14 @@ func NewOllamaProvider(endpoint, model string, timeout time.Duration, logger *sl
 	}
 }
 
-func (p *OllamaProvider) ClassifyIntent(ctx context.Context, text string, skillNames []string) (Classification, error) {
-	prompt := buildIntentPrompt(text, skillNames)
-	responseText, err := p.generate(ctx, prompt)
+func (p *OllamaProvider) ClassifyIntent(ctx context.Context, text string, request ClassificationRequest) (Classification, error) {
+	prompt := buildIntentPrompt(limitText(text, request.InputChars), request)
+	responseText, err := p.generate(ctx, prompt, 0.1, decisionNumPredict(request.NumPredict))
 	if err != nil {
 		return Classification{}, err
+	}
+	if p.logger != nil {
+		p.logger.Debug("ollama decision raw response", "response", responseText)
 	}
 
 	var classification Classification
@@ -45,15 +50,11 @@ func (p *OllamaProvider) ClassifyIntent(ctx context.Context, text string, skillN
 		return Classification{}, fmt.Errorf("decode ollama intent response: %w", err)
 	}
 
-	if classification.Args == nil {
-		classification.Args = map[string]string{}
-	}
-
-	return classification, nil
+	return normalizeClassification(classification), nil
 }
 
 func (p *OllamaProvider) Summarize(ctx context.Context, text string) (string, error) {
-	responseText, err := p.generate(ctx, buildSummaryPrompt(text))
+	responseText, err := p.generate(ctx, buildSummaryPrompt(text), 0.0, 64)
 	if err != nil {
 		return "", err
 	}
@@ -125,7 +126,7 @@ func (p *OllamaProvider) Chat(ctx context.Context, messages []ChatMessage) (stri
 	return content, nil
 }
 
-func (p *OllamaProvider) generate(ctx context.Context, prompt string) (string, error) {
+func (p *OllamaProvider) generate(ctx context.Context, prompt string, temperature float64, numPredict int) (string, error) {
 	payload := map[string]any{
 		"model":      p.model,
 		"prompt":     prompt,
@@ -133,9 +134,9 @@ func (p *OllamaProvider) generate(ctx context.Context, prompt string) (string, e
 		"format":     "json",
 		"keep_alive": ollamaKeepAlive,
 		"options": map[string]any{
-			"temperature": 0.0,
+			"temperature": temperature,
 			"top_p":       0.9,
-			"num_predict": 64,
+			"num_predict": numPredict,
 		},
 	}
 
@@ -179,16 +180,32 @@ func (p *OllamaProvider) generate(ctx context.Context, prompt string) (string, e
 	return responseText, nil
 }
 
-func buildIntentPrompt(text string, skillNames []string) string {
+func buildIntentPrompt(text string, request ClassificationRequest) string {
 	return fmt.Sprintf(
-		"You are an intent classifier for a Raspberry Pi Telegram agent.\n"+
-			"Return only valid JSON with fields skill_name, args, confidence.\n"+
-			"Choose skill_name only from this list: %s.\n"+
-			"Use args as a flat JSON object with string values.\n"+
-			"If no good match exists, return skill_name as an empty string, args as {}, confidence as 0.\n"+
-			"User text: %q\n",
-		strings.Join(skillNames, ", "),
+		"You are a routing classifier for a Telegram-first local agent.\n\n"+
+			"Your job is to choose exactly one intent from this list:\n%s\n\n"+
+			"Return only valid JSON with this schema:\n"+
+			"{\n"+
+			"  \"intent\": \"string\",\n"+
+			"  \"arguments\": {},\n"+
+			"  \"confidence\": 0.0,\n"+
+			"  \"needs_clarification\": false,\n"+
+			"  \"clarification_question\": \"\"\n"+
+			"}\n\n"+
+			"Rules:\n"+
+			"- Never invent unsupported intents.\n"+
+			"- If the message is ambiguous, set needs_clarification=true.\n"+
+			"- If a service name is present, put it in arguments.service.\n"+
+			"- If note text is present, put it in arguments.text.\n"+
+			"- If note id is present, put it in arguments.id.\n"+
+			"- If the user clearly wants free-form conversation, use \"chat\".\n"+
+			"- If unsure, use \"unknown\".\n"+
+			"- Return JSON only.\n\n"+
+			"User message:\n%q\n\n"+
+			"Allowed services:\n%s\n",
+		strings.Join(request.AllowedIntents, "\n"),
 		text,
+		encodePromptList(request.AllowedServices),
 	)
 }
 
@@ -217,4 +234,24 @@ func totalChatMessageChars(messages []ChatMessage) int {
 		total += utf8.RuneCountInString(message.Content)
 	}
 	return total
+}
+
+func decisionNumPredict(value int) int {
+	if value <= 0 {
+		return defaultDecisionNumPredict
+	}
+	return value
+}
+
+func encodePromptList(values []string) string {
+	if len(values) == 0 {
+		return "[]"
+	}
+
+	encoded, err := json.Marshal(values)
+	if err != nil {
+		return "[]"
+	}
+
+	return string(encoded)
 }

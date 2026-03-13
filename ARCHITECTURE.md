@@ -16,7 +16,7 @@ The project is built around a small set of constraints:
 
 The main runtime path is:
 
-`Telegram transport -> auth -> router -> skill execution -> optional LLM -> storage`
+`Telegram transport -> auth -> router -> optional LLM decision -> validation -> skill execution -> storage`
 
 In practice:
 
@@ -24,9 +24,10 @@ In practice:
 2. The agent persists the incoming message to SQLite.
 3. Auth checks user ID and chat ID against whitelists.
 4. Router selects a skill using a fixed priority order.
-5. The selected skill executes.
-6. Skill result and metadata are persisted.
-7. A text reply is sent back to Telegram.
+5. Optional LLM fallback returns one structured decision JSON object.
+6. The decision is validated and either clarified or executed as a skill.
+7. Skill result and metadata are persisted.
+8. A text reply is sent back to Telegram.
 
 ## Routing Priority
 
@@ -38,7 +39,7 @@ Priority order:
 2. explicit commands without slash like `note_add hello`
 3. alias matches
 4. rule-based parsing like `restart tailscale`
-5. optional LLM classifier fallback
+5. optional LLM decision fallback
 6. chat fallback when no skill matches
 
 Relevant files:
@@ -120,7 +121,7 @@ Files:
 
 LLM is used in two ways:
 
-- classifier fallback for intent parsing
+- decision fallback for single-intent routing
 - free-form chat skill
 
 ### Storage

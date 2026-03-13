@@ -14,39 +14,77 @@ import (
 const defaultTelegramAPIBaseURL = "https://api.telegram.org"
 
 type Config struct {
-	TelegramBotToken string        `yaml:"telegram_bot_token"`
-	AllowedUserIDs   []int64       `yaml:"allowed_user_ids"`
-	AllowedChatIDs   []int64       `yaml:"allowed_chat_ids"`
-	SQLitePath       string        `yaml:"sqlite_path"`
-	AllowedServices  []string      `yaml:"allowed_services"`
-	LLMEnabled       bool          `yaml:"llm_enabled"`
-	LLMProvider      string        `yaml:"llm_provider"`
-	LLMEndpoint      string        `yaml:"llm_endpoint"`
-	LLMModel         string        `yaml:"llm_model"`
-	LogLevel         string        `yaml:"log_level"`
-	RequestTimeout   time.Duration `yaml:"request_timeout"`
-	PollTimeout      time.Duration `yaml:"poll_timeout"`
-	TelegramAPIBase  string        `yaml:"telegram_api_base_url"`
-	ServiceLogLines  int           `yaml:"service_log_lines"`
-	NotesListLimit   int           `yaml:"notes_list_limit"`
-	ChatHistoryLimit int           `yaml:"chat_history_limit"`
-	ChatHistoryChars int           `yaml:"chat_history_chars"`
-	ChatMaxRespChars int           `yaml:"chat_max_response_chars"`
+	Telegram TelegramConfig `yaml:"telegram"`
+	Auth     AuthConfig     `yaml:"auth"`
+	Storage  StorageConfig  `yaml:"storage"`
+	Services ServicesConfig `yaml:"services"`
+	LLM      LLMConfig      `yaml:"llm"`
+	Chat     ChatConfig     `yaml:"chat"`
+	Notes    NotesConfig    `yaml:"notes"`
+	Agent    AgentConfig    `yaml:"agent"`
+	Log      LogConfig      `yaml:"log"`
+}
+
+type TelegramConfig struct {
+	BotToken    string        `yaml:"bot_token"`
+	APIBaseURL  string        `yaml:"api_base_url"`
+	Mode        string        `yaml:"mode"`
+	PollTimeout time.Duration `yaml:"poll_timeout"`
+	Webhook     WebhookConfig `yaml:"webhook"`
+}
+
+type WebhookConfig struct {
+	URL                string `yaml:"url"`
+	ListenAddr         string `yaml:"listen_addr"`
+	SecretToken        string `yaml:"secret_token"`
+	DropPendingUpdates bool   `yaml:"drop_pending_updates"`
+}
+
+type AuthConfig struct {
+	AllowedUserIDs []int64 `yaml:"allowed_user_ids"`
+	AllowedChatIDs []int64 `yaml:"allowed_chat_ids"`
+}
+
+type StorageConfig struct {
+	SQLitePath string `yaml:"sqlite_path"`
+}
+
+type ServicesConfig struct {
+	Allowed  []string `yaml:"allowed"`
+	LogLines int      `yaml:"log_lines"`
+}
+
+type LLMConfig struct {
+	Enabled            bool    `yaml:"enabled"`
+	Provider           string  `yaml:"provider"`
+	Endpoint           string  `yaml:"endpoint"`
+	Model              string  `yaml:"model"`
+	ExecuteThreshold   float64 `yaml:"execute_threshold"`
+	ClarifyThreshold   float64 `yaml:"clarify_threshold"`
+	DecisionInputChars int     `yaml:"decision_input_chars"`
+	DecisionNumPredict int     `yaml:"decision_num_predict"`
+}
+
+type ChatConfig struct {
+	HistoryLimit     int `yaml:"history_limit"`
+	HistoryChars     int `yaml:"history_chars"`
+	MaxResponseChars int `yaml:"max_response_chars"`
+}
+
+type NotesConfig struct {
+	ListLimit int `yaml:"list_limit"`
+}
+
+type AgentConfig struct {
+	RequestTimeout time.Duration `yaml:"request_timeout"`
+}
+
+type LogConfig struct {
+	Level string `yaml:"level"`
 }
 
 func Load(path string) (Config, error) {
-	cfg := Config{
-		LogLevel:         "info",
-		RequestTimeout:   5 * time.Second,
-		PollTimeout:      25 * time.Second,
-		TelegramAPIBase:  defaultTelegramAPIBaseURL,
-		ServiceLogLines:  100,
-		NotesListLimit:   20,
-		LLMProvider:      "generic",
-		ChatHistoryLimit: 6,
-		ChatHistoryChars: 900,
-		ChatMaxRespChars: 400,
-	}
+	cfg := defaultConfig()
 
 	if path != "" {
 		content, err := os.ReadFile(path)
@@ -69,34 +107,87 @@ func Load(path string) (Config, error) {
 	return cfg, nil
 }
 
+func defaultConfig() Config {
+	return Config{
+		Telegram: TelegramConfig{
+			APIBaseURL:  defaultTelegramAPIBaseURL,
+			Mode:        "polling",
+			PollTimeout: 25 * time.Second,
+			Webhook: WebhookConfig{
+				ListenAddr: ":8081",
+			},
+		},
+		Services: ServicesConfig{
+			LogLines: 100,
+		},
+		LLM: LLMConfig{
+			Provider:           "generic",
+			ExecuteThreshold:   0.80,
+			ClarifyThreshold:   0.60,
+			DecisionInputChars: 160,
+			DecisionNumPredict: 64,
+		},
+		Chat: ChatConfig{
+			HistoryLimit:     6,
+			HistoryChars:     900,
+			MaxResponseChars: 400,
+		},
+		Notes: NotesConfig{
+			ListLimit: 20,
+		},
+		Agent: AgentConfig{
+			RequestTimeout: 5 * time.Second,
+		},
+		Log: LogConfig{
+			Level: "info",
+		},
+	}
+}
+
 func (c Config) Validate() error {
 	switch {
-	case strings.TrimSpace(c.TelegramBotToken) == "":
+	case strings.TrimSpace(c.Telegram.BotToken) == "":
 		return errors.New("TELEGRAM_BOT_TOKEN is required")
-	case strings.TrimSpace(c.SQLitePath) == "":
+	case c.Telegram.Mode != "polling" && c.Telegram.Mode != "webhook":
+		return errors.New("telegram.mode must be one of: polling, webhook")
+	case strings.TrimSpace(c.Storage.SQLitePath) == "":
 		return errors.New("SQLITE_PATH is required")
-	case len(c.AllowedUserIDs) == 0 && len(c.AllowedChatIDs) == 0:
+	case len(c.Auth.AllowedUserIDs) == 0 && len(c.Auth.AllowedChatIDs) == 0:
 		return errors.New("at least one of ALLOWED_USER_IDS or ALLOWED_CHAT_IDS is required")
-	case c.LLMEnabled && strings.TrimSpace(c.LLMEndpoint) == "":
+	case c.LLM.Enabled && strings.TrimSpace(c.LLM.Endpoint) == "":
 		return errors.New("LLM_ENDPOINT is required when LLM_ENABLED is true")
-	case c.LLMEnabled && c.LLMProvider == "ollama" && strings.TrimSpace(c.LLMModel) == "":
+	case c.LLM.Enabled && c.LLM.Provider == "ollama" && strings.TrimSpace(c.LLM.Model) == "":
 		return errors.New("LLM_MODEL is required when LLM_PROVIDER is ollama")
-	case c.LLMEnabled && c.LLMProvider != "generic" && c.LLMProvider != "ollama":
+	case c.LLM.Enabled && c.LLM.Provider != "generic" && c.LLM.Provider != "ollama":
 		return errors.New("LLM_PROVIDER must be one of: generic, ollama")
-	case c.RequestTimeout <= 0:
-		return errors.New("REQUEST_TIMEOUT must be greater than zero")
-	case c.PollTimeout <= 0:
-		return errors.New("poll_timeout must be greater than zero")
-	case c.ServiceLogLines <= 0:
-		return errors.New("service_log_lines must be greater than zero")
-	case c.NotesListLimit <= 0:
-		return errors.New("notes_list_limit must be greater than zero")
-	case c.ChatHistoryLimit <= 0:
-		return errors.New("chat_history_limit must be greater than zero")
-	case c.ChatHistoryChars <= 0:
-		return errors.New("chat_history_chars must be greater than zero")
-	case c.ChatMaxRespChars <= 0:
-		return errors.New("chat_max_response_chars must be greater than zero")
+	case c.LLM.ExecuteThreshold <= 0 || c.LLM.ExecuteThreshold > 1:
+		return errors.New("llm.execute_threshold must be greater than zero and less than or equal to one")
+	case c.LLM.ClarifyThreshold <= 0 || c.LLM.ClarifyThreshold >= c.LLM.ExecuteThreshold:
+		return errors.New("llm.clarify_threshold must be greater than zero and less than llm.execute_threshold")
+	case c.LLM.DecisionInputChars <= 0:
+		return errors.New("llm.decision_input_chars must be greater than zero")
+	case c.LLM.DecisionNumPredict <= 0:
+		return errors.New("llm.decision_num_predict must be greater than zero")
+	case c.Agent.RequestTimeout <= 0:
+		return errors.New("agent.request_timeout must be greater than zero")
+	case c.Telegram.PollTimeout <= 0:
+		return errors.New("telegram.poll_timeout must be greater than zero")
+	case c.Telegram.Mode == "webhook" && strings.TrimSpace(c.Telegram.Webhook.URL) == "":
+		return errors.New("telegram.webhook.url is required when telegram.mode is webhook")
+	case c.Telegram.Mode == "webhook" && !strings.HasPrefix(strings.ToLower(strings.TrimSpace(c.Telegram.Webhook.URL)), "https://"):
+		return errors.New("telegram.webhook.url must start with https://")
+	case c.Telegram.Mode == "webhook" && strings.TrimSpace(c.Telegram.Webhook.ListenAddr) == "":
+		return errors.New("telegram.webhook.listen_addr is required when telegram.mode is webhook")
+	case c.Services.LogLines <= 0:
+		return errors.New("services.log_lines must be greater than zero")
+	case c.Notes.ListLimit <= 0:
+		return errors.New("notes.list_limit must be greater than zero")
+	case c.Chat.HistoryLimit <= 0:
+		return errors.New("chat.history_limit must be greater than zero")
+	case c.Chat.HistoryChars <= 0:
+		return errors.New("chat.history_chars must be greater than zero")
+	case c.Chat.MaxResponseChars <= 0:
+		return errors.New("chat.max_response_chars must be greater than zero")
 	}
 
 	return nil
@@ -104,70 +195,119 @@ func (c Config) Validate() error {
 
 func overrideFromEnv(cfg *Config) {
 	if value := strings.TrimSpace(os.Getenv("TELEGRAM_BOT_TOKEN")); value != "" {
-		cfg.TelegramBotToken = value
+		cfg.Telegram.BotToken = value
+	}
+	if value := strings.TrimSpace(os.Getenv("TELEGRAM_MODE")); value != "" {
+		cfg.Telegram.Mode = value
 	}
 	if value := parseInt64ListEnv("ALLOWED_USER_IDS"); len(value) > 0 {
-		cfg.AllowedUserIDs = value
+		cfg.Auth.AllowedUserIDs = value
 	}
 	if value := parseInt64ListEnv("ALLOWED_CHAT_IDS"); len(value) > 0 {
-		cfg.AllowedChatIDs = value
+		cfg.Auth.AllowedChatIDs = value
 	}
 	if value := strings.TrimSpace(os.Getenv("SQLITE_PATH")); value != "" {
-		cfg.SQLitePath = value
+		cfg.Storage.SQLitePath = value
 	}
-	if value := parseStringListEnv("ALLOWED_SERVICES"); len(value) > 0 {
-		cfg.AllowedServices = value
+	if value := parseStringListEnv("ALLOWED_SERVICES"); value != nil {
+		cfg.Services.Allowed = value
 	}
 	if value := strings.TrimSpace(os.Getenv("LLM_ENABLED")); value != "" {
-		cfg.LLMEnabled = parseBool(value)
+		cfg.LLM.Enabled = parseBool(value)
 	}
 	if value := strings.TrimSpace(os.Getenv("LLM_PROVIDER")); value != "" {
-		cfg.LLMProvider = value
+		cfg.LLM.Provider = value
 	}
 	if value := strings.TrimSpace(os.Getenv("LLM_ENDPOINT")); value != "" {
-		cfg.LLMEndpoint = value
+		cfg.LLM.Endpoint = value
 	}
 	if value := strings.TrimSpace(os.Getenv("LLM_MODEL")); value != "" {
-		cfg.LLMModel = value
+		cfg.LLM.Model = value
+	}
+	if value := strings.TrimSpace(os.Getenv("LLM_EXECUTE_THRESHOLD")); value != "" {
+		cfg.LLM.ExecuteThreshold = parseFloat(value, cfg.LLM.ExecuteThreshold)
+	}
+	if value := strings.TrimSpace(os.Getenv("LLM_CLARIFY_THRESHOLD")); value != "" {
+		cfg.LLM.ClarifyThreshold = parseFloat(value, cfg.LLM.ClarifyThreshold)
+	}
+	if value := strings.TrimSpace(os.Getenv("LLM_DECISION_INPUT_CHARS")); value != "" {
+		cfg.LLM.DecisionInputChars = parseInt(value, cfg.LLM.DecisionInputChars)
+	}
+	if value := strings.TrimSpace(os.Getenv("LLM_DECISION_NUM_PREDICT")); value != "" {
+		cfg.LLM.DecisionNumPredict = parseInt(value, cfg.LLM.DecisionNumPredict)
 	}
 	if value := strings.TrimSpace(os.Getenv("LOG_LEVEL")); value != "" {
-		cfg.LogLevel = value
+		cfg.Log.Level = value
 	}
 	if value := strings.TrimSpace(os.Getenv("REQUEST_TIMEOUT")); value != "" {
-		cfg.RequestTimeout = parseDuration(value, cfg.RequestTimeout)
+		cfg.Agent.RequestTimeout = parseDuration(value, cfg.Agent.RequestTimeout)
 	}
 	if value := strings.TrimSpace(os.Getenv("POLL_TIMEOUT")); value != "" {
-		cfg.PollTimeout = parseDuration(value, cfg.PollTimeout)
+		cfg.Telegram.PollTimeout = parseDuration(value, cfg.Telegram.PollTimeout)
+	}
+	if value := strings.TrimSpace(os.Getenv("TELEGRAM_WEBHOOK_URL")); value != "" {
+		cfg.Telegram.Webhook.URL = value
+	}
+	if value := strings.TrimSpace(os.Getenv("TELEGRAM_WEBHOOK_LISTEN_ADDR")); value != "" {
+		cfg.Telegram.Webhook.ListenAddr = value
+	}
+	if value := strings.TrimSpace(os.Getenv("TELEGRAM_WEBHOOK_SECRET_TOKEN")); value != "" {
+		cfg.Telegram.Webhook.SecretToken = value
+	}
+	if value := strings.TrimSpace(os.Getenv("TELEGRAM_WEBHOOK_DROP_PENDING_UPDATES")); value != "" {
+		cfg.Telegram.Webhook.DropPendingUpdates = parseBool(value)
 	}
 	if value := strings.TrimSpace(os.Getenv("TELEGRAM_API_BASE_URL")); value != "" {
-		cfg.TelegramAPIBase = value
+		cfg.Telegram.APIBaseURL = value
 	}
 	if value := strings.TrimSpace(os.Getenv("SERVICE_LOG_LINES")); value != "" {
-		cfg.ServiceLogLines = parseInt(value, cfg.ServiceLogLines)
+		cfg.Services.LogLines = parseInt(value, cfg.Services.LogLines)
 	}
 	if value := strings.TrimSpace(os.Getenv("NOTES_LIST_LIMIT")); value != "" {
-		cfg.NotesListLimit = parseInt(value, cfg.NotesListLimit)
+		cfg.Notes.ListLimit = parseInt(value, cfg.Notes.ListLimit)
 	}
 	if value := strings.TrimSpace(os.Getenv("CHAT_HISTORY_LIMIT")); value != "" {
-		cfg.ChatHistoryLimit = parseInt(value, cfg.ChatHistoryLimit)
+		cfg.Chat.HistoryLimit = parseInt(value, cfg.Chat.HistoryLimit)
 	}
 	if value := strings.TrimSpace(os.Getenv("CHAT_HISTORY_CHARS")); value != "" {
-		cfg.ChatHistoryChars = parseInt(value, cfg.ChatHistoryChars)
+		cfg.Chat.HistoryChars = parseInt(value, cfg.Chat.HistoryChars)
 	}
 	if value := strings.TrimSpace(os.Getenv("CHAT_MAX_RESPONSE_CHARS")); value != "" {
-		cfg.ChatMaxRespChars = parseInt(value, cfg.ChatMaxRespChars)
+		cfg.Chat.MaxResponseChars = parseInt(value, cfg.Chat.MaxResponseChars)
 	}
 }
 
 func normalize(cfg *Config) {
-	cfg.TelegramBotToken = strings.TrimSpace(cfg.TelegramBotToken)
-	cfg.SQLitePath = strings.TrimSpace(cfg.SQLitePath)
-	cfg.LLMEndpoint = strings.TrimSpace(cfg.LLMEndpoint)
-	cfg.LLMProvider = strings.ToLower(strings.TrimSpace(cfg.LLMProvider))
-	cfg.LLMModel = strings.TrimSpace(cfg.LLMModel)
-	cfg.LogLevel = strings.TrimSpace(cfg.LogLevel)
-	cfg.TelegramAPIBase = strings.TrimRight(strings.TrimSpace(cfg.TelegramAPIBase), "/")
-	cfg.AllowedServices = normalizeStrings(cfg.AllowedServices)
+	cfg.Telegram.BotToken = strings.TrimSpace(cfg.Telegram.BotToken)
+	cfg.Telegram.APIBaseURL = strings.TrimRight(strings.TrimSpace(cfg.Telegram.APIBaseURL), "/")
+	if cfg.Telegram.APIBaseURL == "" {
+		cfg.Telegram.APIBaseURL = defaultTelegramAPIBaseURL
+	}
+	cfg.Telegram.Mode = strings.ToLower(strings.TrimSpace(cfg.Telegram.Mode))
+	if cfg.Telegram.Mode == "" {
+		cfg.Telegram.Mode = "polling"
+	}
+	cfg.Telegram.Webhook.URL = strings.TrimSpace(cfg.Telegram.Webhook.URL)
+	cfg.Telegram.Webhook.ListenAddr = strings.TrimSpace(cfg.Telegram.Webhook.ListenAddr)
+	if cfg.Telegram.Webhook.ListenAddr == "" {
+		cfg.Telegram.Webhook.ListenAddr = ":8081"
+	}
+	cfg.Telegram.Webhook.SecretToken = strings.TrimSpace(cfg.Telegram.Webhook.SecretToken)
+
+	cfg.Storage.SQLitePath = strings.TrimSpace(cfg.Storage.SQLitePath)
+	cfg.Services.Allowed = normalizeStrings(cfg.Services.Allowed)
+
+	cfg.LLM.Provider = strings.ToLower(strings.TrimSpace(cfg.LLM.Provider))
+	if cfg.LLM.Provider == "" {
+		cfg.LLM.Provider = "generic"
+	}
+	cfg.LLM.Endpoint = strings.TrimSpace(cfg.LLM.Endpoint)
+	cfg.LLM.Model = strings.TrimSpace(cfg.LLM.Model)
+
+	cfg.Log.Level = strings.TrimSpace(cfg.Log.Level)
+	if cfg.Log.Level == "" {
+		cfg.Log.Level = "info"
+	}
 }
 
 func normalizeStrings(values []string) []string {
@@ -249,6 +389,14 @@ func parseDuration(value string, fallback time.Duration) time.Duration {
 
 func parseInt(value string, fallback int) int {
 	parsed, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func parseFloat(value string, fallback float64) float64 {
+	parsed, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
 	if err != nil {
 		return fallback
 	}

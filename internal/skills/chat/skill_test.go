@@ -15,7 +15,7 @@ type stubProvider struct {
 	messages []llm.ChatMessage
 }
 
-func (s *stubProvider) ClassifyIntent(context.Context, string, []string) (llm.Classification, error) {
+func (s *stubProvider) ClassifyIntent(context.Context, string, llm.ClassificationRequest) (llm.Classification, error) {
 	return llm.Classification{}, nil
 }
 

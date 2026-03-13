@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -22,24 +24,60 @@ type IncomingMessage struct {
 type Bot struct {
 	token       string
 	baseURL     string
+	mode        string
 	pollTimeout time.Duration
+	webhook     WebhookOptions
 	client      *http.Client
 	logger      *slog.Logger
 }
 
-func NewBot(token, baseURL string, pollTimeout time.Duration, logger *slog.Logger) *Bot {
+type Options struct {
+	Token       string
+	BaseURL     string
+	Mode        string
+	PollTimeout time.Duration
+	Webhook     WebhookOptions
+	Logger      *slog.Logger
+}
+
+type WebhookOptions struct {
+	URL                string
+	ListenAddr         string
+	SecretToken        string
+	DropPendingUpdates bool
+}
+
+func NewBot(options Options) *Bot {
 	return &Bot{
-		token:       strings.TrimSpace(token),
-		baseURL:     strings.TrimRight(strings.TrimSpace(baseURL), "/"),
-		pollTimeout: pollTimeout,
-		client: &http.Client{
-			Timeout: pollTimeout + 10*time.Second,
+		token:       strings.TrimSpace(options.Token),
+		baseURL:     strings.TrimRight(strings.TrimSpace(options.BaseURL), "/"),
+		mode:        strings.ToLower(strings.TrimSpace(options.Mode)),
+		pollTimeout: options.PollTimeout,
+		webhook: WebhookOptions{
+			URL:                strings.TrimSpace(options.Webhook.URL),
+			ListenAddr:         strings.TrimSpace(options.Webhook.ListenAddr),
+			SecretToken:        strings.TrimSpace(options.Webhook.SecretToken),
+			DropPendingUpdates: options.Webhook.DropPendingUpdates,
 		},
-		logger: logger,
+		client: &http.Client{
+			Timeout: options.PollTimeout + 10*time.Second,
+		},
+		logger: options.Logger,
 	}
 }
 
 func (b *Bot) Poll(ctx context.Context, handler func(context.Context, IncomingMessage) error) error {
+	if b.mode == "webhook" {
+		return b.serveWebhook(ctx, handler)
+	}
+	return b.pollUpdates(ctx, handler)
+}
+
+func (b *Bot) pollUpdates(ctx context.Context, handler func(context.Context, IncomingMessage) error) error {
+	if err := b.deleteWebhook(ctx, false); err != nil {
+		return err
+	}
+
 	var offset int64
 	for {
 		if ctx.Err() != nil {
@@ -74,40 +112,68 @@ func (b *Bot) Poll(ctx context.Context, handler func(context.Context, IncomingMe
 	}
 }
 
+func (b *Bot) serveWebhook(ctx context.Context, handler func(context.Context, IncomingMessage) error) error {
+	path, err := webhookPath(b.webhook.URL)
+	if err != nil {
+		return err
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc(path, b.webhookHandler(ctx, handler))
+
+	listener, err := net.Listen("tcp", b.webhook.ListenAddr)
+	if err != nil {
+		return fmt.Errorf("listen telegram webhook: %w", err)
+	}
+	defer listener.Close()
+
+	server := &http.Server{
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	serverErrors := make(chan error, 1)
+	go func() {
+		if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
+			serverErrors <- fmt.Errorf("serve telegram webhook: %w", err)
+		}
+	}()
+
+	if err := b.setWebhook(ctx); err != nil {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = server.Shutdown(shutdownCtx)
+		return err
+	}
+
+	select {
+	case err := <-serverErrors:
+		return err
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil && !strings.Contains(err.Error(), "closed network connection") {
+			return fmt.Errorf("shutdown telegram webhook server: %w", err)
+		}
+		return ctx.Err()
+	}
+}
+
 func (b *Bot) SendText(ctx context.Context, chatID int64, text string) error {
-	payload := map[string]any{
+	err := b.call(ctx, "/sendMessage", map[string]any{
 		"chat_id": chatID,
 		"text":    text,
-	}
-
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("marshal sendMessage payload: %w", err)
-	}
-
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, b.apiURL("/sendMessage"), bytes.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("create sendMessage request: %w", err)
-	}
-	request.Header.Set("Content-Type", "application/json")
-
-	response, err := b.client.Do(request)
+	}, nil)
 	if err != nil {
 		return fmt.Errorf("send telegram message: %w", err)
 	}
-	defer response.Body.Close()
-
-	if response.StatusCode >= http.StatusBadRequest {
-		content, _ := io.ReadAll(io.LimitReader(response.Body, 2048))
-		return fmt.Errorf("telegram sendMessage returned %d: %s", response.StatusCode, strings.TrimSpace(string(content)))
-	}
-
 	return nil
 }
 
-type updatesResponse struct {
-	OK     bool     `json:"ok"`
-	Result []update `json:"result"`
+type apiResponse struct {
+	OK          bool            `json:"ok"`
+	Description string          `json:"description"`
+	Result      json.RawMessage `json:"result"`
 }
 
 type update struct {
@@ -131,46 +197,144 @@ type tgUser struct {
 }
 
 func (b *Bot) getUpdates(ctx context.Context, offset int64) ([]update, error) {
-	payload := map[string]any{
+	var updates []update
+	err := b.call(ctx, "/getUpdates", map[string]any{
 		"offset":          offset,
 		"timeout":         int(b.pollTimeout.Seconds()),
 		"allowed_updates": []string{"message"},
+	}, &updates)
+	if err != nil {
+		return nil, fmt.Errorf("get telegram updates: %w", err)
 	}
+	return updates, nil
+}
 
+func (b *Bot) apiURL(method string) string {
+	return fmt.Sprintf("%s/bot%s%s", b.baseURL, b.token, method)
+}
+
+func (b *Bot) setWebhook(ctx context.Context) error {
+	err := b.call(ctx, "/setWebhook", map[string]any{
+		"url":                  b.webhook.URL,
+		"allowed_updates":      []string{"message"},
+		"drop_pending_updates": b.webhook.DropPendingUpdates,
+		"secret_token":         b.webhook.SecretToken,
+	}, nil)
+	if err != nil {
+		return fmt.Errorf("set telegram webhook: %w", err)
+	}
+	return nil
+}
+
+func (b *Bot) deleteWebhook(ctx context.Context, dropPendingUpdates bool) error {
+	err := b.call(ctx, "/deleteWebhook", map[string]any{
+		"drop_pending_updates": dropPendingUpdates,
+	}, nil)
+	if err != nil {
+		return fmt.Errorf("delete telegram webhook: %w", err)
+	}
+	return nil
+}
+
+func (b *Bot) call(ctx context.Context, method string, payload any, out any) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return nil, fmt.Errorf("marshal getUpdates payload: %w", err)
+		return fmt.Errorf("marshal telegram payload for %s: %w", method, err)
 	}
 
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, b.apiURL("/getUpdates"), bytes.NewReader(body))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, b.apiURL(method), bytes.NewReader(body))
 	if err != nil {
-		return nil, fmt.Errorf("create getUpdates request: %w", err)
+		return fmt.Errorf("create telegram request for %s: %w", method, err)
 	}
 	request.Header.Set("Content-Type", "application/json")
 
 	response, err := b.client.Do(request)
 	if err != nil {
-		return nil, fmt.Errorf("get telegram updates: %w", err)
+		return fmt.Errorf("call telegram %s: %w", method, err)
 	}
 	defer response.Body.Close()
 
 	if response.StatusCode >= http.StatusBadRequest {
 		content, _ := io.ReadAll(io.LimitReader(response.Body, 2048))
-		return nil, fmt.Errorf("telegram getUpdates returned %d: %s", response.StatusCode, strings.TrimSpace(string(content)))
+		return fmt.Errorf("telegram %s returned %d: %s", method, response.StatusCode, strings.TrimSpace(string(content)))
 	}
 
-	var decoded updatesResponse
+	var decoded apiResponse
 	if err := json.NewDecoder(response.Body).Decode(&decoded); err != nil {
-		return nil, fmt.Errorf("decode getUpdates response: %w", err)
+		return fmt.Errorf("decode telegram response for %s: %w", method, err)
 	}
 
 	if !decoded.OK {
-		return nil, fmt.Errorf("telegram getUpdates returned ok=false")
+		if strings.TrimSpace(decoded.Description) == "" {
+			return fmt.Errorf("telegram %s returned ok=false", method)
+		}
+		return fmt.Errorf("telegram %s returned ok=false: %s", method, strings.TrimSpace(decoded.Description))
 	}
 
-	return decoded.Result, nil
+	if out == nil || len(decoded.Result) == 0 || string(decoded.Result) == "null" {
+		return nil
+	}
+
+	if err := json.Unmarshal(decoded.Result, out); err != nil {
+		return fmt.Errorf("decode telegram result for %s: %w", method, err)
+	}
+
+	return nil
 }
 
-func (b *Bot) apiURL(method string) string {
-	return fmt.Sprintf("%s/bot%s%s", b.baseURL, b.token, method)
+func (b *Bot) webhookHandler(ctx context.Context, handler func(context.Context, IncomingMessage) error) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+			return
+		}
+
+		if b.webhook.SecretToken != "" && r.Header.Get("X-Telegram-Bot-Api-Secret-Token") != b.webhook.SecretToken {
+			http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+			return
+		}
+
+		var update update
+		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&update); err != nil {
+			http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+
+		message, ok := update.incomingMessage()
+		if !ok {
+			return
+		}
+
+		go func() {
+			if err := handler(ctx, message); err != nil && b.logger != nil {
+				b.logger.Error("handle telegram webhook message", "error", err, "chat_id", message.ChatID, "user_id", message.UserID)
+			}
+		}()
+	}
+}
+
+func (u update) incomingMessage() (IncomingMessage, bool) {
+	if u.Message == nil || strings.TrimSpace(u.Message.Text) == "" {
+		return IncomingMessage{}, false
+	}
+
+	return IncomingMessage{
+		MessageID: u.Message.MessageID,
+		ChatID:    u.Message.Chat.ID,
+		UserID:    u.Message.From.ID,
+		Text:      u.Message.Text,
+	}, true
+}
+
+func webhookPath(rawURL string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return "", fmt.Errorf("parse telegram webhook url: %w", err)
+	}
+	if parsed.Path == "" {
+		return "", fmt.Errorf("telegram webhook url must include a path")
+	}
+	return parsed.EscapedPath(), nil
 }

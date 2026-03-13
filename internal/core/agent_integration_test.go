@@ -103,7 +103,7 @@ func TestAgentHandleMessagePersistsConversationAndNotes(t *testing.T) {
 
 type stubLLMProvider struct{}
 
-func (stubLLMProvider) ClassifyIntent(context.Context, string, []string) (llm.Classification, error) {
+func (stubLLMProvider) ClassifyIntent(context.Context, string, llm.ClassificationRequest) (llm.Classification, error) {
 	return llm.Classification{}, nil
 }
 
@@ -249,5 +249,54 @@ func TestAgentHandleExplicitNoteDeleteWithoutSlash(t *testing.T) {
 	}
 	if len(notesList) != 0 {
 		t.Fatalf("expected notes to be empty after delete, got %#v", notesList)
+	}
+}
+
+type clarificationClassifier struct{}
+
+func (clarificationClassifier) Classify(context.Context, string) (router.Decision, bool, error) {
+	return router.Decision{
+		Mode:                  router.ModeLLM,
+		Confidence:            0.71,
+		NeedsClarification:    true,
+		ClarificationQuestion: "Which service should I restart?",
+	}, true, nil
+}
+
+func TestAgentRepliesWithClarificationWithoutExecutingSkill(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "agent.db")
+	repo, err := sqlite.New(ctx, dbPath, nil)
+	if err != nil {
+		t.Fatalf("sqlite.New returned error: %v", err)
+	}
+	defer repo.Close()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(notes.NewAddSkill(repo))
+
+	transport := &fakeTransport{}
+	agent := NewAgent(
+		transport,
+		auth.New([]int64{100}, []int64{200}),
+		router.New(registry, clarificationClassifier{}),
+		registry,
+		repo,
+		nil,
+		time.Second,
+	)
+
+	if err := agent.HandleMessage(ctx, telegram.IncomingMessage{
+		ChatID: 200,
+		UserID: 100,
+		Text:   "перезапусти сервис",
+	}); err != nil {
+		t.Fatalf("HandleMessage returned error: %v", err)
+	}
+
+	if len(transport.sent) != 1 || transport.sent[0] != "Which service should I restart?" {
+		t.Fatalf("unexpected sent messages: %#v", transport.sent)
 	}
 }
