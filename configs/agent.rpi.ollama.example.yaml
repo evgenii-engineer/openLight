@@ -1,0 +1,22 @@
+telegram_bot_token: "123456:replace-me"
+allowed_user_ids:
+  - 111111111
+allowed_chat_ids:
+  - 111111111
+sqlite_path: "/home/damk/openlight/data/agent.db"
+allowed_services:
+  - tailscale
+  - jellyfin
+llm_enabled: true
+llm_provider: "ollama"
+llm_endpoint: "http://127.0.0.1:11434"
+llm_model: "qwen2.5:0.5b"
+chat_history_limit: 6
+chat_history_chars: 900
+chat_max_response_chars: 400
+log_level: "info"
+request_timeout: 10s
+poll_timeout: 25s
+telegram_api_base_url: "https://api.telegram.org"
+service_log_lines: 100
+notes_list_limit: 20

@@ -1,0 +1,20 @@
+[Unit]
+Description=Lightweight Telegram Agent for Raspberry Pi
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi
+ExecStart=/home/pi/openlight-agent -config /etc/openlight/agent.yaml
+Restart=on-failure
+RestartSec=5
+Environment=GOMEMLIMIT=512MiB
+Environment=GOGC=80
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

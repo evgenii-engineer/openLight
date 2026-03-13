@@ -1,0 +1,7 @@
+data/
+/agent
+/openlight-agent
+/build/
+Makefile.local
+configs/agent.rpi.yaml
+configs/*.local.yaml
