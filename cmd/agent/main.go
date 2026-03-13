@@ -150,6 +150,8 @@ func buildLLMProvider(cfg config.Config, logger *slog.Logger) basellm.Provider {
 	switch cfg.LLM.Provider {
 	case "ollama":
 		return basellm.NewOllamaProvider(cfg.LLM.Endpoint, cfg.LLM.Model, cfg.Agent.RequestTimeout, llmLogger)
+	case "openai":
+		return basellm.NewOpenAIProvider(cfg.LLM.Endpoint, cfg.LLM.Model, cfg.LLM.APIKey, cfg.Agent.RequestTimeout, llmLogger)
 	default:
 		return basellm.NewHTTPProvider(cfg.LLM.Endpoint, cfg.Agent.RequestTimeout, llmLogger)
 	}

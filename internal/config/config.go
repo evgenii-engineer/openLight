@@ -12,6 +12,7 @@ import (
 )
 
 const defaultTelegramAPIBaseURL = "https://api.telegram.org"
+const defaultOpenAIAPIBaseURL = "https://api.openai.com/v1"
 
 type Config struct {
 	Telegram TelegramConfig `yaml:"telegram"`
@@ -59,6 +60,7 @@ type LLMConfig struct {
 	Provider           string  `yaml:"provider"`
 	Endpoint           string  `yaml:"endpoint"`
 	Model              string  `yaml:"model"`
+	APIKey             string  `yaml:"api_key"`
 	ExecuteThreshold   float64 `yaml:"execute_threshold"`
 	ClarifyThreshold   float64 `yaml:"clarify_threshold"`
 	DecisionInputChars int     `yaml:"decision_input_chars"`
@@ -156,10 +158,12 @@ func (c Config) Validate() error {
 		return errors.New("at least one of ALLOWED_USER_IDS or ALLOWED_CHAT_IDS is required")
 	case c.LLM.Enabled && strings.TrimSpace(c.LLM.Endpoint) == "":
 		return errors.New("LLM_ENDPOINT is required when LLM_ENABLED is true")
-	case c.LLM.Enabled && c.LLM.Provider == "ollama" && strings.TrimSpace(c.LLM.Model) == "":
-		return errors.New("LLM_MODEL is required when LLM_PROVIDER is ollama")
-	case c.LLM.Enabled && c.LLM.Provider != "generic" && c.LLM.Provider != "ollama":
-		return errors.New("LLM_PROVIDER must be one of: generic, ollama")
+	case c.LLM.Enabled && (c.LLM.Provider == "ollama" || c.LLM.Provider == "openai") && strings.TrimSpace(c.LLM.Model) == "":
+		return errors.New("LLM_MODEL is required when LLM_PROVIDER is ollama or openai")
+	case c.LLM.Enabled && c.LLM.Provider == "openai" && strings.TrimSpace(c.LLM.APIKey) == "":
+		return errors.New("OPENAI_API_KEY is required when LLM_PROVIDER is openai")
+	case c.LLM.Enabled && c.LLM.Provider != "generic" && c.LLM.Provider != "ollama" && c.LLM.Provider != "openai":
+		return errors.New("LLM_PROVIDER must be one of: generic, ollama, openai")
 	case c.LLM.ExecuteThreshold <= 0 || c.LLM.ExecuteThreshold > 1:
 		return errors.New("llm.execute_threshold must be greater than zero and less than or equal to one")
 	case c.LLM.ClarifyThreshold <= 0 || c.LLM.ClarifyThreshold >= c.LLM.ExecuteThreshold:
@@ -223,6 +227,9 @@ func overrideFromEnv(cfg *Config) {
 	}
 	if value := strings.TrimSpace(os.Getenv("LLM_MODEL")); value != "" {
 		cfg.LLM.Model = value
+	}
+	if value := strings.TrimSpace(os.Getenv("OPENAI_API_KEY")); value != "" {
+		cfg.LLM.APIKey = value
 	}
 	if value := strings.TrimSpace(os.Getenv("LLM_EXECUTE_THRESHOLD")); value != "" {
 		cfg.LLM.ExecuteThreshold = parseFloat(value, cfg.LLM.ExecuteThreshold)
@@ -302,7 +309,11 @@ func normalize(cfg *Config) {
 		cfg.LLM.Provider = "generic"
 	}
 	cfg.LLM.Endpoint = strings.TrimSpace(cfg.LLM.Endpoint)
+	if cfg.LLM.Provider == "openai" && cfg.LLM.Endpoint == "" {
+		cfg.LLM.Endpoint = defaultOpenAIAPIBaseURL
+	}
 	cfg.LLM.Model = strings.TrimSpace(cfg.LLM.Model)
+	cfg.LLM.APIKey = strings.TrimSpace(cfg.LLM.APIKey)
 
 	cfg.Log.Level = strings.TrimSpace(cfg.Log.Level)
 	if cfg.Log.Level == "" {

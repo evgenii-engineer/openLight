@@ -91,6 +91,9 @@ log:
 	if cfg.LLM.ExecuteThreshold != 0.9 || cfg.LLM.ClarifyThreshold != 0.7 {
 		t.Fatalf("unexpected llm thresholds: %#v", cfg.LLM)
 	}
+	if cfg.LLM.APIKey != "" {
+		t.Fatalf("unexpected llm api key: %q", cfg.LLM.APIKey)
+	}
 	if cfg.LLM.DecisionInputChars != 120 || cfg.LLM.DecisionNumPredict != 48 {
 		t.Fatalf("unexpected llm decision budget: %#v", cfg.LLM)
 	}
@@ -163,6 +166,43 @@ storage:
 	}
 }
 
+func TestLoadOpenAIConfig(t *testing.T) {
+	clearConfigEnv(t)
+
+	configPath := filepath.Join(t.TempDir(), "agent.yaml")
+	writeConfig(t, configPath, `
+telegram:
+  bot_token: "token"
+
+auth:
+  allowed_user_ids: [1]
+
+storage:
+  sqlite_path: "./agent.db"
+
+llm:
+  enabled: true
+  provider: "openai"
+  model: "gpt-4o-mini"
+  api_key: "sk-test"
+`)
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+
+	if cfg.LLM.Provider != "openai" {
+		t.Fatalf("unexpected llm provider: %q", cfg.LLM.Provider)
+	}
+	if cfg.LLM.APIKey != "sk-test" {
+		t.Fatalf("unexpected llm api key: %q", cfg.LLM.APIKey)
+	}
+	if cfg.LLM.Endpoint != defaultOpenAIAPIBaseURL {
+		t.Fatalf("unexpected llm endpoint default: %q", cfg.LLM.Endpoint)
+	}
+}
+
 func clearConfigEnv(t *testing.T) {
 	t.Helper()
 
@@ -177,6 +217,7 @@ func clearConfigEnv(t *testing.T) {
 		"LLM_PROVIDER",
 		"LLM_ENDPOINT",
 		"LLM_MODEL",
+		"OPENAI_API_KEY",
 		"LLM_EXECUTE_THRESHOLD",
 		"LLM_CLARIFY_THRESHOLD",
 		"LLM_DECISION_INPUT_CHARS",

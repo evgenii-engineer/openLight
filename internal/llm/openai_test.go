@@ -1,0 +1,234 @@
+package llm
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestOpenAIProviderClassifyIntent(t *testing.T) {
+	t.Parallel()
+
+	provider := NewOpenAIProvider("https://api.openai.com/v1", "gpt-4o-mini", "secret", time.Second, nil)
+	provider.client = &http.Client{
+		Timeout: time.Second,
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			if r.URL.Path != "/v1/responses" {
+				t.Fatalf("unexpected path: %s", r.URL.Path)
+			}
+			if got := r.Header.Get("Authorization"); got != "Bearer secret" {
+				t.Fatalf("unexpected authorization header: %q", got)
+			}
+
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			if payload["model"] != "gpt-4o-mini" {
+				t.Fatalf("unexpected model: %#v", payload["model"])
+			}
+			if payload["store"] != false {
+				t.Fatalf("unexpected store value: %#v", payload["store"])
+			}
+			if payload["max_output_tokens"] != float64(64) {
+				t.Fatalf("unexpected max_output_tokens: %#v", payload["max_output_tokens"])
+			}
+			if payload["temperature"] != 0.1 {
+				t.Fatalf("unexpected temperature: %#v", payload["temperature"])
+			}
+
+			text, ok := payload["input"].(string)
+			if !ok || !strings.Contains(text, "restart tailscale") {
+				t.Fatalf("unexpected input payload: %#v", payload["input"])
+			}
+
+			textConfig, ok := payload["text"].(map[string]any)
+			if !ok {
+				t.Fatalf("unexpected text config: %#v", payload["text"])
+			}
+			format, ok := textConfig["format"].(map[string]any)
+			if !ok || format["type"] != "json_schema" {
+				t.Fatalf("unexpected format config: %#v", textConfig["format"])
+			}
+			if format["name"] != "decision_response" {
+				t.Fatalf("unexpected format name: %#v", format["name"])
+			}
+			schema, ok := format["schema"].(map[string]any)
+			if !ok {
+				t.Fatalf("unexpected format schema: %#v", format["schema"])
+			}
+			properties, ok := schema["properties"].(map[string]any)
+			if !ok {
+				t.Fatalf("unexpected schema properties: %#v", schema["properties"])
+			}
+			arguments, ok := properties["arguments"].(map[string]any)
+			if !ok {
+				t.Fatalf("unexpected arguments schema: %#v", properties["arguments"])
+			}
+			required, ok := arguments["required"].([]any)
+			if !ok || len(required) != 3 {
+				t.Fatalf("unexpected arguments required list: %#v", arguments["required"])
+			}
+
+			return jsonHTTPResponse(map[string]any{
+				"output": []map[string]any{
+					{
+						"type": "message",
+						"content": []map[string]any{
+							{
+								"type": "output_text",
+								"text": `{"intent":"service_restart","arguments":{"service":"tailscale","text":"","id":""},"confidence":0.93,"needs_clarification":false,"clarification_question":""}`,
+							},
+						},
+					},
+				},
+			}), nil
+		}),
+	}
+
+	classification, err := provider.ClassifyIntent(context.Background(), "restart tailscale", ClassificationRequest{
+		AllowedIntents:  []string{"service_restart", "unknown"},
+		AllowedServices: []string{"tailscale"},
+		InputChars:      160,
+		NumPredict:      64,
+	})
+	if err != nil {
+		t.Fatalf("ClassifyIntent returned error: %v", err)
+	}
+	if classification.Intent != "service_restart" {
+		t.Fatalf("unexpected intent: %q", classification.Intent)
+	}
+	if classification.Arguments["service"] != "tailscale" {
+		t.Fatalf("unexpected args: %#v", classification.Arguments)
+	}
+}
+
+func TestOpenAIProviderSummarize(t *testing.T) {
+	t.Parallel()
+
+	provider := NewOpenAIProvider("https://api.openai.com/v1", "gpt-4o-mini", "secret", time.Second, nil)
+	provider.client = &http.Client{
+		Timeout: time.Second,
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+
+			textConfig, ok := payload["text"].(map[string]any)
+			if !ok {
+				t.Fatalf("unexpected text config: %#v", payload["text"])
+			}
+			format, ok := textConfig["format"].(map[string]any)
+			if !ok || format["type"] != "json_schema" {
+				t.Fatalf("unexpected format config: %#v", textConfig["format"])
+			}
+			if format["name"] != "summary_response" {
+				t.Fatalf("unexpected format name: %#v", format["name"])
+			}
+
+			return jsonHTTPResponse(map[string]any{
+				"output": []map[string]any{
+					{
+						"type": "message",
+						"content": []map[string]any{
+							{
+								"type": "output_text",
+								"text": `{"summary":"short summary"}`,
+							},
+						},
+					},
+				},
+			}), nil
+		}),
+	}
+
+	summary, err := provider.Summarize(context.Background(), "very long text")
+	if err != nil {
+		t.Fatalf("Summarize returned error: %v", err)
+	}
+	if summary != "short summary" {
+		t.Fatalf("unexpected summary: %q", summary)
+	}
+}
+
+func TestOpenAIProviderChat(t *testing.T) {
+	t.Parallel()
+
+	provider := NewOpenAIProvider("https://api.openai.com/v1", "gpt-4o-mini", "secret", time.Second, nil)
+	provider.client = &http.Client{
+		Timeout: time.Second,
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+
+			if payload["instructions"] != "system prompt" {
+				t.Fatalf("unexpected instructions: %#v", payload["instructions"])
+			}
+			if payload["max_output_tokens"] != float64(defaultOpenAIChatMaxTokens) {
+				t.Fatalf("unexpected max_output_tokens: %#v", payload["max_output_tokens"])
+			}
+
+			input, ok := payload["input"].([]any)
+			if !ok || len(input) != 2 {
+				t.Fatalf("unexpected input messages: %#v", payload["input"])
+			}
+			first, ok := input[0].(map[string]any)
+			if !ok {
+				t.Fatalf("unexpected first input message: %#v", input[0])
+			}
+			firstContent, ok := first["content"].([]any)
+			if !ok || len(firstContent) != 1 {
+				t.Fatalf("unexpected first content: %#v", first["content"])
+			}
+			firstPart, ok := firstContent[0].(map[string]any)
+			if !ok || firstPart["type"] != "input_text" {
+				t.Fatalf("unexpected first content part: %#v", firstContent[0])
+			}
+
+			second, ok := input[1].(map[string]any)
+			if !ok {
+				t.Fatalf("unexpected second input message: %#v", input[1])
+			}
+			secondContent, ok := second["content"].([]any)
+			if !ok || len(secondContent) != 1 {
+				t.Fatalf("unexpected second content: %#v", second["content"])
+			}
+			secondPart, ok := secondContent[0].(map[string]any)
+			if !ok || secondPart["type"] != "output_text" {
+				t.Fatalf("unexpected second content part: %#v", secondContent[0])
+			}
+
+			return jsonHTTPResponse(map[string]any{
+				"output": []map[string]any{
+					{
+						"type": "message",
+						"content": []map[string]any{
+							{
+								"type": "output_text",
+								"text": "chat reply",
+							},
+						},
+					},
+				},
+			}), nil
+		}),
+	}
+
+	reply, err := provider.Chat(context.Background(), []ChatMessage{
+		{Role: "system", Content: "system prompt"},
+		{Role: "user", Content: "hello"},
+		{Role: "assistant", Content: "hi"},
+	})
+	if err != nil {
+		t.Fatalf("Chat returned error: %v", err)
+	}
+	if reply != "chat reply" {
+		t.Fatalf("unexpected reply: %q", reply)
+	}
+}

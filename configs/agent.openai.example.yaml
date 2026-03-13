@@ -1,0 +1,50 @@
+telegram:
+  bot_token: "123456:replace-me"
+  api_base_url: "https://api.telegram.org"
+  mode: "polling"
+  poll_timeout: 25s
+  webhook:
+    url: "https://bot.example.com/openlight/webhook"
+    listen_addr: ":8081"
+    secret_token: ""
+    drop_pending_updates: false
+
+auth:
+  allowed_user_ids:
+    - 111111111
+  allowed_chat_ids:
+    - 111111111
+
+storage:
+  sqlite_path: "./data/agent.db"
+
+services:
+  allowed:
+    - tailscale
+    - jellyfin
+  log_lines: 100
+
+llm:
+  enabled: true
+  provider: "openai"
+  endpoint: "https://api.openai.com/v1"
+  model: "gpt-4o-mini"
+  api_key: ""
+  execute_threshold: 0.80
+  clarify_threshold: 0.60
+  decision_input_chars: 160
+  decision_num_predict: 64
+
+chat:
+  history_limit: 6
+  history_chars: 900
+  max_response_chars: 400
+
+notes:
+  list_limit: 20
+
+agent:
+  request_timeout: 10s
+
+log:
+  level: "info"

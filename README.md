@@ -154,7 +154,7 @@ High level components:
 - auth: user/chat whitelist checks
 - router: slash commands, explicit commands, rule-based parsing, optional LLM classifier
 - skills: chat, notes, services, system metrics, meta commands
-- llm: Ollama or generic HTTP provider
+- llm: Ollama, OpenAI Responses API, or generic HTTP provider
 - storage: SQLite for messages, notes, skill calls, and settings
 
 Full breakdown lives in [ARCHITECTURE.md](./ARCHITECTURE.md).
@@ -213,7 +213,7 @@ If you want a compact operator bot, `openLight` is the simpler fit.
 - good enough for a Telegram bot, SQLite, and a small local LLM
 - ideal for private homelab and home server use
 
-## Local LLM Setup
+## LLM Setup
 
 Example Ollama config:
 
@@ -235,7 +235,27 @@ chat:
 Templates:
 
 - [agent.example.yaml](./configs/agent.example.yaml)
+- [agent.openai.example.yaml](./configs/agent.openai.example.yaml)
 - [agent.rpi.ollama.example.yaml](./configs/agent.rpi.ollama.example.yaml)
+
+Example OpenAI config:
+
+```yaml
+llm:
+  enabled: true
+  provider: "openai"
+  endpoint: "https://api.openai.com/v1"
+  model: "gpt-4o-mini"
+  api_key: ""
+  execute_threshold: 0.80
+  clarify_threshold: 0.60
+  decision_input_chars: 160
+  decision_num_predict: 64
+```
+
+Set the key either in `llm.api_key` or with `OPENAI_API_KEY`.
+
+`openLight` uses the OpenAI Responses API for this provider. Inference from the current implementation: the same configured model is used for both chat and structured decision routing, so a model with Structured Outputs support is the safest choice for routing.
 
 ## Telegram Webhooks
 
