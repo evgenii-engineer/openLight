@@ -8,7 +8,7 @@ Tiny AI control plane for your personal infrastructure.
 
 `openLight` keeps host access explicit and auditable, stores state in SQLite, and uses an LLM only for natural-language routing and chat. It is not a general-purpose shell agent.
 
-[Architecture](./ARCHITECTURE.md) · [Changelog](./CHANGELOG.md) · [Install on Raspberry Pi](#raspberry-pi-setup) · [Configs](./configs/) · [Systemd Unit](./deployments/systemd/openlight-agent.service)
+[Architecture](./ARCHITECTURE.md) · [Changelog](./CHANGELOG.md) · [Pi 5 Latency](#raspberry-pi-5-latency-snapshot) · [Install on Raspberry Pi](#raspberry-pi-setup) · [Configs](./configs/) · [Systemd Unit](./deployments/systemd/openlight-agent.service)
 
 ## Why
 
@@ -68,6 +68,25 @@ The LLM is intentionally constrained:
 - it cannot bypass validation or access arbitrary shell tools
 
 See [ARCHITECTURE.md](./ARCHITECTURE.md) for the full runtime reference.
+
+## Raspberry Pi 5 Latency Snapshot
+
+Single-request snapshot recorded on March 14, 2026 for the same natural-language input:
+`что там по статусу системы`
+
+| Path | Route classification | Skill classification | Skill execution | Total |
+| --- | --- | --- | --- | --- |
+| Ollama `qwen2.5:0.5b` on Pi 5 | 19.84s | 22.56s | 0.15s | 42.55s |
+| OpenAI `gpt-4o-mini` from Pi 5 | 1.35s | 1.77s | 0.15s | 3.28s |
+
+What this shows:
+
+- the `status` skill itself is fast; in both runs it completed in about `150ms`
+- most of the delay sits in LLM route and skill classification, not in the host action
+- this is why `openLight` stays deterministic-first and uses the LLM only where classification is actually useful
+
+This is a transparent snapshot, not a full benchmark suite.
+Absolute numbers will vary with model choice, network, prompt size, and Raspberry Pi thermals.
 
 ## Quick Start
 
