@@ -1,206 +1,96 @@
 # Architecture
 
-This document describes how `openLight` is wired today.
+This is a short reference for how `openLight` is wired today.
 
-## Goals
+## Design Constraints
 
-`openLight` is intentionally built around a narrow set of constraints:
+`openLight` is intentionally narrow:
 
-- small enough for Raspberry Pi and other modest Linux hosts
 - Telegram-first interface
 - deterministic routing before any LLM fallback
 - explicit skills instead of general shell autonomy
-- easy deployment as one Go binary plus one YAML config
+- one Go binary plus one YAML config
+- SQLite for persistence and lightweight runtime state
+- deployment that fits Raspberry Pi and other small Linux hosts
 
-## Runtime Flow
+## Request Lifecycle
 
-The main runtime path is:
+For each incoming Telegram message, the runtime does the following:
 
-`Telegram transport -> auth -> persistence -> router -> optional LLM route/skill layers -> validation -> skill execution -> persistence -> reply`
+1. receive the update through polling or webhook mode
+2. check user and chat allowlists
+3. store the message in SQLite
+4. try deterministic routing first
+5. optionally fall back to LLM route classification, then LLM skill classification
+6. validate confidence, arguments, and mutating-skill thresholds
+7. execute the selected skill
+8. store the result and send the reply
 
-In practice:
+If routing needs clarification, the pending question and original request are stored in SQLite settings so the next user reply can resume the same decision flow.
 
-1. Telegram transport receives a message through polling or webhook mode.
-2. The agent stores the incoming message in SQLite.
-3. Auth checks user ID and chat ID against allowlists.
-4. The router tries deterministic matching first.
-5. If needed, the LLM route layer chooses `chat`, `unknown`, or one visible skill group.
-6. If a group was selected, the LLM skill layer chooses one concrete skill inside that group and extracts arguments.
-7. The Go side validates confidence, required arguments, mutating thresholds, and clarification state.
-8. The agent either asks a clarification question or executes the chosen skill.
-9. The result and skill-call metadata are stored.
-10. The reply is sent back to Telegram and also stored in SQLite.
+## Routing Model
 
-## Routing Pipeline
-
-Routing is intentionally layered and deterministic-first.
+Routing is layered and deterministic-first.
 
 Priority order:
 
 1. slash commands like `/cpu`
-2. explicit commands without slash like `note_add hello`
-3. exact name and alias resolution from the skill registry
-4. semantic rule parsing like `restart tailscale`
-5. optional two-stage LLM fallback
-6. chat fallback when no executable skill was matched
+2. explicit commands such as `note_add hello`
+3. exact skill names and aliases from the registry
+4. semantic rules such as `restart tailscale`
+5. optional LLM fallback
+6. `chat` fallback when the `chat` skill is registered
 
-Relevant files:
+### Deterministic Layer
 
-- [internal/router/router.go](./internal/router/router.go)
-- [internal/router/rules/rules.go](./internal/router/rules/rules.go)
-- [internal/router/semantic/normalize.go](./internal/router/semantic/normalize.go)
-- [internal/router/llm/classifier.go](./internal/router/llm/classifier.go)
+The deterministic path bypasses the LLM entirely.
+It handles slash commands, explicit command text, aliases, and a small semantic normalization layer for common English and Russian variants.
 
-### Deterministic Layers
+Examples:
 
-These layers bypass the LLM entirely:
-
-- slash commands
-- explicit commands
-- exact registry identifiers
-- semantic rules on normalized natural language
-
-The semantic normalizer rewrites common Russian and English variants into a tighter vocabulary before rules and LLM routing see them. Examples:
-
-- `мемори` -> `memory`
-- `рам` -> `memory`
-- `цпу` -> `cpu`
-- `перезапусти` -> `restart`
-- `заметку` -> `note`
-- `добавь` -> `add`
-
-Examples of deterministic file commands:
-
-- `/files /tmp/openlight`
 - `read /tmp/openlight/app.conf`
-- `write /tmp/openlight/hello.txt :: hello world`
 - `replace 8080 with 8081 in /tmp/openlight/app.conf`
+- `logs tailscale`
+- `note buy milk`
 
-Free-form file requests such as `можешь показать содержимое файла /tmp/openlight/app.conf?` currently rely on the LLM route layer and the LLM skill layer.
+### LLM Layer
 
-### LLM Route Layer
+LLM support is optional.
+When `llm.enabled: false`, routing stays deterministic-only and the `chat` skill is not registered.
 
-If deterministic routing fails, the first LLM step receives:
+When enabled, the fallback is split into two steps:
 
-- the raw user text
-- a visible catalog of registered skill groups
-- a small route budget for prompt size and output length
+1. route classification: choose `chat`, `unknown`, or one visible skill group
+2. skill classification: choose one visible skill inside that group and extract minimal arguments
 
-It returns strict JSON with:
+The Go side remains authoritative:
 
-- `intent`
-- `confidence`
-- `needs_clarification`
-- `clarification_question`
+- it validates that the chosen skill belongs to the selected group
+- it checks required arguments
+- it applies execution thresholds
+- it uses a stricter threshold for mutating skills
 
-The route intent is limited to:
+## Main Runtime Pieces
 
-- `chat`
-- `unknown`
-- one visible group key such as `files`, `system`, `services`, `notes`, or `core`
+| Component | Responsibility | Key files |
+| --- | --- | --- |
+| Telegram transport | receive updates and send replies | [internal/telegram/client.go](./internal/telegram/client.go) |
+| Auth | allowlist checks for users and chats | [internal/auth/auth.go](./internal/auth/auth.go) |
+| Core agent | orchestration, persistence, clarification flow, execution | [internal/core/agent.go](./internal/core/agent.go) |
+| Skill registry | skill metadata, aliases, visible groups, discovery | [internal/skills/registry.go](./internal/skills/registry.go) |
+| Storage | messages, notes, skill calls, settings | [internal/storage/sqlite/sqlite.go](./internal/storage/sqlite/sqlite.go) |
+| Router | deterministic rules plus optional classifier integration | [internal/router/router.go](./internal/router/router.go), [internal/router/llm/classifier.go](./internal/router/llm/classifier.go) |
+| LLM provider layer | provider abstraction and factories | [internal/llm/provider.go](./internal/llm/provider.go), [internal/llm/factory.go](./internal/llm/factory.go) |
 
-### LLM Skill Layer
-
-If the route layer selected a group, the second LLM step receives:
-
-- the raw user text
-- the selected group key
-- the visible skills inside that group
-- allowed service names only when the selected group is `services`
-
-It returns strict JSON with:
-
-- `skill`
-- `arguments`
-- `confidence`
-- `needs_clarification`
-- `clarification_question`
-
-For the `files` group, the main extracted arguments are:
-
-- `path`
-- `content`
-- `find`
-- `replace`
-
-The Go side then validates:
-
-- the chosen skill exists and belongs to the allowed group
-- required arguments are present
-- confidence passes the correct threshold
-- mutating skills use a higher threshold than read-only skills
-
-## Pending Clarification Flow
-
-Clarification is stateful.
-
-When routing returns `needs_clarification=true`, the agent:
-
-- sends the clarification question to the user
-- stores the original request and clarification question in SQLite settings
-
-When the next user reply arrives, the agent can merge:
-
-- original request
-- clarification question
-- follow-up answer
-
-and retry routing on the combined text instead of treating the follow-up as a fresh unrelated request.
-
-This logic lives in [internal/core/agent.go](./internal/core/agent.go).
-
-## Main Components
-
-### Telegram Transport
-
-Telegram transport supports both:
-
-- polling
-- webhook
-
-It owns update ingestion and outgoing text replies.
-
-File:
-
-- [internal/telegram/client.go](./internal/telegram/client.go)
-
-### Auth
-
-Auth is a simple allowlist check for:
-
-- allowed user IDs
-- allowed chat IDs
-
-File:
-
-- [internal/auth/auth.go](./internal/auth/auth.go)
-
-### Core Agent
-
-The core agent coordinates:
-
-- message persistence
-- auth checks
-- pending clarification state
-- router decisions
-- skill execution with timeout
-- reply sending
-- user-facing error mapping
-
-File:
-
-- [internal/core/agent.go](./internal/core/agent.go)
-
-### Skills
+## Skill System
 
 Skills are the unit of executable behavior.
-
 Each skill exposes:
 
 - `Definition()`
 - `Execute(...)`
 
-`Definition` contains metadata such as:
+`Definition` carries the metadata used by help output, deterministic routing, and LLM catalogs:
 
 - name
 - group
@@ -211,28 +101,19 @@ Each skill exposes:
 - mutating flag
 - hidden flag
 
-Core files:
+Built-in groups:
 
-- [internal/skills/skill.go](./internal/skills/skill.go)
-- [internal/skills/groups.go](./internal/skills/groups.go)
-- [internal/skills/registry.go](./internal/skills/registry.go)
-
-Current built-in groups:
-
-- `files`
+- `core`
 - `system`
+- `files`
 - `services`
 - `notes`
-- `core`
-- `chat`
-- `other`
+- `workbench` when `workbench.enabled: true`
+- `chat` when `llm.enabled: true`
 
-### Skill Modules
+Startup registers skills through modules rather than wiring each skill individually in `main.go`.
 
-`main.go` no longer registers built-ins one by one.  
-It assembles a list of `skills.Module` values and registers them as bundles.
-
-Core files:
+Relevant files:
 
 - [internal/skills/module.go](./internal/skills/module.go)
 - [internal/skills/core_module.go](./internal/skills/core_module.go)
@@ -240,327 +121,53 @@ Core files:
 - [internal/skills/system/module.go](./internal/skills/system/module.go)
 - [internal/skills/services/module.go](./internal/skills/services/module.go)
 - [internal/skills/notes/module.go](./internal/skills/notes/module.go)
+- [internal/skills/workbench/module.go](./internal/skills/workbench/module.go)
 - [internal/skills/chat/module.go](./internal/skills/chat/module.go)
 
-### Registry
+## Safety Boundaries
 
-The skill registry stores:
+`openLight` is opinionated about what the bot is allowed to do:
 
-- registered skills by normalized name
-- normalized definitions
-- identifiers and aliases
-- visible groups
-- visible skills by group
+- file access is limited to `files.allowed`
+- service actions are limited to `services.allowed`
+- workbench execution is limited to one workspace, allowlisted runtimes, and exact allowlisted files
+- the runtime does not expose unrestricted shell access
+- the LLM cannot bypass Go-side validation
 
-This registry is the source of truth for:
+## LLM Providers
 
-- exact routing
-- `/skills`
-- `/help`
-- LLM group catalogs
-- LLM per-group skill catalogs
-
-### LLM Layer
-
-LLM support is optional.
-
-Providers currently implemented:
+The repository currently includes:
 
 - generic HTTP provider
 - Ollama provider
 - OpenAI Responses API provider
 
-Core files:
+Provider wiring is done through a factory registry so new providers can be added without editing the main startup path.
+
+Relevant files:
 
 - [internal/llm/provider.go](./internal/llm/provider.go)
 - [internal/llm/factory.go](./internal/llm/factory.go)
-- [internal/llm/prompts.go](./internal/llm/prompts.go)
-- [internal/llm/schemas.go](./internal/llm/schemas.go)
-- [internal/llm/helpers.go](./internal/llm/helpers.go)
 - [internal/llm/ollama.go](./internal/llm/ollama.go)
 - [internal/llm/openai.go](./internal/llm/openai.go)
 
-The split is deliberate:
+## Deployment Shape
 
-- shared prompts, schemas, and helpers are provider-agnostic
-- `ollama.go` is mostly an Ollama transport and decoding adapter
-- `openai.go` is mostly an OpenAI transport and structured-output adapter
-- `factory.go` wires providers into runtime config
+The repository includes:
 
-### Provider Factory Registry
+- Raspberry Pi build and deploy helpers in [Makefile](./Makefile)
+- a local run helper in [scripts/run-local.sh](./scripts/run-local.sh)
+- Raspberry Pi deploy scripts in [scripts](./scripts)
+- a systemd unit in [deployments/systemd/openlight-agent.service](./deployments/systemd/openlight-agent.service)
+- a local Ollama Compose file in [deployments/docker/ollama-compose.yaml](./deployments/docker/ollama-compose.yaml)
 
-Providers are extensible through a factory registry, not through hardcoded switches in `main.go`.
+## Extension Points
 
-The package-level defaults expose:
+The main extension surfaces are intentionally small:
 
-- `llm.BuildProvider(...)`
-- `llm.RegisterDefaultProviderFactory(...)`
-- `llm.MustRegisterDefaultProviderFactory(...)`
-- `llm.DefaultProviderNames()`
+- implement `skills.Skill` for one new executable behavior
+- bundle related skills with `skills.Module`
+- implement `llm.Provider` for a new provider
+- register it through `llm.ProviderFactory`
 
-Built-ins are surfaced through:
-
-- `llm.NewHTTPProviderFactory()`
-- `llm.NewOllamaProviderFactory()`
-- `llm.NewOpenAIProviderFactory()`
-
-### Storage
-
-SQLite stores:
-
-- `messages`
-- `skill_calls`
-- `notes`
-- `settings`
-
-`settings` is also used for lightweight runtime state such as pending clarification context.
-
-Files:
-
-- [internal/storage/storage.go](./internal/storage/storage.go)
-- [internal/storage/sqlite/sqlite.go](./internal/storage/sqlite/sqlite.go)
-- [migrations/0001_init.sql](./migrations/0001_init.sql)
-
-## Service Management Model
-
-Service operations are intentionally constrained:
-
-- only explicitly allowed services are exposed
-- no arbitrary shell execution path exists in the runtime
-- `systemctl` and `journalctl` are called directly
-- `tailscale` is normalized to `tailscaled`
-- restart can retry with `sudo -n` when permissions require it
-
-Files:
-
-- [internal/skills/services/manager.go](./internal/skills/services/manager.go)
-- [internal/skills/services/skills.go](./internal/skills/services/skills.go)
-
-## File Access Model
-
-File operations are intentionally constrained:
-
-- only explicitly allowed roots are exposed
-- paths are resolved to absolute filesystem paths
-- symlink targets must still stay inside an allowed root
-- reads are capped to a configured byte limit
-- the runtime exposes specific file skills instead of a generic shell
-
-The built-in file skills are:
-
-- `file_list`
-- `file_read`
-- `file_write`
-- `file_replace`
-
-Their main argument shapes are:
-
-- `file_list`: optional `path`
-- `file_read`: required `path`
-- `file_write`: `path` plus `content`
-- `file_replace`: `path` plus `find` and `replace`
-
-Files:
-
-- [internal/skills/files/manager.go](./internal/skills/files/manager.go)
-- [internal/skills/files/skills.go](./internal/skills/files/skills.go)
-
-## Workbench Model
-
-Workbench operations are intentionally constrained:
-
-- `exec_code` writes temporary code only inside one configured workspace directory
-- only explicitly allowed runtimes can be used for temporary code execution
-- `exec_file` can run only exact allowlisted files
-- stdout and stderr are capped to a configured byte limit
-- this is still a narrow skill surface, not unrestricted shell access
-
-Files:
-
-- [internal/skills/workbench/manager.go](./internal/skills/workbench/manager.go)
-- [internal/skills/workbench/skills.go](./internal/skills/workbench/skills.go)
-
-## Chat Model
-
-The chat skill is tuned for small models and narrow assistant behavior:
-
-- short system prompt
-- bounded history size
-- history filtering to drop command noise
-- trimmed output length
-- optional history reset for simple greetings
-
-File:
-
-- [internal/skills/chat/skill.go](./internal/skills/chat/skill.go)
-
-## Process Model
-
-The application starts in [cmd/agent/main.go](./cmd/agent/main.go), where it wires together:
-
-- config
-- logger
-- SQLite repository
-- LLM provider through the provider factory registry
-- skill registry through modules
-- router
-- Telegram transport
-- core agent
-
-Graceful shutdown is handled through `context` and OS signals.
-
-## Deployment Model
-
-The repo includes:
-
-- Raspberry Pi build and deploy scripts
-- a systemd unit
-- local Docker Compose for Ollama
-
-Files:
-
-- [Makefile](./Makefile)
-- [scripts/deploy-rpi.sh](./scripts/deploy-rpi.sh)
-- [scripts/deploy-rpi-config.sh](./scripts/deploy-rpi-config.sh)
-- [scripts/deploy-rpi-service.sh](./scripts/deploy-rpi-service.sh)
-- [deployments/systemd/openlight-agent.service](./deployments/systemd/openlight-agent.service)
-- [deployments/docker/ollama-compose.yaml](./deployments/docker/ollama-compose.yaml)
-
-## Extension Model
-
-The extension points are intentionally small:
-
-- `skills.Skill` for one executable tool
-- `skills.Module` for a bundle of skills
-- `llm.Provider` for one LLM transport and response adapter
-- `llm.ProviderFactory` for wiring providers into runtime config
-
-### Adding A New Skill
-
-The smallest unit is one `skills.Skill`.
-
-```go
-type EchoSkill struct{}
-
-func (EchoSkill) Definition() skills.Definition {
-	return skills.Definition{
-		Name:        "echo",
-		Group:       skills.GroupOther,
-		Description: "Repeat the given text.",
-		Aliases:     []string{"repeat"},
-		Usage:       "echo <text>",
-		Examples:    []string{"echo hello"},
-	}
-}
-
-func (EchoSkill) Execute(ctx context.Context, input skills.Input) (skills.Result, error) {
-	return skills.Result{Text: input.Args["text"]}, nil
-}
-```
-
-What matters in practice:
-
-- `Definition.Name` is the stable skill id used by routing and help
-- `Definition.Group` controls where the skill appears in `/skills` and in the LLM group catalog
-- `Aliases`, `Usage`, and `Examples` improve deterministic routing and help output
-- `Mutating` should be `true` for actions like restart, delete, or write
-- `Hidden` keeps a skill executable but removes it from discovery and LLM catalogs
-
-If a skill belongs to a brand new family, add a new `skills.Group` constant in [internal/skills/groups.go](./internal/skills/groups.go) with:
-
-- stable `Key` for routing
-- human-friendly `Title` for `/skills`
-- short `Description` for the route classifier
-- `Order` for display sorting
-
-### Adding A New Skill Module
-
-Modules let startup wiring register bundles instead of individual skills.
-
-```go
-func NewModule(dep SomeDependency) skills.Module {
-	return skills.NewModule("echo", func(registry *skills.Registry) error {
-		for _, skill := range []skills.Skill{
-			NewEchoSkill(dep),
-			NewEchoListSkill(dep),
-		} {
-			if err := registry.Register(skill); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-}
-```
-
-Then wire it once during startup:
-
-```go
-modules := []skills.Module{
-	fileskills.NewModule(fileManager),
-	systemskills.NewModule(systemProvider),
-	serviceskills.NewModule(serviceManager, cfg.Services.LogLines),
-	echoskills.NewModule(dep),
-	skills.NewCoreModule(),
-}
-
-if err := skills.RegisterModules(registry, modules...); err != nil {
-	return nil, err
-}
-```
-
-Reference implementations:
-
-- [internal/skills/files/module.go](./internal/skills/files/module.go)
-- [internal/skills/system/module.go](./internal/skills/system/module.go)
-- [internal/skills/services/module.go](./internal/skills/services/module.go)
-- [internal/skills/notes/module.go](./internal/skills/notes/module.go)
-- [internal/skills/chat/module.go](./internal/skills/chat/module.go)
-
-### Adding A New LLM Provider
-
-Providers need to satisfy:
-
-- `ClassifyRoute(...)`
-- `ClassifySkill(...)`
-- `Summarize(...)`
-- `Chat(...)`
-
-The quickest way is to implement `llm.Provider` and register a factory.
-
-```go
-func init() {
-	llm.MustRegisterDefaultProviderFactory(
-		llm.NewProviderFactory("dummy", func(cfg llm.ProviderConfig, logger *slog.Logger) (llm.Provider, error) {
-			return NewDummyProvider(cfg.Endpoint, cfg.Model, cfg.Timeout, logger), nil
-		}),
-	)
-}
-```
-
-After that the runtime can use:
-
-```yaml
-llm:
-  enabled: true
-  provider: "dummy"
-```
-
-If you want a local factory registry instead of mutating the package default, build one explicitly:
-
-```go
-registry := llm.NewFactoryRegistry(
-	llm.NewOllamaProviderFactory(),
-	llm.NewOpenAIProviderFactory(),
-	llm.NewProviderFactory("dummy", buildDummyProvider),
-)
-
-provider, err := registry.Build("dummy", cfg, logger)
-```
-
-Reference implementations:
-
-- [internal/llm/factory.go](./internal/llm/factory.go)
-- [internal/llm/provider.go](./internal/llm/provider.go)
-- [internal/llm/ollama.go](./internal/llm/ollama.go)
-- [internal/llm/openai.go](./internal/llm/openai.go)
+The best reference for extension work is the existing built-in modules under [internal/skills](./internal/skills) and providers under [internal/llm](./internal/llm).

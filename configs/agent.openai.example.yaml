@@ -1,3 +1,6 @@
+# OpenAI-backed example configuration.
+# Prefer OPENAI_API_KEY over committing llm.api_key to a tracked file.
+
 telegram:
   bot_token: "123456:replace-me"
   api_base_url: "https://api.telegram.org"

@@ -4,118 +4,45 @@
 ![License](https://img.shields.io/badge/License-MIT-green)
 ![Target](https://img.shields.io/badge/Target-Raspberry%20Pi-red)
 
-Telegram-first local agent for Raspberry Pi.
+A deterministic Telegram agent for Raspberry Pi and small Linux hosts.
 
-Deterministic host skills, SQLite state, and just enough LLM.
+`openLight` exposes explicit host skills, stores state in SQLite, and uses an LLM only for natural-language routing and chat. It is not a general-purpose shell agent.
 
-`openLight` is a small Go runtime for a very specific job: expose a narrow set of useful host skills through Telegram, keep routing deterministic, and use an LLM only where natural language actually helps.
+[Architecture](./ARCHITECTURE.md) · [Changelog](./CHANGELOG.md) · [Default Config](./configs/agent.example.yaml) · [OpenAI Config](./configs/agent.openai.example.yaml) · [Raspberry Pi + Ollama Config](./configs/agent.rpi.ollama.example.yaml) · [Systemd Unit](./deployments/systemd/openlight-agent.service) · [Ollama Compose](./deployments/docker/ollama-compose.yaml)
 
-[Architecture](./ARCHITECTURE.md) · [Config Templates](./configs) · [Systemd Unit](./deployments/systemd/openlight-agent.service) · [Docker Compose for Ollama](./deployments/docker/ollama-compose.yaml)
+## Why
 
-## At A Glance
+`openLight` is built for a narrow operating model:
+
+- deterministic routing before any LLM fallback
+- explicit, auditable skills instead of general shell access
+- one Go binary plus one YAML config
+- SQLite persistence instead of a larger service footprint
+- deployment that fits Raspberry Pi and other modest Linux hosts
+
+Best suited for:
+
+- Raspberry Pi home servers
+- Telegram-based maintenance bots
+- local-first assistants backed by Ollama
+- simple remote ops with OpenAI or a custom HTTP LLM adapter
+
+## At a Glance
 
 | Area | Choice |
 | --- | --- |
-| Language | Go |
-| Runtime | single binary |
-| Storage | SQLite |
 | Interface | Telegram |
+| Runtime | single Go binary |
+| State | SQLite |
+| Routing | deterministic first, optional two-stage LLM fallback |
 | LLM providers | Ollama, OpenAI, generic HTTP |
-| Routing model | deterministic first, LLM fallback |
-| Deployment target | Raspberry Pi and small Linux hosts |
-| Process model | systemd-friendly |
+| Host actions | explicit file, system, service, notes, and optional workbench skills |
+| Deployment | systemd-friendly, Raspberry Pi-first |
 
-## Why openLight
+## How It Works
 
-Most agent projects start with autonomy and then try to add safety back in.  
-`openLight` does the opposite:
-
-- deterministic routing first
-- LLM fallback second
-- one small binary
-- SQLite persistence
-- Raspberry Pi-friendly deployment
-- narrow, auditable skills instead of general shell access
-
-This makes it a good fit for:
-
-- Raspberry Pi home servers
-- Telegram-based status and maintenance bots
-- local-first assistants with Ollama
-- simple remote ops with OpenAI as a fallback provider
-
-## Design Position
-
-| openLight | General-purpose agent stacks |
-| --- | --- |
-| Telegram-first host assistant | broad multi-tool autonomy |
-| deterministic routing first | often LLM-first orchestration |
-| explicit skills and groups | generic tool surfaces |
-| single Go binary | larger runtime stacks |
-| Raspberry Pi-friendly deploy | server or dev-machine oriented |
-| SQLite state and simple ops | broader platform concerns |
-
-## Highlights
-
-- `files` skills: `file_list`, `file_read`, `file_write`, `file_replace`
-- `workbench` skills: `exec_code`, `exec_file`, `workspace_clean`
-- `system` skills: `status`, `cpu`, `memory`, `disk`, `uptime`, `hostname`, `ip`, `temperature`
-- `services` skills: `service_list`, `service_status`, `service_logs`, `service_restart`
-- `notes` skills: `note_add`, `note_list`, `note_delete`
-- `chat` mode: free-form fallback when no tool matches
-- two-stage LLM routing: route to group, then choose one concrete skill
-- local or remote LLM providers: Ollama, OpenAI, or generic HTTP
-- polling and webhook Telegram transports
-- Raspberry Pi deploy scripts and systemd unit included
-
-## What It Feels Like
-
-```text
-You: покажи общий статус
-Bot: Hostname: raspberry
-CPU: 2.0%
-Memory: 1.9 GiB used / 7.9 GiB total
-Disk: 864.1 GiB free / 916.3 GiB total
-Uptime: 2d 4h 11m
-Temperature: 58.7C
-```
-
-```text
-You: покажи логи tailscale
-Bot: Logs for tailscale:
-...
-```
-
-```text
-You: read /etc/hostname
-Bot: Contents of /etc/hostname:
-raspberrypi
-```
-
-```text
-You: добавь заметку купить ssd
-Bot: Saved note #3
-```
-
-```text
-You: run python:
-print("hello")
-Bot: Temporary code: /tmp/openlight/run-abc123.py
-Runtime: python
-Output:
-hello
-```
-
-```text
-You: привет, как дела
-Bot: Привет. Чем помочь?
-```
-
-## Runtime Model
-
-The core idea is simple:
-
-`deterministic routing first, LLM second`
+Each message goes through auth, persistence, deterministic routing, optional LLM fallback, validation, skill execution, and reply delivery.
+If `llm.enabled: false`, the runtime stays deterministic-only and the `chat` skill is not registered.
 
 ```mermaid
 flowchart TD
@@ -133,170 +60,141 @@ flowchart TD
     E --> K
 ```
 
-What the LLM does here:
+The LLM is intentionally constrained:
 
-- decide `chat` vs one skill group
-- choose one concrete skill in that group
-- extract minimal arguments
+- it can classify `chat` vs a skill group
+- it can choose one concrete skill inside the chosen group
+- it can extract minimal arguments for that skill
+- it cannot bypass validation or access arbitrary shell tools
 
-What the LLM does not do:
-
-- execute arbitrary shell commands directly
-- plan long tool chains
-- bypass validation
-- access arbitrary shell tools outside registered skills
-
-For the full breakdown, see [ARCHITECTURE.md](./ARCHITECTURE.md).
+See [ARCHITECTURE.md](./ARCHITECTURE.md) for the full runtime reference.
 
 ## Quick Start
 
-1. Initialize a config:
+Requirements:
+
+- Go 1.25+
+- Telegram bot token
+- Linux host for systemd-backed service skills
+- optional: Ollama or an OpenAI API key
+
+1. Copy a config template to `agent.yaml`.
+
+| Template | Use when |
+| --- | --- |
+| [configs/agent.example.yaml](./configs/agent.example.yaml) | minimal baseline, LLM disabled |
+| [configs/agent.openai.example.yaml](./configs/agent.openai.example.yaml) | OpenAI-backed routing and chat |
+| [configs/agent.rpi.ollama.example.yaml](./configs/agent.rpi.ollama.example.yaml) | Raspberry Pi deployment with local Ollama |
 
 ```bash
-make init-rpi-config
+cp configs/agent.example.yaml ./agent.yaml
+# or:
+cp configs/agent.openai.example.yaml ./agent.yaml
 ```
 
-2. Fill in:
+For Raspberry Pi, `make init-rpi-config` copies the Ollama profile to `configs/agent.rpi.yaml`.
+
+2. Fill the required settings.
 
 - `telegram.bot_token`
-- `auth.allowed_user_ids`
-- `auth.allowed_chat_ids`
-- `files.allowed` with the safe roots you want the bot to touch
-- `workbench.*` if you want restricted code execution or allowed script runs
+- at least one of `auth.allowed_user_ids` or `auth.allowed_chat_ids`
+- `storage.sqlite_path`
+- `files.allowed` for safe file access
+- `services.allowed` for allowed systemd services
+- `workbench.*` only if you want temporary code execution or allowlisted executables
+- `llm.*` and `chat.*` only if you want LLM routing and chat
 
-3. Pick an LLM provider:
+Keep runtime secrets out of version control.
+For OpenAI, prefer `OPENAI_API_KEY` over committing `llm.api_key`.
 
-- `ollama` for local inference
-- `openai` for hosted inference
-- `generic` for a custom HTTP adapter
-
-4. Deploy:
+3. Run the agent.
 
 ```bash
-make deploy-rpi-all
-ssh pi@raspberrypi.local "journalctl -u openlight-agent -f"
+go run ./cmd/agent -config ./agent.yaml
 ```
 
-Config templates:
+Useful first commands:
 
-- [configs/agent.example.yaml](./configs/agent.example.yaml)
-- [configs/agent.openai.example.yaml](./configs/agent.openai.example.yaml)
-- [configs/agent.rpi.ollama.example.yaml](./configs/agent.rpi.ollama.example.yaml)
+- `/skills`
+- `/help status`
+- `/status`
+- `read /tmp/openlight/app.conf`
 
-## LLM Setup
+Natural-language routing such as `show tailscale logs` or `прочитай /etc/hostname` is available only when `llm.enabled: true`.
 
-Ollama example:
+## Configuration
 
-```yaml
-llm:
-  enabled: true
-  provider: "ollama"
-  endpoint: "http://127.0.0.1:11434"
-  model: "qwen2.5:0.5b"
-  execute_threshold: 0.80
-  mutating_execute_threshold: 0.95
-  clarify_threshold: 0.60
-  decision_input_chars: 160
-  decision_num_predict: 128
+### Surface
 
-chat:
-  history_limit: 6
-  history_chars: 900
-  max_response_chars: 400
-```
+| Section | Purpose |
+| --- | --- |
+| `telegram.*` | transport settings, polling or webhook mode |
+| `auth.*` | user and chat allowlists |
+| `storage.*` | SQLite database location |
+| `files.*` | allowed roots and read/list limits |
+| `services.*` | allowed systemd services and log line limits |
+| `workbench.*` | optional temporary code execution and allowlisted files |
+| `llm.*` | optional LLM provider, thresholds, and routing limits |
+| `chat.*` | free-form chat history and response bounds |
+| `agent.*` | request timeout |
+| `log.*` | log verbosity |
 
-OpenAI example:
+### Telegram
 
-```yaml
-llm:
-  enabled: true
-  provider: "openai"
-  endpoint: "https://api.openai.com/v1"
-  model: "gpt-4o-mini"
-  api_key: ""
-  execute_threshold: 0.80
-  mutating_execute_threshold: 0.95
-  clarify_threshold: 0.60
-  decision_input_chars: 160
-  decision_num_predict: 128
-```
+`openLight` supports two transport modes:
+
+- `telegram.mode: "polling"` for the simplest deployment
+- `telegram.mode: "webhook"` for public HTTPS deployments
+
+Webhook mode requires:
+
+- a public `https://...` URL in `telegram.webhook.url`
+- a local listen address in `telegram.webhook.listen_addr`
+- a Telegram-reachable endpoint path
+
+Using `telegram.webhook.secret_token` is recommended for webhook deployments.
+
+### LLM
+
+LLM support is optional.
+When enabled, `openLight` supports:
+
+- `ollama` for local inference
+- `openai` for the OpenAI Responses API
+- `generic` for a custom HTTP adapter
+
+The fastest path is to start from one of the example configs instead of copying inline YAML into the README.
 
 Notes:
 
+- the same `llm.model` is used for route classification, skill classification, and chat
 - `chat.*` affects only free-form chat
-- `llm.decision_*` affects only structured routing
-- the same `llm.model` is used for route classification and skill classification
-- `OPENAI_API_KEY` can be used instead of `llm.api_key`
+- `llm.decision_*` affects only routing and skill selection
+- `OPENAI_API_KEY` overrides `llm.api_key`
 
-Safe file access example:
+### Safety Boundaries
 
-```yaml
-files:
-  allowed:
-    - /tmp/openlight
-    - /home/pi/scripts
-    - /home/pi/openlight-work
-  max_read_bytes: 4096
-  list_limit: 40
-```
+The config defines the agent's safety envelope:
 
-Restricted workbench example:
-
-```yaml
-workbench:
-  enabled: true
-  workspace_dir: "/tmp/openlight"
-  allowed_runtimes:
-    - python
-    - sh
-  allowed_files:
-    - /usr/bin/uptime
-  max_output_bytes: 8192
-```
-
-## Telegram Modes
-
-`openLight` supports:
-
-- `telegram.mode: "polling"`
-- `telegram.mode: "webhook"`
-
-Webhook mode needs a public `https://...` URL that Telegram can reach.
-
-Example:
-
-```yaml
-telegram:
-  bot_token: "123456:replace-me"
-  api_base_url: "https://api.telegram.org"
-  mode: "webhook"
-  poll_timeout: 25s
-  webhook:
-    url: "https://bot.example.com/openlight/webhook"
-    listen_addr: ":8081"
-    secret_token: "replace-me"
-    drop_pending_updates: false
-```
-
-## Skill Guide
-
-You can call explicit skills in three ways:
-
-- plain command, for example `read /tmp/openlight/app.conf`
-- slash command, for example `/read /tmp/openlight/app.conf`
-- natural language when LLM routing is enabled
-
-At a glance:
-
-| Group | Skills |
+| Setting | Effect |
 | --- | --- |
-| `files` | `file_list`, `file_read`, `file_write`, `file_replace` |
-| `workbench` | `exec_code`, `exec_file`, `workspace_clean` |
-| `services` | `service_list`, `service_status`, `service_logs`, `service_restart` |
-| `system` | `status`, `cpu`, `memory`, `disk`, `uptime`, `hostname`, `ip`, `temperature` |
-| `notes` | `note_add`, `note_list`, `note_delete` |
-| `core` | `start`, `help`, `skills`, `ping` |
-| `chat` | `chat` |
+| `files.allowed` | limits file read/write access to explicit roots |
+| `services.allowed` | limits service inspection and restart to explicit systemd units |
+| `workbench.enabled` | controls whether temporary code execution is available at all |
+| `workbench.allowed_runtimes` | limits `exec_code` runtimes |
+| `workbench.allowed_files` | limits `exec_file` to exact paths |
+
+## Built-in Skills
+
+| Group | Available when | Skills |
+| --- | --- | --- |
+| `core` | always | `start`, `help`, `skills`, `ping` |
+| `system` | always | `status`, `cpu`, `memory`, `disk`, `uptime`, `hostname`, `ip`, `temperature` |
+| `files` | always | `file_list`, `file_read`, `file_write`, `file_replace` |
+| `services` | always | `service_list`, `service_status`, `service_logs`, `service_restart` |
+| `notes` | always | `note_add`, `note_list`, `note_delete` |
+| `workbench` | when `workbench.enabled: true` | `exec_code`, `exec_file`, `workspace_clean` |
+| `chat` | when `llm.enabled: true` | `chat` |
 
 <details>
 <summary><strong>Files</strong> — read, list, write, and replace text in whitelisted paths</summary>
@@ -309,12 +207,6 @@ Configure `files.allowed` first.
 | `file_read` | read a text file | `read <path>` | `read /tmp/openlight/app.conf` |
 | `file_write` | create or overwrite a text file | `write <path> :: <content>` | `write /tmp/openlight/hello.txt :: hello world` |
 | `file_replace` | replace text inside a file | `replace <old> with <new> in <path>` | `replace 8080 with 8081 in /tmp/openlight/app.conf` |
-
-Notes:
-
-- file access stays inside `files.allowed`
-- symlink-resolved paths must still remain inside an allowed root
-- reads are capped by `files.max_read_bytes`
 
 </details>
 
@@ -329,13 +221,6 @@ Configure `workbench.enabled: true` first.
 | `exec_file` | run one exact allowlisted file | `exec_file <path>` or `run <path>` | `run /usr/bin/uptime` |
 | `workspace_clean` | remove temporary files from the workbench workspace | `workspace_clean` | `workspace_clean` |
 
-Notes:
-
-- temporary code is written only inside `workbench.workspace_dir`
-- only runtimes from `workbench.allowed_runtimes` can be used for `exec_code`
-- `exec_file` can run only exact paths from `workbench.allowed_files`
-- stdout and stderr are capped by `workbench.max_output_bytes`
-
 </details>
 
 <details>
@@ -346,7 +231,7 @@ Configure `services.allowed` first.
 | Skill | What it does | Command shape | Example |
 | --- | --- | --- | --- |
 | `service_list` | list allowed services and current state | `services` | `services` |
-| `service_status` | show one service status | `service [name]` or `status [name]` | `service tailscale` |
+| `service_status` | show one service status | `service [name]` | `service tailscale` |
 | `service_logs` | show recent service logs | `logs [name]` | `logs tailscale` |
 | `service_restart` | restart one allowed service | `restart <name>` | `restart tailscale` |
 
@@ -384,27 +269,29 @@ Configure `services.allowed` first.
 
 | Skill | What it does | Command shape | Example |
 | --- | --- | --- | --- |
-| `start` | show quick intro | `start` | `start` |
+| `start` | show a short intro | `start` | `start` |
 | `skills` | show groups or expand one group | `skills [group|skill]` | `skills files` |
-| `help` | show one skill in detail | `help <skill>` | `help exec_code` |
+| `help` | show one skill in detail | `help [skill]` | `help exec_code` |
 | `ping` | connectivity check | `ping` | `ping` |
 | `chat` | force free-form LLM chat | `chat <message>` | `chat explain why cpu load matters` |
 
 </details>
 
-Natural-language requests also work when LLM routing is enabled, for example:
+Examples of deterministic commands:
 
 ```text
-можешь показать содержимое файла /tmp/openlight/app.conf?
-покажи логи tailscale
-запусти python код print("hello")
+read /tmp/openlight/app.conf
+replace 8080 with 8081 in /tmp/openlight/app.conf
+logs tailscale
+run /usr/bin/uptime
+note buy milk
 ```
 
-The deeper routing and safety notes live in [ARCHITECTURE.md](./ARCHITECTURE.md).
+Commands can be sent as slash commands, explicit command text, or natural language when LLM routing is enabled.
 
 ## Local Ollama
 
-Local Ollama compose lives in [deployments/docker/ollama-compose.yaml](./deployments/docker/ollama-compose.yaml).
+Local Ollama support is wired through [deployments/docker/ollama-compose.yaml](./deployments/docker/ollama-compose.yaml).
 
 ```bash
 make ollama-up
@@ -413,21 +300,16 @@ curl http://127.0.0.1:11434/api/generate \
   -d '{"model":"qwen2.5:0.5b","prompt":"reply with ok","stream":false}'
 ```
 
-## Build, Test, Deploy
+## Development and Deployment
 
-Build:
-
-```bash
-make build-rpi
-```
-
-Run tests:
+Local development:
 
 ```bash
-GOCACHE=/tmp/go-build GOSUMDB=off go test ./...
+go test ./...
+go run ./cmd/agent -config ./agent.yaml
 ```
 
-Run real Ollama smoke tests:
+Optional Ollama smoke test:
 
 ```bash
 make ollama-up
@@ -436,12 +318,33 @@ make test-e2e-ollama
 make ollama-down
 ```
 
+Raspberry Pi build artifact:
+
+```bash
+make build-rpi
+```
+
+`make build` and `make build-rpi` target `linux/arm64` by default.
+For local development on another host, use `go run` or `go build` directly.
+
 Deploy helpers:
 
 - [Makefile](./Makefile)
+- [scripts/run-local.sh](./scripts/run-local.sh)
 - [scripts/deploy-rpi.sh](./scripts/deploy-rpi.sh)
 - [scripts/deploy-rpi-config.sh](./scripts/deploy-rpi-config.sh)
 - [scripts/deploy-rpi-service.sh](./scripts/deploy-rpi-service.sh)
+
+Common Raspberry Pi commands:
+
+```bash
+make init-rpi-config
+make deploy-rpi-config
+make deploy-rpi
+make deploy-rpi-service
+make deploy-rpi-all
+ssh pi@raspberrypi.local "journalctl -u openlight-agent -f"
+```
 
 Deploy layout:
 
@@ -449,57 +352,22 @@ Deploy layout:
 - binary on Pi: `/home/<user>/openlight-agent`
 - systemd unit: `/etc/systemd/system/openlight-agent.service`
 
-Useful commands:
+## Security Model
 
-```bash
-make build-rpi
-make deploy-rpi-config
-make deploy-rpi
-make deploy-rpi-service
-make deploy-rpi-all
-```
-
-## Extending
-
-`openLight` is designed to grow in two directions:
-
-- new LLM providers through [internal/llm/factory.go](./internal/llm/factory.go)
-- new skills and modules through [internal/skills/module.go](./internal/skills/module.go)
-
-The practical extension guide lives in [ARCHITECTURE.md](./ARCHITECTURE.md).
-
-## Security Notes
-
-- Telegram access is controlled by user/chat whitelist checks
+- Telegram access is limited by user and chat allowlists
 - file access is limited to explicitly whitelisted roots
-- workbench execution is limited to explicitly allowed runtimes, files, and one workspace directory
-- service management is limited to explicitly allowed services
-- there is still no unrestricted shell access in the bot runtime
+- service actions are limited to explicitly allowed systemd units
+- workbench execution is limited to one workspace, allowed runtimes, and exact allowed files
+- the LLM cannot bypass validation or create arbitrary shell access
 
-## Roadmap
+## Extending openLight
 
-### v0.0.1
+`openLight` is designed to stay small, but it is intentionally extensible:
 
-- Telegram bot transport
-- whitelist auth
-- SQLite persistence
-- file list/read/write/replace skills with whitelisted roots
-- restricted workbench skills for temp code and allowlisted file execution
-- system metrics skills
-- service skills
-- notes add/list/delete
-- rule-based routing
-- Ollama chat and structured decision fallback
-- Raspberry Pi deploy scripts and systemd unit
+- add new skill bundles through [internal/skills/module.go](./internal/skills/module.go)
+- add new LLM providers through [internal/llm/factory.go](./internal/llm/factory.go)
 
-### Next
-
-- richer structured decision routing for local LLMs
-- better observability and runtime diagnostics
-- alerts and background checks
-- process and container management skills
-- web search skill
-- richer service and host management skills
+See [ARCHITECTURE.md](./ARCHITECTURE.md) for the runtime model, safety boundaries, and extension points.
 
 ## License
 

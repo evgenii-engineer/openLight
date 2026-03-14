@@ -1,3 +1,6 @@
+# Baseline example configuration.
+# Start here if you want deterministic routing and built-in skills without any LLM dependency.
+
 telegram:
   bot_token: "123456:replace-me"
   api_base_url: "https://api.telegram.org"
