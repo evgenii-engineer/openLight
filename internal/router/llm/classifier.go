@@ -25,6 +25,7 @@ const (
 
 type Options struct {
 	AllowedServices          []string
+	AllowedWorkbenchRuntimes []string
 	ExecuteThreshold         float64
 	MutatingExecuteThreshold float64
 	ClarifyThreshold         float64
@@ -37,6 +38,7 @@ type Classifier struct {
 	registry                 *skills.Registry
 	logger                   *slog.Logger
 	allowedServices          []string
+	allowedWorkbenchRuntimes []string
 	skillCatalog             map[string]skills.Definition
 	executeThreshold         float64
 	mutatingExecuteThreshold float64
@@ -68,6 +70,7 @@ func NewClassifier(provider basellm.Provider, registry *skills.Registry, options
 		registry:                 registry,
 		logger:                   logger,
 		allowedServices:          normalizeList(options.AllowedServices),
+		allowedWorkbenchRuntimes: normalizeList(options.AllowedWorkbenchRuntimes),
 		skillCatalog:             buildSkillCatalog(registry),
 		executeThreshold:         executeThreshold,
 		mutatingExecuteThreshold: mutatingExecuteThreshold,
@@ -123,6 +126,7 @@ func (c *Classifier) Classify(ctx context.Context, text string) (router.Decision
 		availableSkills := c.buildAvailableSkillsForGroup(groupKey)
 		allowedSkills := skillOptionNames(availableSkills)
 		allowedServices := c.allowedServicesForGroup(groupKey)
+		allowedRuntimes := c.allowedRuntimesForGroup(groupKey)
 
 		if c.logger != nil {
 			c.logger.Debug(
@@ -132,6 +136,7 @@ func (c *Classifier) Classify(ctx context.Context, text string) (router.Decision
 				"group", groupKey,
 				"allowed_skills", allowedSkills,
 				"allowed_services", allowedServices,
+				"allowed_runtimes", allowedRuntimes,
 				"available_skills", skillOptionNames(availableSkills),
 				"input_chars", c.skillInputChars,
 				"num_predict", c.skillNumPredict,
@@ -142,6 +147,7 @@ func (c *Classifier) Classify(ctx context.Context, text string) (router.Decision
 		classification, err := c.provider.ClassifySkill(ctx, text, basellm.SkillClassificationRequest{
 			AllowedSkills:   allowedSkills,
 			AllowedServices: allowedServices,
+			AllowedRuntimes: allowedRuntimes,
 			CandidateSkills: availableSkills,
 			InputChars:      c.skillInputChars,
 			NumPredict:      c.skillNumPredict,
@@ -203,6 +209,13 @@ func (c *Classifier) allowedServicesForGroup(groupKey string) []string {
 		return nil
 	}
 	return c.allowedServices
+}
+
+func (c *Classifier) allowedRuntimesForGroup(groupKey string) []string {
+	if groupKey != "workbench" {
+		return nil
+	}
+	return c.allowedWorkbenchRuntimes
 }
 
 func (c *Classifier) resolveRouteDecision(text string, availableGroups []basellm.GroupOption, classification basellm.RouteClassification) (router.Decision, bool, string, bool) {
@@ -450,6 +463,13 @@ func (c *Classifier) routeArguments(text, skillName string, arguments map[string
 			"find":    arguments["find"],
 			"replace": arguments["replace"],
 		}
+	case "exec_code":
+		return map[string]string{
+			"runtime": strings.TrimSpace(arguments["runtime"]),
+			"code":    arguments["code"],
+		}
+	case "exec_file":
+		return map[string]string{"path": strings.TrimSpace(arguments["path"])}
 	case "service_status", "service_logs":
 		service := strings.TrimSpace(arguments["service"])
 		if service == "" && len(c.allowedServices) == 1 {
@@ -486,6 +506,17 @@ func (c *Classifier) requiredArgumentQuestion(skillName string, arguments map[st
 		}
 		if strings.TrimSpace(arguments["find"]) == "" {
 			return "What text should I replace?"
+		}
+	case "exec_code":
+		if strings.TrimSpace(arguments["runtime"]) == "" {
+			return "Which runtime should I use?"
+		}
+		if strings.TrimSpace(arguments["code"]) == "" {
+			return "What code should I run?"
+		}
+	case "exec_file":
+		if strings.TrimSpace(arguments["path"]) == "" {
+			return "Which file should I run?"
 		}
 	case "service_restart":
 		if strings.TrimSpace(arguments["service"]) == "" {
@@ -565,6 +596,17 @@ func clarificationQuestionForSkill(skillName string, arguments map[string]string
 			return "Do you want me to replace text in " + path + "?"
 		}
 		return "Which file should I edit?"
+	case "exec_code":
+		runtime := strings.TrimSpace(arguments["runtime"])
+		if runtime == "" {
+			return "Which runtime should I use?"
+		}
+		return "Do you want me to run that " + runtime + " code?"
+	case "exec_file":
+		if path := strings.TrimSpace(arguments["path"]); path != "" {
+			return "Do you want me to run " + path + "?"
+		}
+		return "Which file should I run?"
 	case "service_restart":
 		if service := strings.TrimSpace(arguments["service"]); service != "" {
 			return "Do you want me to restart " + service + "?"
@@ -612,6 +654,8 @@ func clarificationQuestionForGroup(groupKey, provided string) string {
 	switch groupKey {
 	case "files":
 		return "Do you want to read, list, write, or replace a file?"
+	case "workbench":
+		return "Do you want to run code, run an allowed file, or clean the workspace?"
 	case "system":
 		return "Do you want something from system metrics or host info?"
 	case "services":
@@ -621,7 +665,7 @@ func clarificationQuestionForGroup(groupKey, provided string) string {
 	case "core":
 		return "Do you want help, skills list, start, or ping?"
 	case "", "other":
-		return "Which kind of tool do you want: files, system, services, notes, or core?"
+		return "Which kind of tool do you want: files, workbench, system, services, notes, or core?"
 	default:
 		return "Which tool group do you want?"
 	}
@@ -710,6 +754,26 @@ func normalizeArguments(arguments map[string]string) map[string]string {
 			result["content"] = result["body"]
 		case result["value"] != "":
 			result["content"] = result["value"]
+		}
+	}
+
+	if runtime := strings.TrimSpace(result["runtime"]); runtime == "" {
+		switch {
+		case strings.TrimSpace(result["language"]) != "":
+			result["runtime"] = strings.TrimSpace(result["language"])
+		case strings.TrimSpace(result["interpreter"]) != "":
+			result["runtime"] = strings.TrimSpace(result["interpreter"])
+		}
+	}
+
+	if code := result["code"]; code == "" {
+		switch {
+		case result["source"] != "":
+			result["code"] = result["source"]
+		case result["source_code"] != "":
+			result["code"] = result["source_code"]
+		case result["snippet"] != "":
+			result["code"] = result["snippet"]
 		}
 	}
 

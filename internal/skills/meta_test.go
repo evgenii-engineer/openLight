@@ -24,22 +24,73 @@ func TestSkillsSkillGroupsOutput(t *testing.T) {
 	}
 
 	text := result.Text
-	for _, section := range []string{"Chat", "Notes", "Services", "System", "Core"} {
-		if !strings.Contains(text, "\n"+section+"\n") {
+	if !strings.Contains(text, "Available skill groups:") {
+		t.Fatalf("unexpected summary: %q", text)
+	}
+	for _, section := range []string{
+		"- Chat: 1 skill(s). Use skills chat",
+		"- Notes: 3 skill(s). Use skills notes",
+		"- Services: 1 skill(s). Use skills services",
+		"- System: 1 skill(s). Use skills system",
+		"- Core: 1 skill(s). Use skills core",
+	} {
+		if !strings.Contains(text, section) {
 			t.Fatalf("expected section %q in output, got:\n%s", section, text)
 		}
 	}
+}
 
-	chatIdx := strings.Index(text, "\nChat\n")
-	notesIdx := strings.Index(text, "\nNotes\n")
-	servicesIdx := strings.Index(text, "\nServices\n")
-	systemIdx := strings.Index(text, "\nSystem\n")
-	coreIdx := strings.Index(text, "\nCore\n")
-	if !(chatIdx < notesIdx && notesIdx < servicesIdx && servicesIdx < systemIdx && systemIdx < coreIdx) {
-		t.Fatalf("unexpected section order in output:\n%s", text)
+func TestSkillsSkillExpandsGroup(t *testing.T) {
+	t.Parallel()
+
+	registry := NewRegistry()
+	registry.MustRegister(testSkill{definition: Definition{Name: "file_list", Group: GroupFiles, Description: "list", Usage: "/files [path]"}})
+	registry.MustRegister(testSkill{definition: Definition{Name: "file_read", Group: GroupFiles, Description: "read", Usage: "/read <path>"}})
+
+	result, err := NewSkillsSkill(registry).Execute(context.Background(), Input{
+		Args: map[string]string{"topic": "files"},
+	})
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
 	}
 
-	if !strings.Contains(text, "- note_delete: delete") {
-		t.Fatalf("expected note_delete entry in output, got:\n%s", text)
+	text := result.Text
+	if !strings.Contains(text, "Files: Read, list, write, and replace text inside whitelisted paths.") {
+		t.Fatalf("unexpected group details: %q", text)
+	}
+	if !strings.Contains(text, "file_list: list") || !strings.Contains(text, "Usage: files [path]") {
+		t.Fatalf("expected file_list details, got:\n%s", text)
+	}
+	if !strings.Contains(text, "file_read: read") || !strings.Contains(text, "Usage: read <path>") {
+		t.Fatalf("expected file_read details, got:\n%s", text)
+	}
+}
+
+func TestSkillsSkillCanShowSingleSkill(t *testing.T) {
+	t.Parallel()
+
+	registry := NewRegistry()
+	registry.MustRegister(testSkill{definition: Definition{
+		Name:        "file_read",
+		Group:       GroupFiles,
+		Description: "Read a file.",
+		Usage:       "/read <path>",
+		Aliases:     []string{"read file"},
+		Examples:    []string{"read /etc/hostname"},
+	}})
+
+	result, err := NewSkillsSkill(registry).Execute(context.Background(), Input{
+		Args: map[string]string{"topic": "file_read"},
+	})
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+
+	text := result.Text
+	if !strings.Contains(text, "file_read: Read a file.") {
+		t.Fatalf("unexpected skill details: %q", text)
+	}
+	if !strings.Contains(text, "Aliases: read file") || !strings.Contains(text, "Examples: read /etc/hostname") {
+		t.Fatalf("expected aliases/examples, got:\n%s", text)
 	}
 }

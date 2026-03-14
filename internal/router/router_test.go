@@ -136,6 +136,24 @@ func TestRouterExplicitNoteAddCommand(t *testing.T) {
 	}
 }
 
+func TestRouterSkillsCommandAcceptsTopic(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "skills"})
+
+	decision, err := router.New(registry, nil).Route(context.Background(), "/skills files")
+	if err != nil {
+		t.Fatalf("route returned error: %v", err)
+	}
+	if decision.Mode != router.ModeSlash || decision.SkillName != "skills" {
+		t.Fatalf("unexpected decision: %#v", decision)
+	}
+	if decision.Args["topic"] != "files" {
+		t.Fatalf("unexpected skills args: %#v", decision.Args)
+	}
+}
+
 func TestRouterRuleBasedRussianNoteAddParsing(t *testing.T) {
 	t.Parallel()
 
@@ -241,6 +259,57 @@ func TestRouterExplicitFileReplaceCommand(t *testing.T) {
 	}
 	if decision.Args["path"] != "./config.yaml" || decision.Args["find"] != "8080" || decision.Args["replace"] != "8081" {
 		t.Fatalf("unexpected file args: %#v", decision.Args)
+	}
+}
+
+func TestRouterRunCommandRoutesExecCode(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "exec_code"})
+
+	decision, err := router.New(registry, nil).Route(context.Background(), "run python: print('hello')")
+	if err != nil {
+		t.Fatalf("route returned error: %v", err)
+	}
+	if decision.Mode != router.ModeExplicit || decision.SkillName != "exec_code" {
+		t.Fatalf("unexpected decision: %#v", decision)
+	}
+	if decision.Args["runtime"] != "python" || decision.Args["code"] != "print('hello')" {
+		t.Fatalf("unexpected workbench args: %#v", decision.Args)
+	}
+}
+
+func TestRouterRunCommandRoutesExecFile(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "exec_file"})
+
+	decision, err := router.New(registry, nil).Route(context.Background(), "run /usr/bin/uptime")
+	if err != nil {
+		t.Fatalf("route returned error: %v", err)
+	}
+	if decision.Mode != router.ModeExplicit || decision.SkillName != "exec_file" {
+		t.Fatalf("unexpected decision: %#v", decision)
+	}
+	if decision.Args["path"] != "/usr/bin/uptime" {
+		t.Fatalf("unexpected workbench args: %#v", decision.Args)
+	}
+}
+
+func TestRouterWorkspaceCleanCommand(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "workspace_clean"})
+
+	decision, err := router.New(registry, nil).Route(context.Background(), "workspace_clean")
+	if err != nil {
+		t.Fatalf("route returned error: %v", err)
+	}
+	if decision.Mode != router.ModeExplicit || decision.SkillName != "workspace_clean" {
+		t.Fatalf("unexpected decision: %#v", decision)
 	}
 }
 

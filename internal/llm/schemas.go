@@ -68,6 +68,8 @@ func skillResponseSchema(allowedSkills []string) map[string]any {
 					"content": map[string]any{"type": "string"},
 					"find":    map[string]any{"type": "string"},
 					"replace": map[string]any{"type": "string"},
+					"runtime": map[string]any{"type": "string"},
+					"code":    map[string]any{"type": "string"},
 				},
 				"required": []string{
 					"service",
@@ -77,6 +79,8 @@ func skillResponseSchema(allowedSkills []string) map[string]any {
 					"content",
 					"find",
 					"replace",
+					"runtime",
+					"code",
 				},
 			},
 			"confidence": map[string]any{

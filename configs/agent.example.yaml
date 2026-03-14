@@ -26,6 +26,16 @@ files:
   max_read_bytes: 4096
   list_limit: 40
 
+workbench:
+  enabled: false
+  workspace_dir: "/tmp/openlight"
+  allowed_runtimes:
+    - python
+    - sh
+  allowed_files:
+    - /usr/bin/uptime
+  max_output_bytes: 8192
+
 services:
   allowed:
     - tailscale

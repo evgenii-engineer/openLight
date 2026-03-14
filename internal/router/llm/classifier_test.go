@@ -265,6 +265,43 @@ func TestClassifierRoutesFileReadWithPath(t *testing.T) {
 	}
 }
 
+func TestClassifierPassesWorkbenchRuntimesAndRoutesExecCode(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "exec_code", group: skills.GroupWorkbench, mutating: true})
+
+	provider := &stubProvider{
+		routeClassification: basellm.RouteClassification{
+			Intent:     "workbench",
+			Confidence: 0.98,
+		},
+		skillClassification: basellm.Classification{
+			Skill:      "exec_code",
+			Arguments:  map[string]string{"runtime": "python", "code": "print('hello')"},
+			Confidence: 0.98,
+		},
+	}
+
+	classifier := NewClassifier(provider, registry, Options{
+		AllowedWorkbenchRuntimes: []string{"python"},
+	}, nil)
+
+	decision, ok, err := classifier.Classify(context.Background(), "run python: print('hello')")
+	if err != nil {
+		t.Fatalf("Classify returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected classifier match")
+	}
+	if decision.SkillName != "exec_code" || decision.Args["runtime"] != "python" || decision.Args["code"] != "print('hello')" {
+		t.Fatalf("unexpected decision: %#v", decision)
+	}
+	if !slices.Equal(provider.skillRequest.AllowedRuntimes, []string{"python"}) {
+		t.Fatalf("expected allowed runtimes for workbench group, got %#v", provider.skillRequest.AllowedRuntimes)
+	}
+}
+
 func TestClassifierPassesVisibleSkillsToLLMWithoutHeuristicShortlist(t *testing.T) {
 	t.Parallel()
 

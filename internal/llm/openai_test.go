@@ -125,7 +125,7 @@ func TestOpenAIProviderClassifySkill(t *testing.T) {
 				t.Fatalf("unexpected arguments schema: %#v", properties["arguments"])
 			}
 			required, ok := arguments["required"].([]any)
-			if !ok || len(required) != 7 {
+			if !ok || len(required) != 9 {
 				t.Fatalf("unexpected arguments required list: %#v", arguments["required"])
 			}
 
@@ -136,7 +136,7 @@ func TestOpenAIProviderClassifySkill(t *testing.T) {
 						"content": []map[string]any{
 							{
 								"type": "output_text",
-								"text": `{"skill":"service_restart","arguments":{"service":"tailscale","text":"","id":""},"confidence":0.93,"needs_clarification":false,"clarification_question":""}`,
+								"text": `{"skill":"service_restart","arguments":{"service":"tailscale","text":"","id":"","path":"","content":"","find":"","replace":"","runtime":"","code":""},"confidence":0.93,"needs_clarification":false,"clarification_question":""}`,
 							},
 						},
 					},

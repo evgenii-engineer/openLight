@@ -365,7 +365,7 @@ func userMessageForError(err error) string {
 	case errors.Is(err, skills.ErrNotFound):
 		return "not found"
 	case errors.Is(err, skills.ErrAccessDenied):
-		return "service not allowed"
+		return "access denied"
 	case errors.Is(err, skills.ErrUnavailable):
 		return "unavailable"
 	case errors.Is(err, context.DeadlineExceeded):

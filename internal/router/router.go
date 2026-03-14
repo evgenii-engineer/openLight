@@ -184,7 +184,7 @@ func routeCommand(command, argsText string, mode Mode) (Decision, bool) {
 	case "ping":
 		return routeNoArgCommand(mode, "ping", argsText)
 	case "skills":
-		return routeNoArgCommand(mode, "skills", argsText)
+		return Decision{Mode: mode, SkillName: "skills", Args: map[string]string{"topic": argsText}}, true
 	case "status":
 		if argsText == "" {
 			return Decision{Mode: mode, SkillName: "status", Args: map[string]string{}}, true
@@ -238,6 +238,26 @@ func routeCommand(command, argsText string, mode Mode) (Decision, bool) {
 			return Decision{}, false
 		}
 		return Decision{Mode: mode, SkillName: "file_replace", Args: args}, true
+	case "run":
+		skillName, args, ok := parseWorkbenchRunArgs(argsText)
+		if !ok {
+			return Decision{}, false
+		}
+		return Decision{Mode: mode, SkillName: skillName, Args: args}, true
+	case "exec code", "exec_code", "run code":
+		args, ok := parseExecCodeArgs(argsText)
+		if !ok {
+			return Decision{}, false
+		}
+		return Decision{Mode: mode, SkillName: "exec_code", Args: args}, true
+	case "exec file", "exec_file", "run file":
+		args, ok := parseExecFileArgs(argsText)
+		if !ok {
+			return Decision{}, false
+		}
+		return Decision{Mode: mode, SkillName: "exec_file", Args: args}, true
+	case "workspace clean", "workspace_clean", "clean workspace":
+		return routeNoArgCommand(mode, "workspace_clean", argsText)
 	case "chat", "ask":
 		return Decision{Mode: mode, SkillName: "chat", Args: map[string]string{"text": argsText}}, true
 	default:
@@ -358,6 +378,70 @@ func parseFileReplaceArgs(argsText string) (map[string]string, bool) {
 	}, true
 }
 
+func parseWorkbenchRunArgs(argsText string) (string, map[string]string, bool) {
+	if args, ok := parseExecCodeArgs(argsText); ok {
+		return "exec_code", args, true
+	}
+	if args, ok := parseExecFileArgs(argsText); ok {
+		return "exec_file", args, true
+	}
+	return "", nil, false
+}
+
+func parseExecCodeArgs(argsText string) (map[string]string, bool) {
+	argsText = strings.TrimSpace(argsText)
+	if argsText == "" {
+		return nil, false
+	}
+
+	if strings.Contains(argsText, "::") {
+		parts := strings.SplitN(argsText, "::", 2)
+		runtime := strings.TrimSpace(parts[0])
+		if !looksLikeRuntime(runtime) {
+			return nil, false
+		}
+		return map[string]string{
+			"runtime": runtime,
+			"code":    trimSingleLeadingSpace(parts[1]),
+		}, true
+	}
+
+	lines := strings.SplitN(argsText, "\n", 2)
+	if len(lines) == 2 {
+		header := strings.TrimSpace(lines[0])
+		header = strings.TrimSuffix(header, ":")
+		if looksLikeRuntime(header) {
+			return map[string]string{
+				"runtime": header,
+				"code":    lines[1],
+			}, true
+		}
+	}
+
+	idx := strings.Index(argsText, ":")
+	if idx <= 0 {
+		return nil, false
+	}
+
+	runtime := strings.TrimSpace(argsText[:idx])
+	if !looksLikeRuntime(runtime) {
+		return nil, false
+	}
+
+	return map[string]string{
+		"runtime": runtime,
+		"code":    trimSingleLeadingSpace(argsText[idx+1:]),
+	}, true
+}
+
+func parseExecFileArgs(argsText string) (map[string]string, bool) {
+	path := strings.TrimSpace(argsText)
+	if !looksLikePath(path) {
+		return nil, false
+	}
+	return map[string]string{"path": path}, true
+}
+
 func trimSingleLeadingSpace(value string) string {
 	if strings.HasPrefix(value, " ") {
 		return value[1:]
@@ -385,4 +469,13 @@ func looksLikePath(value string) bool {
 	}
 
 	return filepath.Ext(value) != ""
+}
+
+func looksLikeRuntime(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "python", "python3", "sh", "shell", "bash", "node", "javascript", "js":
+		return true
+	default:
+		return false
+	}
 }

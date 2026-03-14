@@ -114,3 +114,43 @@ func TestBuildRegistryRegistersChatModuleWhenLLMEnabled(t *testing.T) {
 		t.Fatal("expected chat skill to be registered when llm provider is configured")
 	}
 }
+
+func TestBuildRegistryRegistersWorkbenchModuleWhenEnabled(t *testing.T) {
+	t.Parallel()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	registry, err := buildRegistry(config.Config{
+		Files: config.FilesConfig{
+			MaxReadBytes: 4096,
+			ListLimit:    40,
+		},
+		Workbench: config.WorkbenchConfig{
+			Enabled:         true,
+			WorkspaceDir:    t.TempDir(),
+			AllowedRuntimes: []string{"sh"},
+			AllowedFiles:    []string{"/tmp/openlight-script.sh"},
+			MaxOutputBytes:  4096,
+		},
+		Services: config.ServicesConfig{
+			Allowed:  []string{"tailscale"},
+			LogLines: 50,
+		},
+		Notes: config.NotesConfig{
+			ListLimit: 10,
+		},
+		Chat: config.ChatConfig{
+			HistoryLimit:     6,
+			HistoryChars:     200,
+			MaxResponseChars: 100,
+		},
+	}, nil, logger, nil)
+	if err != nil {
+		t.Fatalf("buildRegistry returned error: %v", err)
+	}
+
+	for _, name := range []string{"exec_code", "exec_file", "workspace_clean"} {
+		if _, ok := registry.Get(name); !ok {
+			t.Fatalf("expected workbench skill %q to be registered", name)
+		}
+	}
+}

@@ -48,6 +48,7 @@ type RouteClassificationRequest struct {
 type SkillClassificationRequest struct {
 	AllowedSkills   []string
 	AllowedServices []string
+	AllowedRuntimes []string
 	CandidateSkills []SkillOption
 	InputChars      int
 	NumPredict      int
@@ -107,6 +108,7 @@ func (p *HTTPProvider) ClassifySkill(ctx context.Context, text string, request S
 		"text":             text,
 		"skills":           request.AllowedSkills,
 		"allowed_services": request.AllowedServices,
+		"allowed_runtimes": request.AllowedRuntimes,
 		"candidate_skills": request.CandidateSkills,
 		"input_chars":      request.InputChars,
 		"num_predict":      request.NumPredict,

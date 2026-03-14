@@ -58,6 +58,7 @@ This makes it a good fit for:
 ## Highlights
 
 - `files` skills: `file_list`, `file_read`, `file_write`, `file_replace`
+- `workbench` skills: `exec_code`, `exec_file`, `workspace_clean`
 - `system` skills: `status`, `cpu`, `memory`, `disk`, `uptime`, `hostname`, `ip`, `temperature`
 - `services` skills: `service_list`, `service_status`, `service_logs`, `service_restart`
 - `notes` skills: `note_add`, `note_list`, `note_delete`
@@ -97,6 +98,15 @@ Bot: Saved note #3
 ```
 
 ```text
+You: run python:
+print("hello")
+Bot: Temporary code: /tmp/openlight/run-abc123.py
+Runtime: python
+Output:
+hello
+```
+
+```text
 You: привет, как дела
 Bot: Привет. Чем помочь?
 ```
@@ -131,10 +141,10 @@ What the LLM does here:
 
 What the LLM does not do:
 
-- execute commands
+- execute arbitrary shell commands directly
 - plan long tool chains
 - bypass validation
-- access arbitrary shell tools
+- access arbitrary shell tools outside registered skills
 
 For the full breakdown, see [ARCHITECTURE.md](./ARCHITECTURE.md).
 
@@ -152,6 +162,7 @@ make init-rpi-config
 - `auth.allowed_user_ids`
 - `auth.allowed_chat_ids`
 - `files.allowed` with the safe roots you want the bot to touch
+- `workbench.*` if you want restricted code execution or allowed script runs
 
 3. Pick an LLM provider:
 
@@ -229,6 +240,20 @@ files:
   list_limit: 40
 ```
 
+Restricted workbench example:
+
+```yaml
+workbench:
+  enabled: true
+  workspace_dir: "/tmp/openlight"
+  allowed_runtimes:
+    - python
+    - sh
+  allowed_files:
+    - /usr/bin/uptime
+  max_output_bytes: 8192
+```
+
 ## Telegram Modes
 
 `openLight` supports:
@@ -253,35 +278,129 @@ telegram:
     drop_pending_updates: false
 ```
 
-## Built-In Skills
+## Skill Guide
+
+You can call explicit skills in three ways:
+
+- plain command, for example `read /tmp/openlight/app.conf`
+- slash command, for example `/read /tmp/openlight/app.conf`
+- natural language when LLM routing is enabled
+
+At a glance:
 
 | Group | Skills |
 | --- | --- |
 | `files` | `file_list`, `file_read`, `file_write`, `file_replace` |
-| `system` | `status`, `cpu`, `memory`, `disk`, `uptime`, `hostname`, `ip`, `temperature` |
+| `workbench` | `exec_code`, `exec_file`, `workspace_clean` |
 | `services` | `service_list`, `service_status`, `service_logs`, `service_restart` |
+| `system` | `status`, `cpu`, `memory`, `disk`, `uptime`, `hostname`, `ip`, `temperature` |
 | `notes` | `note_add`, `note_list`, `note_delete` |
 | `core` | `start`, `help`, `skills`, `ping` |
-| `chat` | free-form LLM conversation |
+| `chat` | `chat` |
 
-## File Skills
+<details>
+<summary><strong>Files</strong> — read, list, write, and replace text in whitelisted paths</summary>
 
-Configure `files.allowed`, then use the built-in file commands:
+Configure `files.allowed` first.
 
-```text
-/files /tmp/openlight
-read /tmp/openlight/app.conf
-write /tmp/openlight/hello.txt :: hello world
-replace 8080 with 8081 in /tmp/openlight/app.conf
-```
+| Skill | What it does | Command shape | Example |
+| --- | --- | --- | --- |
+| `file_list` | list one allowed directory or show allowed roots | `files [path]` | `files /tmp/openlight` |
+| `file_read` | read a text file | `read <path>` | `read /tmp/openlight/app.conf` |
+| `file_write` | create or overwrite a text file | `write <path> :: <content>` | `write /tmp/openlight/hello.txt :: hello world` |
+| `file_replace` | replace text inside a file | `replace <old> with <new> in <path>` | `replace 8080 with 8081 in /tmp/openlight/app.conf` |
+
+Notes:
+
+- file access stays inside `files.allowed`
+- symlink-resolved paths must still remain inside an allowed root
+- reads are capped by `files.max_read_bytes`
+
+</details>
+
+<details>
+<summary><strong>Workbench</strong> — run temporary code or exact allowlisted executables</summary>
+
+Configure `workbench.enabled: true` first.
+
+| Skill | What it does | Command shape | Example |
+| --- | --- | --- | --- |
+| `exec_code` | write temporary code into the workspace and run it | `exec_code <runtime> :: <code>` or `run <runtime>:` | `exec_code python :: print("hello")` |
+| `exec_file` | run one exact allowlisted file | `exec_file <path>` or `run <path>` | `run /usr/bin/uptime` |
+| `workspace_clean` | remove temporary files from the workbench workspace | `workspace_clean` | `workspace_clean` |
+
+Notes:
+
+- temporary code is written only inside `workbench.workspace_dir`
+- only runtimes from `workbench.allowed_runtimes` can be used for `exec_code`
+- `exec_file` can run only exact paths from `workbench.allowed_files`
+- stdout and stderr are capped by `workbench.max_output_bytes`
+
+</details>
+
+<details>
+<summary><strong>Services</strong> — inspect, log, and restart explicitly allowed services</summary>
+
+Configure `services.allowed` first.
+
+| Skill | What it does | Command shape | Example |
+| --- | --- | --- | --- |
+| `service_list` | list allowed services and current state | `services` | `services` |
+| `service_status` | show one service status | `service [name]` or `status [name]` | `service tailscale` |
+| `service_logs` | show recent service logs | `logs [name]` | `logs tailscale` |
+| `service_restart` | restart one allowed service | `restart <name>` | `restart tailscale` |
+
+</details>
+
+<details>
+<summary><strong>System</strong> — host overview and low-level machine metrics</summary>
+
+| Skill | What it does | Command shape | Example |
+| --- | --- | --- | --- |
+| `status` | compact host overview | `status` | `status` |
+| `cpu` | CPU usage | `cpu` | `cpu` |
+| `memory` | RAM usage | `memory` | `memory` |
+| `disk` | root filesystem usage | `disk` | `disk` |
+| `uptime` | system uptime | `uptime` | `uptime` |
+| `hostname` | hostname | `hostname` | `hostname` |
+| `ip` | local IPv4 addresses | `ip` | `ip` |
+| `temperature` | device temperature when available | `temperature` | `temperature` |
+
+</details>
+
+<details>
+<summary><strong>Notes</strong> — small SQLite-backed memory</summary>
+
+| Skill | What it does | Command shape | Example |
+| --- | --- | --- | --- |
+| `note_add` | save a short note | `note <text>` | `note buy milk` |
+| `note_list` | list recent notes | `notes` | `notes` |
+| `note_delete` | delete a note by id | `note_delete <id>` | `note_delete 3` |
+
+</details>
+
+<details>
+<summary><strong>Core And Chat</strong> — discovery, help, healthcheck, and forced LLM chat</summary>
+
+| Skill | What it does | Command shape | Example |
+| --- | --- | --- | --- |
+| `start` | show quick intro | `start` | `start` |
+| `skills` | show groups or expand one group | `skills [group|skill]` | `skills files` |
+| `help` | show one skill in detail | `help <skill>` | `help exec_code` |
+| `ping` | connectivity check | `ping` | `ping` |
+| `chat` | force free-form LLM chat | `chat <message>` | `chat explain why cpu load matters` |
+
+</details>
 
 Natural-language requests also work when LLM routing is enabled, for example:
 
 ```text
 можешь показать содержимое файла /tmp/openlight/app.conf?
+покажи логи tailscale
+запусти python код print("hello")
 ```
 
-Access is still limited to whitelisted roots, symlink-resolved paths, and `files.max_read_bytes`. The detailed routing and safety notes live in [ARCHITECTURE.md](./ARCHITECTURE.md).
+The deeper routing and safety notes live in [ARCHITECTURE.md](./ARCHITECTURE.md).
 
 ## Local Ollama
 
@@ -353,8 +472,9 @@ The practical extension guide lives in [ARCHITECTURE.md](./ARCHITECTURE.md).
 
 - Telegram access is controlled by user/chat whitelist checks
 - file access is limited to explicitly whitelisted roots
+- workbench execution is limited to explicitly allowed runtimes, files, and one workspace directory
 - service management is limited to explicitly allowed services
-- there is no general shell execution path in the bot runtime
+- there is still no unrestricted shell access in the bot runtime
 
 ## Roadmap
 
@@ -364,6 +484,7 @@ The practical extension guide lives in [ARCHITECTURE.md](./ARCHITECTURE.md).
 - whitelist auth
 - SQLite persistence
 - file list/read/write/replace skills with whitelisted roots
+- restricted workbench skills for temp code and allowlisted file execution
 - system metrics skills
 - service skills
 - notes add/list/delete

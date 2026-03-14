@@ -23,6 +23,7 @@ import (
 	"openlight/internal/skills/notes"
 	serviceskills "openlight/internal/skills/services"
 	systemskills "openlight/internal/skills/system"
+	workbenchskills "openlight/internal/skills/workbench"
 	"openlight/internal/storage"
 	"openlight/internal/storage/sqlite"
 	"openlight/internal/telegram"
@@ -71,6 +72,7 @@ func run() error {
 	if llmProvider != nil {
 		classifier = routerllm.NewClassifier(llmProvider, registry, routerllm.Options{
 			AllowedServices:          cfg.Services.Allowed,
+			AllowedWorkbenchRuntimes: cfg.Workbench.AllowedRuntimes,
 			ExecuteThreshold:         cfg.LLM.ExecuteThreshold,
 			MutatingExecuteThreshold: cfg.LLM.MutatingExecuteThreshold,
 			ClarifyThreshold:         cfg.LLM.ClarifyThreshold,
@@ -131,6 +133,18 @@ func buildRegistry(cfg config.Config, repository storage.Repository, logger *slo
 		fileskills.NewModule(fileManager),
 		serviceskills.NewModule(serviceManager, cfg.Services.LogLines),
 		notes.NewModule(repository, cfg.Notes.ListLimit),
+	}
+	if cfg.Workbench.Enabled {
+		workbenchManager, err := workbenchskills.NewLocalManager(
+			cfg.Workbench.WorkspaceDir,
+			cfg.Workbench.AllowedRuntimes,
+			cfg.Workbench.AllowedFiles,
+			cfg.Workbench.MaxOutputBytes,
+		)
+		if err != nil {
+			return nil, err
+		}
+		modules = append(modules, workbenchskills.NewModule(workbenchManager))
 	}
 	if llmProvider != nil {
 		modules = append(modules, chatskills.NewModule(llmProvider, repository, chatskills.Options{

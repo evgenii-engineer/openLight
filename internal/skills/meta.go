@@ -25,7 +25,7 @@ func (StartSkill) Definition() Definition {
 
 func (StartSkill) Execute(_ context.Context, _ Input) (Result, error) {
 	return Result{
-		Text: "openLight is ready.\nYou can write normally and I will answer through the local LLM when chat mode is enabled.\nExamples: explain memory usage; show jellyfin logs; read /etc/hostname.\nUse /skills for built-in tools or /help for examples.",
+		Text: "openLight is ready.\nYou can write normally and I will answer through the local LLM when chat mode is enabled.\nExamples: explain memory usage; show jellyfin logs; read /etc/hostname; run python: print(\"hello\").\nUse skills for built-in tools or help for examples.",
 	}, nil
 }
 
@@ -61,32 +61,28 @@ func (s *SkillsSkill) Definition() Definition {
 	return Definition{
 		Name:        "skills",
 		Group:       GroupCore,
-		Description: "List available skills.",
+		Description: "List skill groups or expand one group.",
 		Aliases:     []string{"list skills", "what can you do"},
-		Usage:       "/skills",
+		Usage:       "/skills [group|skill]",
 	}
 }
 
-func (s *SkillsSkill) Execute(_ context.Context, _ Input) (Result, error) {
-	lines := []string{"Available skills:"}
-	for _, group := range s.registry.ListGroups() {
-		definitions := s.registry.ListByGroup(group.Key)
-		sort.SliceStable(definitions, func(i, j int) bool {
-			left := skillOrder(definitions[i].Name)
-			right := skillOrder(definitions[j].Name)
-			if left != right {
-				return left < right
-			}
-			return definitions[i].Name < definitions[j].Name
-		})
-
-		lines = append(lines, "", group.Title)
-		for _, definition := range definitions {
-			lines = append(lines, fmt.Sprintf("- %s: %s", definition.Name, definition.Description))
-		}
+func (s *SkillsSkill) Execute(_ context.Context, input Input) (Result, error) {
+	topic := strings.TrimSpace(input.Args["topic"])
+	if topic == "" {
+		return Result{Text: s.renderGroupSummary()}, nil
 	}
 
-	return Result{Text: strings.Join(lines, "\n")}, nil
+	if group, definitions, ok := s.resolveGroup(topic); ok {
+		return Result{Text: renderGroupDetails(group, definitions)}, nil
+	}
+
+	skill, ok := s.registry.ResolveIdentifier(topic)
+	if !ok {
+		return Result{}, fmt.Errorf("%w: %s", ErrSkillNotFound, topic)
+	}
+
+	return Result{Text: renderSkillDetails(s.definitionForSkill(skill))}, nil
 }
 
 type HelpSkill struct {
@@ -111,7 +107,7 @@ func (h *HelpSkill) Execute(_ context.Context, input Input) (Result, error) {
 	topic := strings.TrimSpace(input.Args["topic"])
 	if topic == "" {
 		return Result{
-			Text: "You can talk to me normally.\nExamples: explain memory pressure; how much disk space is left; покажи логи tailscale; read /etc/hostname.\nUse /chat <message> to force LLM chat.\nUse /skills for built-in tools or /help <skill> for a specific skill.",
+			Text: "You can talk to me normally.\nExamples: explain memory pressure; how much disk space is left; покажи логи tailscale; read /etc/hostname; run /usr/bin/uptime.\nUse chat <message> to force LLM chat.\nUse skills for built-in tools or help <skill> for a specific skill.",
 		}, nil
 	}
 
@@ -124,20 +120,95 @@ func (h *HelpSkill) Execute(_ context.Context, input Input) (Result, error) {
 	if !ok {
 		definition = skill.Definition()
 	}
+	return Result{Text: renderSkillDetails(definition)}, nil
+}
+
+func (s *SkillsSkill) renderGroupSummary() string {
+	lines := []string{"Available skill groups:"}
+	for _, group := range s.registry.ListGroups() {
+		lines = append(lines, fmt.Sprintf("- %s: %d skill(s). Use skills %s", group.Title, len(s.registry.ListByGroup(group.Key)), group.Key))
+	}
+	lines = append(lines, "", "Use skills <group> to expand one group or help <skill> for a specific command.")
+	return strings.Join(lines, "\n")
+}
+
+func (s *SkillsSkill) resolveGroup(topic string) (Group, []Definition, bool) {
+	normalized := normalizeGroupTopic(topic)
+	if normalized == "" {
+		return Group{}, nil, false
+	}
+
+	for _, group := range s.registry.ListGroups() {
+		if normalizeGroupTopic(group.Key) == normalized || normalizeGroupTopic(group.Title) == normalized {
+			return group, s.registry.ListByGroup(group.Key), true
+		}
+	}
+
+	return Group{}, nil, false
+}
+
+func (s *SkillsSkill) definitionForSkill(skill Skill) Definition {
+	definition, ok := s.registry.Definition(skill.Definition().Name)
+	if !ok {
+		return skill.Definition()
+	}
+	return definition
+}
+
+func renderGroupDetails(group Group, definitions []Definition) string {
+	sort.SliceStable(definitions, func(i, j int) bool {
+		left := skillOrder(definitions[i].Name)
+		right := skillOrder(definitions[j].Name)
+		if left != right {
+			return left < right
+		}
+		return definitions[i].Name < definitions[j].Name
+	})
+
+	lines := []string{
+		fmt.Sprintf("%s: %s", group.Title, group.Description),
+	}
+	for _, definition := range definitions {
+		lines = append(lines, "", renderSkillDetails(definition))
+	}
+	lines = append(lines, "", "Use help <skill> for aliases and extra details.")
+	return strings.Join(lines, "\n")
+}
+
+func renderSkillDetails(definition Definition) string {
 	lines := []string{
 		fmt.Sprintf("%s: %s", definition.Name, definition.Description),
 	}
 	if definition.Usage != "" {
-		lines = append(lines, "Usage: "+definition.Usage)
+		lines = append(lines, "Usage: "+displayCommandText(definition.Usage))
 	}
 	if len(definition.Aliases) > 0 {
 		lines = append(lines, "Aliases: "+strings.Join(definition.Aliases, ", "))
 	}
 	if len(definition.Examples) > 0 {
-		lines = append(lines, "Examples: "+strings.Join(definition.Examples, "; "))
+		lines = append(lines, "Examples: "+strings.Join(displayExamples(definition.Examples), "; "))
 	}
+	return strings.Join(lines, "\n")
+}
 
-	return Result{Text: strings.Join(lines, "\n")}, nil
+func normalizeGroupTopic(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.ReplaceAll(value, "_", " ")
+	value = strings.ReplaceAll(value, "-", " ")
+	return strings.Join(strings.Fields(value), " ")
+}
+
+func displayExamples(examples []string) []string {
+	result := make([]string, 0, len(examples))
+	for _, example := range examples {
+		result = append(result, displayCommandText(example))
+	}
+	return result
+}
+
+func displayCommandText(value string) string {
+	value = strings.TrimSpace(value)
+	return strings.TrimPrefix(value, "/")
 }
 
 func skillOrder(name string) int {
@@ -158,6 +229,12 @@ func skillOrder(name string) int {
 		return 22
 	case "file_replace":
 		return 23
+	case "exec_code":
+		return 24
+	case "exec_file":
+		return 25
+	case "workspace_clean":
+		return 26
 	case "service_list":
 		return 30
 	case "service_status":

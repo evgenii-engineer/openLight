@@ -107,7 +107,7 @@ func TestOllamaProviderClassifySkill(t *testing.T) {
 			}
 
 			return jsonHTTPResponse(map[string]any{
-				"response": `{"skill":"service_restart","arguments":{"service":"tailscale","text":"","id":""},"confidence":0.92,"needs_clarification":false,"clarification_question":""}`,
+				"response": `{"skill":"service_restart","arguments":{"service":"tailscale","text":"","id":"","path":"","content":"","find":"","replace":"","runtime":"","code":""},"confidence":0.92,"needs_clarification":false,"clarification_question":""}`,
 			}), nil
 		}),
 	}
@@ -152,7 +152,7 @@ func TestOllamaProviderClassifySkillOmitsAllowedServicesWhenEmpty(t *testing.T) 
 			}
 
 			return jsonHTTPResponse(map[string]any{
-				"response": `{"skill":"status","arguments":{"service":"","text":"","id":""},"confidence":0.92,"needs_clarification":false,"clarification_question":""}`,
+				"response": `{"skill":"status","arguments":{"service":"","text":"","id":"","path":"","content":"","find":"","replace":"","runtime":"","code":""},"confidence":0.92,"needs_clarification":false,"clarification_question":""}`,
 			}), nil
 		}),
 	}

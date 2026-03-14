@@ -28,23 +28,29 @@ var (
 		Description: "Read, list, write, and replace text inside whitelisted paths.",
 		Order:       2,
 	}
+	GroupWorkbench = Group{
+		Key:         "workbench",
+		Title:       "Workbench",
+		Description: "Run temporary code in a workspace or execute explicitly allowed files.",
+		Order:       3,
+	}
 	GroupServices = Group{
 		Key:         "services",
 		Title:       "Services",
 		Description: "Inspect whitelisted services, view logs, and restart them.",
-		Order:       3,
+		Order:       4,
 	}
 	GroupSystem = Group{
 		Key:         "system",
 		Title:       "System",
 		Description: "Overall host status plus cpu, memory, disk, uptime, hostname, ip, and temperature.",
-		Order:       4,
+		Order:       5,
 	}
 	GroupCore = Group{
 		Key:         "core",
 		Title:       "Core",
 		Description: "Help, discovery, and core bot commands.",
-		Order:       5,
+		Order:       6,
 	}
 	GroupOther = Group{
 		Key:         "other",

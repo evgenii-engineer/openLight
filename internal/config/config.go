@@ -15,16 +15,17 @@ const defaultTelegramAPIBaseURL = "https://api.telegram.org"
 const defaultOpenAIAPIBaseURL = "https://api.openai.com/v1"
 
 type Config struct {
-	Telegram TelegramConfig `yaml:"telegram"`
-	Auth     AuthConfig     `yaml:"auth"`
-	Storage  StorageConfig  `yaml:"storage"`
-	Files    FilesConfig    `yaml:"files"`
-	Services ServicesConfig `yaml:"services"`
-	LLM      LLMConfig      `yaml:"llm"`
-	Chat     ChatConfig     `yaml:"chat"`
-	Notes    NotesConfig    `yaml:"notes"`
-	Agent    AgentConfig    `yaml:"agent"`
-	Log      LogConfig      `yaml:"log"`
+	Telegram  TelegramConfig  `yaml:"telegram"`
+	Auth      AuthConfig      `yaml:"auth"`
+	Storage   StorageConfig   `yaml:"storage"`
+	Files     FilesConfig     `yaml:"files"`
+	Workbench WorkbenchConfig `yaml:"workbench"`
+	Services  ServicesConfig  `yaml:"services"`
+	LLM       LLMConfig       `yaml:"llm"`
+	Chat      ChatConfig      `yaml:"chat"`
+	Notes     NotesConfig     `yaml:"notes"`
+	Agent     AgentConfig     `yaml:"agent"`
+	Log       LogConfig       `yaml:"log"`
 }
 
 type TelegramConfig struct {
@@ -55,6 +56,14 @@ type FilesConfig struct {
 	Allowed      []string `yaml:"allowed"`
 	MaxReadBytes int      `yaml:"max_read_bytes"`
 	ListLimit    int      `yaml:"list_limit"`
+}
+
+type WorkbenchConfig struct {
+	Enabled         bool     `yaml:"enabled"`
+	WorkspaceDir    string   `yaml:"workspace_dir"`
+	AllowedRuntimes []string `yaml:"allowed_runtimes"`
+	AllowedFiles    []string `yaml:"allowed_files"`
+	MaxOutputBytes  int      `yaml:"max_output_bytes"`
 }
 
 type ServicesConfig struct {
@@ -131,6 +140,10 @@ func defaultConfig() Config {
 			MaxReadBytes: 4096,
 			ListLimit:    40,
 		},
+		Workbench: WorkbenchConfig{
+			WorkspaceDir:   "/tmp/openlight",
+			MaxOutputBytes: 8192,
+		},
 		Services: ServicesConfig{
 			LogLines: 100,
 		},
@@ -195,6 +208,10 @@ func (c Config) Validate() error {
 		return errors.New("files.max_read_bytes must be greater than zero")
 	case c.Files.ListLimit <= 0:
 		return errors.New("files.list_limit must be greater than zero")
+	case c.Workbench.Enabled && strings.TrimSpace(c.Workbench.WorkspaceDir) == "":
+		return errors.New("workbench.workspace_dir is required when workbench.enabled is true")
+	case c.Workbench.MaxOutputBytes <= 0:
+		return errors.New("workbench.max_output_bytes must be greater than zero")
 	case c.Services.LogLines <= 0:
 		return errors.New("services.log_lines must be greater than zero")
 	case c.Notes.ListLimit <= 0:
@@ -231,6 +248,21 @@ func overrideFromEnv(cfg *Config) {
 	}
 	if value := parseStringListEnv("ALLOWED_FILE_ROOTS"); value != nil {
 		cfg.Files.Allowed = value
+	}
+	if value := strings.TrimSpace(os.Getenv("WORKBENCH_ENABLED")); value != "" {
+		cfg.Workbench.Enabled = parseBool(value)
+	}
+	if value := strings.TrimSpace(os.Getenv("WORKBENCH_DIR")); value != "" {
+		cfg.Workbench.WorkspaceDir = value
+	}
+	if value := parseStringListEnv("WORKBENCH_ALLOWED_RUNTIMES"); value != nil {
+		cfg.Workbench.AllowedRuntimes = value
+	}
+	if value := parseStringListEnv("WORKBENCH_ALLOWED_FILES"); value != nil {
+		cfg.Workbench.AllowedFiles = value
+	}
+	if value := strings.TrimSpace(os.Getenv("WORKBENCH_MAX_OUTPUT_BYTES")); value != "" {
+		cfg.Workbench.MaxOutputBytes = parseInt(value, cfg.Workbench.MaxOutputBytes)
 	}
 	if value := strings.TrimSpace(os.Getenv("LLM_ENABLED")); value != "" {
 		cfg.LLM.Enabled = parseBool(value)
@@ -328,6 +360,12 @@ func normalize(cfg *Config) {
 
 	cfg.Storage.SQLitePath = strings.TrimSpace(cfg.Storage.SQLitePath)
 	cfg.Files.Allowed = normalizePaths(cfg.Files.Allowed)
+	cfg.Workbench.WorkspaceDir = strings.TrimSpace(cfg.Workbench.WorkspaceDir)
+	if cfg.Workbench.WorkspaceDir == "" {
+		cfg.Workbench.WorkspaceDir = "/tmp/openlight"
+	}
+	cfg.Workbench.AllowedRuntimes = normalizeStrings(cfg.Workbench.AllowedRuntimes)
+	cfg.Workbench.AllowedFiles = normalizePaths(cfg.Workbench.AllowedFiles)
 	cfg.Services.Allowed = normalizeStrings(cfg.Services.Allowed)
 
 	cfg.LLM.Provider = strings.ToLower(strings.TrimSpace(cfg.LLM.Provider))

@@ -365,6 +365,21 @@ Files:
 - [internal/skills/files/manager.go](./internal/skills/files/manager.go)
 - [internal/skills/files/skills.go](./internal/skills/files/skills.go)
 
+## Workbench Model
+
+Workbench operations are intentionally constrained:
+
+- `exec_code` writes temporary code only inside one configured workspace directory
+- only explicitly allowed runtimes can be used for temporary code execution
+- `exec_file` can run only exact allowlisted files
+- stdout and stderr are capped to a configured byte limit
+- this is still a narrow skill surface, not unrestricted shell access
+
+Files:
+
+- [internal/skills/workbench/manager.go](./internal/skills/workbench/manager.go)
+- [internal/skills/workbench/skills.go](./internal/skills/workbench/skills.go)
+
 ## Chat Model
 
 The chat skill is tuned for small models and narrow assistant behavior:
