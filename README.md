@@ -4,11 +4,11 @@
 ![License](https://img.shields.io/badge/License-MIT-green)
 ![Target](https://img.shields.io/badge/Target-Raspberry%20Pi-red)
 
-A deterministic Telegram agent for Raspberry Pi and small Linux hosts.
+Tiny AI control plane for your personal infrastructure.
 
-`openLight` exposes explicit host skills, stores state in SQLite, and uses an LLM only for natural-language routing and chat. It is not a general-purpose shell agent.
+`openLight` keeps host access explicit and auditable, stores state in SQLite, and uses an LLM only for natural-language routing and chat. It is not a general-purpose shell agent.
 
-[Architecture](./ARCHITECTURE.md) · [Changelog](./CHANGELOG.md) · [Default Config](./configs/agent.example.yaml) · [OpenAI Config](./configs/agent.openai.example.yaml) · [Raspberry Pi + Ollama Config](./configs/agent.rpi.ollama.example.yaml) · [Systemd Unit](./deployments/systemd/openlight-agent.service) · [Ollama Compose](./deployments/docker/ollama-compose.yaml)
+[Architecture](./ARCHITECTURE.md) · [Changelog](./CHANGELOG.md) · [Install on Raspberry Pi](#raspberry-pi-setup) · [Configs](./configs/) · [Systemd Unit](./deployments/systemd/openlight-agent.service)
 
 ## Why
 
@@ -92,7 +92,8 @@ cp configs/agent.example.yaml ./agent.yaml
 cp configs/agent.openai.example.yaml ./agent.yaml
 ```
 
-For Raspberry Pi, `make init-rpi-config` copies the Ollama profile to `configs/agent.rpi.yaml`.
+For Raspberry Pi, use [Raspberry Pi Setup](#raspberry-pi-setup).
+`make init-rpi-config` creates `configs/agent.rpi.yaml` from the bundled Pi template.
 
 2. Fill the required settings.
 
@@ -121,6 +122,81 @@ Useful first commands:
 - `read /tmp/openlight/app.conf`
 
 Natural-language routing such as `show tailscale logs` or `прочитай /etc/hostname` is available only when `llm.enabled: true`.
+
+## Raspberry Pi Setup
+
+<details>
+<summary><strong>Open the short install path</strong> — from clone to a running systemd service</summary>
+
+This path assumes:
+
+- you run the deploy commands from your laptop or workstation
+- the Pi is reachable over SSH
+- the SSH user has `sudo`
+- optional for local LLMs: Docker with the `docker compose` plugin is installed on the Pi
+
+1. Create the Raspberry Pi config and edit it.
+
+```bash
+make init-rpi-config
+```
+
+Then open `configs/agent.rpi.yaml` and set at least:
+
+- `telegram.bot_token`
+- `auth.allowed_user_ids` or `auth.allowed_chat_ids`
+- `storage.sqlite_path`
+- `files.allowed`
+- `services.allowed`
+
+If you do not want Ollama on the Pi, either set `llm.enabled: false` or start from `configs/agent.openai.example.yaml` instead.
+
+2. Point the deploy helpers at your Pi.
+
+```bash
+export PI_USER=pi
+export PI_HOST=raspberrypi.local
+export PI_DEST_DIR=/home/pi
+```
+
+3. Optional: if you want local Ollama on the Pi, start it there first.
+
+```bash
+scp deployments/docker/ollama-compose.yaml "$PI_USER@$PI_HOST:/home/$PI_USER/ollama-compose.yaml"
+ssh "$PI_USER@$PI_HOST" "docker compose -f /home/$PI_USER/ollama-compose.yaml up -d ollama"
+ssh "$PI_USER@$PI_HOST" "docker compose -f /home/$PI_USER/ollama-compose.yaml run --rm ollama-pull"
+```
+
+The bundled compose file pulls `qwen2.5:0.5b`.
+Skip this step if you use OpenAI or deterministic-only mode.
+
+4. Upload config, binary, and systemd unit.
+
+```bash
+make deploy-rpi-all
+```
+
+This will:
+
+- upload `configs/agent.rpi.yaml` to `/etc/openlight/agent.yaml`
+- build `openlight-agent` for `linux/arm64`
+- copy the binary to `/home/pi/openlight-agent`
+- install or restart `openlight-agent.service`
+
+5. Check that the service is alive.
+
+```bash
+ssh "$PI_USER@$PI_HOST" "systemctl status openlight-agent --no-pager"
+ssh "$PI_USER@$PI_HOST" "journalctl -u openlight-agent -f"
+```
+
+6. Talk to the bot in Telegram.
+
+- `/skills`
+- `/status`
+- `logs tailscale`
+
+</details>
 
 ## Configuration
 
@@ -289,18 +365,7 @@ note buy milk
 
 Commands can be sent as slash commands, explicit command text, or natural language when LLM routing is enabled.
 
-## Local Ollama
-
-Local Ollama support is wired through [deployments/docker/ollama-compose.yaml](./deployments/docker/ollama-compose.yaml).
-
-```bash
-make ollama-up
-make ollama-pull
-curl http://127.0.0.1:11434/api/generate \
-  -d '{"model":"qwen2.5:0.5b","prompt":"reply with ok","stream":false}'
-```
-
-## Development and Deployment
+## Development
 
 Local development:
 
@@ -309,7 +374,7 @@ go test ./...
 go run ./cmd/agent -config ./agent.yaml
 ```
 
-Optional Ollama smoke test:
+Optional Ollama smoke test on the current machine:
 
 ```bash
 make ollama-up
@@ -318,7 +383,7 @@ make test-e2e-ollama
 make ollama-down
 ```
 
-Raspberry Pi build artifact:
+Cross-compile for Raspberry Pi:
 
 ```bash
 make build-rpi
@@ -335,18 +400,9 @@ Deploy helpers:
 - [scripts/deploy-rpi-config.sh](./scripts/deploy-rpi-config.sh)
 - [scripts/deploy-rpi-service.sh](./scripts/deploy-rpi-service.sh)
 
-Common Raspberry Pi commands:
+For the end-to-end Raspberry Pi install flow, use [Raspberry Pi Setup](#raspberry-pi-setup) above.
 
-```bash
-make init-rpi-config
-make deploy-rpi-config
-make deploy-rpi
-make deploy-rpi-service
-make deploy-rpi-all
-ssh pi@raspberrypi.local "journalctl -u openlight-agent -f"
-```
-
-Deploy layout:
+Deploy layout on the Pi:
 
 - config on Pi: `/etc/openlight/agent.yaml`
 - binary on Pi: `/home/<user>/openlight-agent`
