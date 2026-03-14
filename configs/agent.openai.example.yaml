@@ -18,6 +18,14 @@ auth:
 storage:
   sqlite_path: "./data/agent.db"
 
+files:
+  allowed:
+    - /tmp/openlight
+    - /home/pi/scripts
+    - /home/pi/openlight-work
+  max_read_bytes: 4096
+  list_limit: 40
+
 services:
   allowed:
     - tailscale

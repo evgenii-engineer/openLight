@@ -25,7 +25,7 @@ func (StartSkill) Definition() Definition {
 
 func (StartSkill) Execute(_ context.Context, _ Input) (Result, error) {
 	return Result{
-		Text: "openLight is ready.\nYou can write normally and I will answer through the local LLM when chat mode is enabled.\nExamples: explain memory usage; show jellyfin logs.\nUse /skills for built-in tools or /help for examples.",
+		Text: "openLight is ready.\nYou can write normally and I will answer through the local LLM when chat mode is enabled.\nExamples: explain memory usage; show jellyfin logs; read /etc/hostname.\nUse /skills for built-in tools or /help for examples.",
 	}, nil
 }
 
@@ -111,7 +111,7 @@ func (h *HelpSkill) Execute(_ context.Context, input Input) (Result, error) {
 	topic := strings.TrimSpace(input.Args["topic"])
 	if topic == "" {
 		return Result{
-			Text: "You can talk to me normally.\nExamples: explain memory pressure; how much disk space is left; покажи логи tailscale.\nUse /chat <message> to force LLM chat.\nUse /skills for built-in tools or /help <skill> for a specific skill.",
+			Text: "You can talk to me normally.\nExamples: explain memory pressure; how much disk space is left; покажи логи tailscale; read /etc/hostname.\nUse /chat <message> to force LLM chat.\nUse /skills for built-in tools or /help <skill> for a specific skill.",
 		}, nil
 	}
 
@@ -150,38 +150,46 @@ func skillOrder(name string) int {
 		return 11
 	case "note_delete":
 		return 12
-	case "service_list":
+	case "file_list":
 		return 20
-	case "service_status":
+	case "file_read":
 		return 21
-	case "service_restart":
+	case "file_write":
 		return 22
-	case "service_logs":
+	case "file_replace":
 		return 23
-	case "status":
+	case "service_list":
 		return 30
-	case "cpu":
+	case "service_status":
 		return 31
-	case "memory":
+	case "service_restart":
 		return 32
-	case "disk":
+	case "service_logs":
 		return 33
-	case "uptime":
-		return 34
-	case "temperature":
-		return 35
-	case "hostname":
-		return 36
-	case "ip":
-		return 37
-	case "start":
+	case "status":
 		return 40
-	case "help":
+	case "cpu":
 		return 41
-	case "skills":
+	case "memory":
 		return 42
-	case "ping":
+	case "disk":
 		return 43
+	case "uptime":
+		return 44
+	case "temperature":
+		return 45
+	case "hostname":
+		return 46
+	case "ip":
+		return 47
+	case "start":
+		return 50
+	case "help":
+		return 51
+	case "skills":
+		return 52
+	case "ping":
+		return 53
 	default:
 		return 1000
 	}

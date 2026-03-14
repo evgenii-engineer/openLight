@@ -57,6 +57,7 @@ This makes it a good fit for:
 
 ## Highlights
 
+- `files` skills: `file_list`, `file_read`, `file_write`, `file_replace`
 - `system` skills: `status`, `cpu`, `memory`, `disk`, `uptime`, `hostname`, `ip`, `temperature`
 - `services` skills: `service_list`, `service_status`, `service_logs`, `service_restart`
 - `notes` skills: `note_add`, `note_list`, `note_delete`
@@ -82,6 +83,12 @@ Temperature: 58.7C
 You: покажи логи tailscale
 Bot: Logs for tailscale:
 ...
+```
+
+```text
+You: read /etc/hostname
+Bot: Contents of /etc/hostname:
+raspberrypi
 ```
 
 ```text
@@ -144,6 +151,7 @@ make init-rpi-config
 - `telegram.bot_token`
 - `auth.allowed_user_ids`
 - `auth.allowed_chat_ids`
+- `files.allowed` with the safe roots you want the bot to touch
 
 3. Pick an LLM provider:
 
@@ -209,6 +217,18 @@ Notes:
 - the same `llm.model` is used for route classification and skill classification
 - `OPENAI_API_KEY` can be used instead of `llm.api_key`
 
+Safe file access example:
+
+```yaml
+files:
+  allowed:
+    - /tmp/openlight
+    - /home/pi/scripts
+    - /home/pi/openlight-work
+  max_read_bytes: 4096
+  list_limit: 40
+```
+
 ## Telegram Modes
 
 `openLight` supports:
@@ -237,11 +257,31 @@ telegram:
 
 | Group | Skills |
 | --- | --- |
+| `files` | `file_list`, `file_read`, `file_write`, `file_replace` |
 | `system` | `status`, `cpu`, `memory`, `disk`, `uptime`, `hostname`, `ip`, `temperature` |
 | `services` | `service_list`, `service_status`, `service_logs`, `service_restart` |
 | `notes` | `note_add`, `note_list`, `note_delete` |
 | `core` | `start`, `help`, `skills`, `ping` |
 | `chat` | free-form LLM conversation |
+
+## File Skills
+
+Configure `files.allowed`, then use the built-in file commands:
+
+```text
+/files /tmp/openlight
+read /tmp/openlight/app.conf
+write /tmp/openlight/hello.txt :: hello world
+replace 8080 with 8081 in /tmp/openlight/app.conf
+```
+
+Natural-language requests also work when LLM routing is enabled, for example:
+
+```text
+можешь показать содержимое файла /tmp/openlight/app.conf?
+```
+
+Access is still limited to whitelisted roots, symlink-resolved paths, and `files.max_read_bytes`. The detailed routing and safety notes live in [ARCHITECTURE.md](./ARCHITECTURE.md).
 
 ## Local Ollama
 
@@ -312,6 +352,7 @@ The practical extension guide lives in [ARCHITECTURE.md](./ARCHITECTURE.md).
 ## Security Notes
 
 - Telegram access is controlled by user/chat whitelist checks
+- file access is limited to explicitly whitelisted roots
 - service management is limited to explicitly allowed services
 - there is no general shell execution path in the bot runtime
 
@@ -322,6 +363,7 @@ The practical extension guide lives in [ARCHITECTURE.md](./ARCHITECTURE.md).
 - Telegram bot transport
 - whitelist auth
 - SQLite persistence
+- file list/read/write/replace skills with whitelisted roots
 - system metrics skills
 - service skills
 - notes add/list/delete
@@ -333,8 +375,9 @@ The practical extension guide lives in [ARCHITECTURE.md](./ARCHITECTURE.md).
 
 - richer structured decision routing for local LLMs
 - better observability and runtime diagnostics
+- alerts and background checks
+- process and container management skills
 - web search skill
-- safer shell and file-oriented tools
 - richer service and host management skills
 
 ## License

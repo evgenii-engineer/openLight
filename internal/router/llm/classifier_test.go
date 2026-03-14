@@ -235,10 +235,41 @@ func TestClassifierRequiresHigherConfidenceForMutatingSkill(t *testing.T) {
 	}
 }
 
+func TestClassifierRoutesFileReadWithPath(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "file_read", group: skills.GroupFiles})
+
+	classifier := NewClassifier(&stubProvider{
+		routeClassification: basellm.RouteClassification{
+			Intent:     "files",
+			Confidence: 0.93,
+		},
+		skillClassification: basellm.Classification{
+			Skill:      "file_read",
+			Arguments:  map[string]string{"path": "/etc/hostname"},
+			Confidence: 0.93,
+		},
+	}, registry, Options{}, nil)
+
+	decision, ok, err := classifier.Classify(context.Background(), "read /etc/hostname")
+	if err != nil {
+		t.Fatalf("Classify returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected classifier match")
+	}
+	if decision.SkillName != "file_read" || decision.Args["path"] != "/etc/hostname" {
+		t.Fatalf("unexpected decision: %#v", decision)
+	}
+}
+
 func TestClassifierPassesVisibleSkillsToLLMWithoutHeuristicShortlist(t *testing.T) {
 	t.Parallel()
 
 	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "file_read", group: skills.GroupFiles})
 	registry.MustRegister(testSkill{name: "memory", group: skills.GroupSystem})
 	registry.MustRegister(testSkill{name: "cpu", group: skills.GroupSystem})
 	registry.MustRegister(testSkill{name: "chat", group: skills.GroupChat})
@@ -282,6 +313,9 @@ func TestClassifierPassesVisibleSkillsToLLMWithoutHeuristicShortlist(t *testing.
 	}
 	if !slices.Contains(groupOptionKeys(provider.routeRequest.Groups), "system") {
 		t.Fatalf("expected system group in route request: %#v", provider.routeRequest.Groups)
+	}
+	if !slices.Contains(groupOptionKeys(provider.routeRequest.Groups), "files") {
+		t.Fatalf("expected files group in route request: %#v", provider.routeRequest.Groups)
 	}
 	if len(provider.skillRequest.AllowedServices) != 0 {
 		t.Fatalf("did not expect allowed services for non-services group, got %#v", provider.skillRequest.AllowedServices)

@@ -125,7 +125,7 @@ func TestOpenAIProviderClassifySkill(t *testing.T) {
 				t.Fatalf("unexpected arguments schema: %#v", properties["arguments"])
 			}
 			required, ok := arguments["required"].([]any)
-			if !ok || len(required) != 3 {
+			if !ok || len(required) != 7 {
 				t.Fatalf("unexpected arguments required list: %#v", arguments["required"])
 			}
 

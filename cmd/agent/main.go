@@ -19,6 +19,7 @@ import (
 	routerllm "openlight/internal/router/llm"
 	"openlight/internal/skills"
 	chatskills "openlight/internal/skills/chat"
+	fileskills "openlight/internal/skills/files"
 	"openlight/internal/skills/notes"
 	serviceskills "openlight/internal/skills/services"
 	systemskills "openlight/internal/skills/system"
@@ -120,9 +121,14 @@ func buildRegistry(cfg config.Config, repository storage.Repository, logger *slo
 
 	systemProvider := systemskills.NewLocalProvider()
 	serviceManager := serviceskills.NewSystemdManager(cfg.Services.Allowed, logger.With("component", "systemd"))
+	fileManager, err := fileskills.NewLocalManager(cfg.Files.Allowed, cfg.Files.MaxReadBytes, cfg.Files.ListLimit)
+	if err != nil {
+		return nil, err
+	}
 
 	modules := []skills.Module{
 		systemskills.NewModule(systemProvider),
+		fileskills.NewModule(fileManager),
 		serviceskills.NewModule(serviceManager, cfg.Services.LogLines),
 		notes.NewModule(repository, cfg.Notes.ListLimit),
 	}

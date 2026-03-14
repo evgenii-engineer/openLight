@@ -431,6 +431,25 @@ func (c *Classifier) resolveSkillDecision(text string, allowedSkills []string, c
 
 func (c *Classifier) routeArguments(text, skillName string, arguments map[string]string) map[string]string {
 	switch skillName {
+	case "file_list":
+		path := strings.TrimSpace(arguments["path"])
+		if path == "" {
+			return map[string]string{}
+		}
+		return map[string]string{"path": path}
+	case "file_read":
+		return map[string]string{"path": strings.TrimSpace(arguments["path"])}
+	case "file_write":
+		return map[string]string{
+			"path":    strings.TrimSpace(arguments["path"]),
+			"content": arguments["content"],
+		}
+	case "file_replace":
+		return map[string]string{
+			"path":    strings.TrimSpace(arguments["path"]),
+			"find":    arguments["find"],
+			"replace": arguments["replace"],
+		}
 	case "service_status", "service_logs":
 		service := strings.TrimSpace(arguments["service"])
 		if service == "" && len(c.allowedServices) == 1 {
@@ -453,6 +472,21 @@ func (c *Classifier) routeArguments(text, skillName string, arguments map[string
 
 func (c *Classifier) requiredArgumentQuestion(skillName string, arguments map[string]string) string {
 	switch skillName {
+	case "file_read":
+		if strings.TrimSpace(arguments["path"]) == "" {
+			return "Which file should I read?"
+		}
+	case "file_write":
+		if strings.TrimSpace(arguments["path"]) == "" {
+			return "Which file should I write?"
+		}
+	case "file_replace":
+		if strings.TrimSpace(arguments["path"]) == "" {
+			return "Which file should I edit?"
+		}
+		if strings.TrimSpace(arguments["find"]) == "" {
+			return "What text should I replace?"
+		}
 	case "service_restart":
 		if strings.TrimSpace(arguments["service"]) == "" {
 			return "Which service should I restart?"
@@ -514,6 +548,23 @@ func clarificationQuestionForSkill(skillName string, arguments map[string]string
 		return "Do you want me to show IP addresses?"
 	case "service_list":
 		return "Do you want me to list allowed services?"
+	case "file_list":
+		return "Do you want me to list whitelisted files or roots?"
+	case "file_read":
+		if path := strings.TrimSpace(arguments["path"]); path != "" {
+			return "Do you want me to read " + path + "?"
+		}
+		return "Which file should I read?"
+	case "file_write":
+		if path := strings.TrimSpace(arguments["path"]); path != "" {
+			return "Do you want me to write " + path + "?"
+		}
+		return "Which file should I write?"
+	case "file_replace":
+		if path := strings.TrimSpace(arguments["path"]); path != "" {
+			return "Do you want me to replace text in " + path + "?"
+		}
+		return "Which file should I edit?"
 	case "service_restart":
 		if service := strings.TrimSpace(arguments["service"]); service != "" {
 			return "Do you want me to restart " + service + "?"
@@ -559,6 +610,8 @@ func clarificationQuestionForGroup(groupKey, provided string) string {
 	}
 
 	switch groupKey {
+	case "files":
+		return "Do you want to read, list, write, or replace a file?"
 	case "system":
 		return "Do you want something from system metrics or host info?"
 	case "services":
@@ -568,7 +621,7 @@ func clarificationQuestionForGroup(groupKey, provided string) string {
 	case "core":
 		return "Do you want help, skills list, start, or ping?"
 	case "", "other":
-		return "Which kind of tool do you want: system, services, notes, or core?"
+		return "Which kind of tool do you want: files, system, services, notes, or core?"
 	default:
 		return "Which tool group do you want?"
 	}
@@ -612,7 +665,12 @@ func normalizeArguments(arguments map[string]string) map[string]string {
 		if key == "" {
 			continue
 		}
-		result[key] = strings.TrimSpace(value)
+		switch key {
+		case "content", "find", "replace", "body", "old", "old_text", "new", "new_text", "from", "to":
+			result[key] = value
+		default:
+			result[key] = strings.TrimSpace(value)
+		}
 	}
 
 	if service := strings.TrimSpace(result["service"]); service == "" {
@@ -630,6 +688,50 @@ func normalizeArguments(arguments map[string]string) map[string]string {
 			result["text"] = strings.TrimSpace(result["note"])
 		case strings.TrimSpace(result["note_text"]) != "":
 			result["text"] = strings.TrimSpace(result["note_text"])
+		}
+	}
+
+	if path := strings.TrimSpace(result["path"]); path == "" {
+		switch {
+		case strings.TrimSpace(result["file"]) != "":
+			result["path"] = strings.TrimSpace(result["file"])
+		case strings.TrimSpace(result["file_path"]) != "":
+			result["path"] = strings.TrimSpace(result["file_path"])
+		case strings.TrimSpace(result["filename"]) != "":
+			result["path"] = strings.TrimSpace(result["filename"])
+		case strings.TrimSpace(result["name"]) != "":
+			result["path"] = strings.TrimSpace(result["name"])
+		}
+	}
+
+	if content := result["content"]; content == "" {
+		switch {
+		case result["body"] != "":
+			result["content"] = result["body"]
+		case result["value"] != "":
+			result["content"] = result["value"]
+		}
+	}
+
+	if find := result["find"]; find == "" {
+		switch {
+		case result["old"] != "":
+			result["find"] = result["old"]
+		case result["old_text"] != "":
+			result["find"] = result["old_text"]
+		case result["from"] != "":
+			result["find"] = result["from"]
+		}
+	}
+
+	if replacement := result["replace"]; replacement == "" {
+		switch {
+		case result["new"] != "":
+			result["replace"] = result["new"]
+		case result["new_text"] != "":
+			result["replace"] = result["new_text"]
+		case result["to"] != "":
+			result["replace"] = result["to"]
 		}
 	}
 

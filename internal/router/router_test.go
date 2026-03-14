@@ -190,6 +190,60 @@ func TestRouterExplicitNoteDeleteCommand(t *testing.T) {
 	}
 }
 
+func TestRouterExplicitFileReadCommand(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "file_read"})
+
+	decision, err := router.New(registry, nil).Route(context.Background(), "read /etc/hostname")
+	if err != nil {
+		t.Fatalf("route returned error: %v", err)
+	}
+	if decision.Mode != router.ModeExplicit || decision.SkillName != "file_read" {
+		t.Fatalf("unexpected decision: %#v", decision)
+	}
+	if decision.Args["path"] != "/etc/hostname" {
+		t.Fatalf("unexpected file args: %#v", decision.Args)
+	}
+}
+
+func TestRouterExplicitFileWriteCommand(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "file_write"})
+
+	decision, err := router.New(registry, nil).Route(context.Background(), "write ./tmp/test.txt :: hello")
+	if err != nil {
+		t.Fatalf("route returned error: %v", err)
+	}
+	if decision.Mode != router.ModeExplicit || decision.SkillName != "file_write" {
+		t.Fatalf("unexpected decision: %#v", decision)
+	}
+	if decision.Args["path"] != "./tmp/test.txt" || decision.Args["content"] != "hello" {
+		t.Fatalf("unexpected file args: %#v", decision.Args)
+	}
+}
+
+func TestRouterExplicitFileReplaceCommand(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "file_replace"})
+
+	decision, err := router.New(registry, nil).Route(context.Background(), "replace 8080 with 8081 in ./config.yaml")
+	if err != nil {
+		t.Fatalf("route returned error: %v", err)
+	}
+	if decision.Mode != router.ModeExplicit || decision.SkillName != "file_replace" {
+		t.Fatalf("unexpected decision: %#v", decision)
+	}
+	if decision.Args["path"] != "./config.yaml" || decision.Args["find"] != "8080" || decision.Args["replace"] != "8081" {
+		t.Fatalf("unexpected file args: %#v", decision.Args)
+	}
+}
+
 func TestRouterRuleBasedNoteDeleteParsing(t *testing.T) {
 	t.Parallel()
 

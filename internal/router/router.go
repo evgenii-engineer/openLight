@@ -3,6 +3,7 @@ package router
 import (
 	"context"
 	"log/slog"
+	"path/filepath"
 	"strings"
 
 	"openlight/internal/router/rules"
@@ -217,6 +218,26 @@ func routeCommand(command, argsText string, mode Mode) (Decision, bool) {
 		return Decision{Mode: mode, SkillName: "note_add", Args: map[string]string{"text": argsText}}, true
 	case "notes", "note list", "list notes":
 		return routeNoArgCommand(mode, "note_list", argsText)
+	case "files", "file list", "list files", "file_list":
+		return Decision{Mode: mode, SkillName: "file_list", Args: filePathArgs(argsText)}, true
+	case "read", "show", "cat", "file read", "read file", "file_read":
+		args, ok := parseFileReadArgs(command, argsText)
+		if !ok {
+			return Decision{}, false
+		}
+		return Decision{Mode: mode, SkillName: "file_read", Args: args}, true
+	case "write", "file write", "write file", "create file", "file_write":
+		args, ok := parseFileWriteArgs(argsText)
+		if !ok {
+			return Decision{}, false
+		}
+		return Decision{Mode: mode, SkillName: "file_write", Args: args}, true
+	case "replace", "file replace", "replace file", "file_replace":
+		args, ok := parseFileReplaceArgs(argsText)
+		if !ok {
+			return Decision{}, false
+		}
+		return Decision{Mode: mode, SkillName: "file_replace", Args: args}, true
 	case "chat", "ask":
 		return Decision{Mode: mode, SkillName: "chat", Args: map[string]string{"text": argsText}}, true
 	default:
@@ -241,4 +262,127 @@ func normalizeRouteCommand(value string) string {
 	value = strings.ReplaceAll(value, "_", " ")
 	value = strings.ReplaceAll(value, "-", " ")
 	return strings.Join(strings.Fields(value), " ")
+}
+
+func filePathArgs(argsText string) map[string]string {
+	path := strings.TrimSpace(argsText)
+	if path == "" {
+		return map[string]string{}
+	}
+	return map[string]string{"path": path}
+}
+
+func parseFileReadArgs(command, argsText string) (map[string]string, bool) {
+	path := strings.TrimSpace(argsText)
+	if path == "" {
+		return map[string]string{}, command == "file_read" || command == "read file" || command == "file read"
+	}
+	if !looksLikePath(path) {
+		return nil, false
+	}
+	return map[string]string{"path": path}, true
+}
+
+func parseFileWriteArgs(argsText string) (map[string]string, bool) {
+	argsText = strings.TrimSpace(argsText)
+	if argsText == "" {
+		return nil, false
+	}
+
+	path := argsText
+	content := ""
+	switch {
+	case strings.Contains(argsText, "\n"):
+		parts := strings.SplitN(argsText, "\n", 2)
+		path = strings.TrimSpace(parts[0])
+		content = parts[1]
+	case strings.Contains(argsText, "::"):
+		parts := strings.SplitN(argsText, "::", 2)
+		path = strings.TrimSpace(parts[0])
+		content = trimSingleLeadingSpace(parts[1])
+	}
+
+	if !looksLikePath(path) {
+		return nil, false
+	}
+
+	return map[string]string{
+		"path":    path,
+		"content": content,
+	}, true
+}
+
+func parseFileReplaceArgs(argsText string) (map[string]string, bool) {
+	argsText = strings.TrimSpace(argsText)
+	if argsText == "" {
+		return nil, false
+	}
+
+	if strings.Contains(argsText, "::") && strings.Contains(argsText, "=>") {
+		parts := strings.SplitN(argsText, "::", 2)
+		path := strings.TrimSpace(parts[0])
+		replaceParts := strings.SplitN(parts[1], "=>", 2)
+		if len(replaceParts) != 2 || !looksLikePath(path) {
+			return nil, false
+		}
+		find := strings.TrimSpace(replaceParts[0])
+		replacement := trimSingleLeadingSpace(replaceParts[1])
+		if find == "" {
+			return nil, false
+		}
+		return map[string]string{
+			"path":    path,
+			"find":    find,
+			"replace": replacement,
+		}, true
+	}
+
+	lowered := strings.ToLower(argsText)
+	withIdx := strings.Index(lowered, " with ")
+	inIdx := strings.LastIndex(lowered, " in ")
+	if withIdx <= 0 || inIdx <= withIdx+len(" with ") {
+		return nil, false
+	}
+
+	find := strings.TrimSpace(argsText[:withIdx])
+	replacement := strings.TrimSpace(argsText[withIdx+len(" with ") : inIdx])
+	path := strings.TrimSpace(argsText[inIdx+len(" in "):])
+	if find == "" || !looksLikePath(path) {
+		return nil, false
+	}
+
+	return map[string]string{
+		"path":    path,
+		"find":    find,
+		"replace": replacement,
+	}, true
+}
+
+func trimSingleLeadingSpace(value string) string {
+	if strings.HasPrefix(value, " ") {
+		return value[1:]
+	}
+	return value
+}
+
+func looksLikePath(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+
+	switch {
+	case strings.HasPrefix(value, "/"),
+		strings.HasPrefix(value, "./"),
+		strings.HasPrefix(value, "../"),
+		strings.HasPrefix(value, "~"),
+		strings.HasPrefix(value, "."):
+		return true
+	}
+
+	if strings.ContainsRune(value, '/') || strings.ContainsRune(value, '\\') {
+		return true
+	}
+
+	return filepath.Ext(value) != ""
 }

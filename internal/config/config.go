@@ -18,6 +18,7 @@ type Config struct {
 	Telegram TelegramConfig `yaml:"telegram"`
 	Auth     AuthConfig     `yaml:"auth"`
 	Storage  StorageConfig  `yaml:"storage"`
+	Files    FilesConfig    `yaml:"files"`
 	Services ServicesConfig `yaml:"services"`
 	LLM      LLMConfig      `yaml:"llm"`
 	Chat     ChatConfig     `yaml:"chat"`
@@ -48,6 +49,12 @@ type AuthConfig struct {
 
 type StorageConfig struct {
 	SQLitePath string `yaml:"sqlite_path"`
+}
+
+type FilesConfig struct {
+	Allowed      []string `yaml:"allowed"`
+	MaxReadBytes int      `yaml:"max_read_bytes"`
+	ListLimit    int      `yaml:"list_limit"`
 }
 
 type ServicesConfig struct {
@@ -120,6 +127,10 @@ func defaultConfig() Config {
 				ListenAddr: ":8081",
 			},
 		},
+		Files: FilesConfig{
+			MaxReadBytes: 4096,
+			ListLimit:    40,
+		},
 		Services: ServicesConfig{
 			LogLines: 100,
 		},
@@ -180,6 +191,10 @@ func (c Config) Validate() error {
 		return errors.New("telegram.webhook.url must start with https://")
 	case c.Telegram.Mode == "webhook" && strings.TrimSpace(c.Telegram.Webhook.ListenAddr) == "":
 		return errors.New("telegram.webhook.listen_addr is required when telegram.mode is webhook")
+	case c.Files.MaxReadBytes <= 0:
+		return errors.New("files.max_read_bytes must be greater than zero")
+	case c.Files.ListLimit <= 0:
+		return errors.New("files.list_limit must be greater than zero")
 	case c.Services.LogLines <= 0:
 		return errors.New("services.log_lines must be greater than zero")
 	case c.Notes.ListLimit <= 0:
@@ -213,6 +228,9 @@ func overrideFromEnv(cfg *Config) {
 	}
 	if value := parseStringListEnv("ALLOWED_SERVICES"); value != nil {
 		cfg.Services.Allowed = value
+	}
+	if value := parseStringListEnv("ALLOWED_FILE_ROOTS"); value != nil {
+		cfg.Files.Allowed = value
 	}
 	if value := strings.TrimSpace(os.Getenv("LLM_ENABLED")); value != "" {
 		cfg.LLM.Enabled = parseBool(value)
@@ -271,6 +289,12 @@ func overrideFromEnv(cfg *Config) {
 	if value := strings.TrimSpace(os.Getenv("SERVICE_LOG_LINES")); value != "" {
 		cfg.Services.LogLines = parseInt(value, cfg.Services.LogLines)
 	}
+	if value := strings.TrimSpace(os.Getenv("FILE_MAX_READ_BYTES")); value != "" {
+		cfg.Files.MaxReadBytes = parseInt(value, cfg.Files.MaxReadBytes)
+	}
+	if value := strings.TrimSpace(os.Getenv("FILE_LIST_LIMIT")); value != "" {
+		cfg.Files.ListLimit = parseInt(value, cfg.Files.ListLimit)
+	}
 	if value := strings.TrimSpace(os.Getenv("NOTES_LIST_LIMIT")); value != "" {
 		cfg.Notes.ListLimit = parseInt(value, cfg.Notes.ListLimit)
 	}
@@ -303,6 +327,7 @@ func normalize(cfg *Config) {
 	cfg.Telegram.Webhook.SecretToken = strings.TrimSpace(cfg.Telegram.Webhook.SecretToken)
 
 	cfg.Storage.SQLitePath = strings.TrimSpace(cfg.Storage.SQLitePath)
+	cfg.Files.Allowed = normalizePaths(cfg.Files.Allowed)
 	cfg.Services.Allowed = normalizeStrings(cfg.Services.Allowed)
 
 	cfg.LLM.Provider = strings.ToLower(strings.TrimSpace(cfg.LLM.Provider))
@@ -327,6 +352,23 @@ func normalizeStrings(values []string) []string {
 	result := make([]string, 0, len(values))
 	for _, value := range values {
 		trimmed := strings.ToLower(strings.TrimSpace(value))
+		if trimmed == "" {
+			continue
+		}
+		if _, ok := seen[trimmed]; ok {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		result = append(result, trimmed)
+	}
+	return result
+}
+
+func normalizePaths(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
 		if trimmed == "" {
 			continue
 		}

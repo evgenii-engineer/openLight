@@ -30,6 +30,11 @@ auth:
 storage:
   sqlite_path: "./agent.db"
 
+files:
+  allowed: ["/tmp/openlight", "/home/pi/scripts", "/tmp/openlight"]
+  max_read_bytes: 8192
+  list_limit: 25
+
 services:
   allowed: ["tailscale", "docker", "tailscale"]
   log_lines: 42
@@ -82,6 +87,12 @@ log:
 	}
 	if cfg.Storage.SQLitePath != "./agent.db" {
 		t.Fatalf("unexpected sqlite path: %q", cfg.Storage.SQLitePath)
+	}
+	if got := cfg.Files.Allowed; len(got) != 2 || got[0] != "/tmp/openlight" || got[1] != "/home/pi/scripts" {
+		t.Fatalf("unexpected allowed file roots: %#v", got)
+	}
+	if cfg.Files.MaxReadBytes != 8192 || cfg.Files.ListLimit != 25 {
+		t.Fatalf("unexpected files config: %#v", cfg.Files)
 	}
 	if got := cfg.Services.Allowed; len(got) != 2 || got[0] != "tailscale" || got[1] != "docker" {
 		t.Fatalf("unexpected allowed services: %#v", got)
@@ -146,6 +157,9 @@ storage:
 	}
 	if cfg.Services.LogLines != 100 {
 		t.Fatalf("unexpected service log lines: %d", cfg.Services.LogLines)
+	}
+	if cfg.Files.MaxReadBytes != 4096 || cfg.Files.ListLimit != 40 {
+		t.Fatalf("unexpected files defaults: %#v", cfg.Files)
 	}
 	if cfg.LLM.Provider != "generic" {
 		t.Fatalf("unexpected llm provider: %q", cfg.LLM.Provider)

@@ -51,6 +51,10 @@ func TestBuildRegistryRegistersBuiltInModules(t *testing.T) {
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	registry, err := buildRegistry(config.Config{
+		Files: config.FilesConfig{
+			MaxReadBytes: 4096,
+			ListLimit:    40,
+		},
 		Services: config.ServicesConfig{
 			Allowed:  []string{"tailscale"},
 			LogLines: 50,
@@ -68,7 +72,7 @@ func TestBuildRegistryRegistersBuiltInModules(t *testing.T) {
 		t.Fatalf("buildRegistry returned error: %v", err)
 	}
 
-	for _, name := range []string{"start", "ping", "status", "service_status", "note_add", "skills", "help"} {
+	for _, name := range []string{"start", "ping", "status", "service_status", "note_add", "file_read", "skills", "help"} {
 		if _, ok := registry.Get(name); !ok {
 			t.Fatalf("expected skill %q to be registered", name)
 		}
@@ -85,6 +89,10 @@ func TestBuildRegistryRegistersChatModuleWhenLLMEnabled(t *testing.T) {
 	provider := basellm.NewHTTPProvider("http://127.0.0.1:1", time.Second, logger)
 
 	registry, err := buildRegistry(config.Config{
+		Files: config.FilesConfig{
+			MaxReadBytes: 4096,
+			ListLimit:    40,
+		},
 		Services: config.ServicesConfig{
 			Allowed:  []string{"tailscale"},
 			LogLines: 50,

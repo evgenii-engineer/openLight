@@ -69,6 +69,15 @@ The semantic normalizer rewrites common Russian and English variants into a tigh
 - `заметку` -> `note`
 - `добавь` -> `add`
 
+Examples of deterministic file commands:
+
+- `/files /tmp/openlight`
+- `read /tmp/openlight/app.conf`
+- `write /tmp/openlight/hello.txt :: hello world`
+- `replace 8080 with 8081 in /tmp/openlight/app.conf`
+
+Free-form file requests such as `можешь показать содержимое файла /tmp/openlight/app.conf?` currently rely on the LLM route layer and the LLM skill layer.
+
 ### LLM Route Layer
 
 If deterministic routing fails, the first LLM step receives:
@@ -88,7 +97,7 @@ The route intent is limited to:
 
 - `chat`
 - `unknown`
-- one visible group key such as `system`, `services`, `notes`, or `core`
+- one visible group key such as `files`, `system`, `services`, `notes`, or `core`
 
 ### LLM Skill Layer
 
@@ -106,6 +115,13 @@ It returns strict JSON with:
 - `confidence`
 - `needs_clarification`
 - `clarification_question`
+
+For the `files` group, the main extracted arguments are:
+
+- `path`
+- `content`
+- `find`
+- `replace`
 
 The Go side then validates:
 
@@ -203,6 +219,7 @@ Core files:
 
 Current built-in groups:
 
+- `files`
 - `system`
 - `services`
 - `notes`
@@ -219,6 +236,7 @@ Core files:
 
 - [internal/skills/module.go](./internal/skills/module.go)
 - [internal/skills/core_module.go](./internal/skills/core_module.go)
+- [internal/skills/files/module.go](./internal/skills/files/module.go)
 - [internal/skills/system/module.go](./internal/skills/system/module.go)
 - [internal/skills/services/module.go](./internal/skills/services/module.go)
 - [internal/skills/notes/module.go](./internal/skills/notes/module.go)
@@ -317,6 +335,35 @@ Files:
 
 - [internal/skills/services/manager.go](./internal/skills/services/manager.go)
 - [internal/skills/services/skills.go](./internal/skills/services/skills.go)
+
+## File Access Model
+
+File operations are intentionally constrained:
+
+- only explicitly allowed roots are exposed
+- paths are resolved to absolute filesystem paths
+- symlink targets must still stay inside an allowed root
+- reads are capped to a configured byte limit
+- the runtime exposes specific file skills instead of a generic shell
+
+The built-in file skills are:
+
+- `file_list`
+- `file_read`
+- `file_write`
+- `file_replace`
+
+Their main argument shapes are:
+
+- `file_list`: optional `path`
+- `file_read`: required `path`
+- `file_write`: `path` plus `content`
+- `file_replace`: `path` plus `find` and `replace`
+
+Files:
+
+- [internal/skills/files/manager.go](./internal/skills/files/manager.go)
+- [internal/skills/files/skills.go](./internal/skills/files/skills.go)
 
 ## Chat Model
 
@@ -435,6 +482,7 @@ Then wire it once during startup:
 
 ```go
 modules := []skills.Module{
+	fileskills.NewModule(fileManager),
 	systemskills.NewModule(systemProvider),
 	serviceskills.NewModule(serviceManager, cfg.Services.LogLines),
 	echoskills.NewModule(dep),
@@ -448,6 +496,7 @@ if err := skills.RegisterModules(registry, modules...); err != nil {
 
 Reference implementations:
 
+- [internal/skills/files/module.go](./internal/skills/files/module.go)
 - [internal/skills/system/module.go](./internal/skills/system/module.go)
 - [internal/skills/services/module.go](./internal/skills/services/module.go)
 - [internal/skills/notes/module.go](./internal/skills/notes/module.go)

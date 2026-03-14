@@ -22,23 +22,29 @@ var (
 		Description: "Save, list, and delete short notes.",
 		Order:       1,
 	}
+	GroupFiles = Group{
+		Key:         "files",
+		Title:       "Files",
+		Description: "Read, list, write, and replace text inside whitelisted paths.",
+		Order:       2,
+	}
 	GroupServices = Group{
 		Key:         "services",
 		Title:       "Services",
 		Description: "Inspect whitelisted services, view logs, and restart them.",
-		Order:       2,
+		Order:       3,
 	}
 	GroupSystem = Group{
 		Key:         "system",
 		Title:       "System",
 		Description: "Overall host status plus cpu, memory, disk, uptime, hostname, ip, and temperature.",
-		Order:       3,
+		Order:       4,
 	}
 	GroupCore = Group{
 		Key:         "core",
 		Title:       "Core",
 		Description: "Help, discovery, and core bot commands.",
-		Order:       4,
+		Order:       5,
 	}
 	GroupOther = Group{
 		Key:         "other",
