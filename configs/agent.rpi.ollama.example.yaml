@@ -30,9 +30,10 @@ llm:
   endpoint: "http://127.0.0.1:11434"
   model: "qwen2.5:0.5b"
   execute_threshold: 0.80
+  mutating_execute_threshold: 0.95
   clarify_threshold: 0.60
   decision_input_chars: 160
-  decision_num_predict: 64
+  decision_num_predict: 128
 
 chat:
   history_limit: 6

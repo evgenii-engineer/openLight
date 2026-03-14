@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-func TestOpenAIProviderClassifyIntent(t *testing.T) {
+func TestOpenAIProviderClassifyRoute(t *testing.T) {
 	t.Parallel()
 
 	provider := NewOpenAIProvider("https://api.openai.com/v1", "gpt-4o-mini", "secret", time.Second, nil)
@@ -53,7 +53,63 @@ func TestOpenAIProviderClassifyIntent(t *testing.T) {
 			if !ok || format["type"] != "json_schema" {
 				t.Fatalf("unexpected format config: %#v", textConfig["format"])
 			}
-			if format["name"] != "decision_response" {
+			if format["name"] != "route_response" {
+				t.Fatalf("unexpected format name: %#v", format["name"])
+			}
+
+			return jsonHTTPResponse(map[string]any{
+				"output": []map[string]any{
+					{
+						"type": "message",
+						"content": []map[string]any{
+							{
+								"type": "output_text",
+								"text": `{"intent":"services","confidence":0.93,"needs_clarification":false,"clarification_question":""}`,
+							},
+						},
+					},
+				},
+			}), nil
+		}),
+	}
+
+	classification, err := provider.ClassifyRoute(context.Background(), "restart tailscale", RouteClassificationRequest{
+		Groups: []GroupOption{
+			{Key: "services", Title: "Services", Description: "Inspect whitelisted services, view logs, and restart them."},
+			{Key: "system", Title: "System", Description: "Read system metrics and host information."},
+		},
+		InputChars: 160,
+		NumPredict: 64,
+	})
+	if err != nil {
+		t.Fatalf("ClassifyRoute returned error: %v", err)
+	}
+	if classification.Intent != "services" {
+		t.Fatalf("unexpected intent: %q", classification.Intent)
+	}
+}
+
+func TestOpenAIProviderClassifySkill(t *testing.T) {
+	t.Parallel()
+
+	provider := NewOpenAIProvider("https://api.openai.com/v1", "gpt-4o-mini", "secret", time.Second, nil)
+	provider.client = &http.Client{
+		Timeout: time.Second,
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+
+			textConfig, ok := payload["text"].(map[string]any)
+			if !ok {
+				t.Fatalf("unexpected text config: %#v", payload["text"])
+			}
+			format, ok := textConfig["format"].(map[string]any)
+			if !ok || format["type"] != "json_schema" {
+				t.Fatalf("unexpected format config: %#v", textConfig["format"])
+			}
+			if format["name"] != "skill_response" {
 				t.Fatalf("unexpected format name: %#v", format["name"])
 			}
 			schema, ok := format["schema"].(map[string]any)
@@ -80,7 +136,7 @@ func TestOpenAIProviderClassifyIntent(t *testing.T) {
 						"content": []map[string]any{
 							{
 								"type": "output_text",
-								"text": `{"intent":"service_restart","arguments":{"service":"tailscale","text":"","id":""},"confidence":0.93,"needs_clarification":false,"clarification_question":""}`,
+								"text": `{"skill":"service_restart","arguments":{"service":"tailscale","text":"","id":""},"confidence":0.93,"needs_clarification":false,"clarification_question":""}`,
 							},
 						},
 					},
@@ -89,17 +145,17 @@ func TestOpenAIProviderClassifyIntent(t *testing.T) {
 		}),
 	}
 
-	classification, err := provider.ClassifyIntent(context.Background(), "restart tailscale", ClassificationRequest{
-		AllowedIntents:  []string{"service_restart", "unknown"},
+	classification, err := provider.ClassifySkill(context.Background(), "restart tailscale", SkillClassificationRequest{
+		AllowedSkills:   []string{"service_restart", "chat"},
 		AllowedServices: []string{"tailscale"},
 		InputChars:      160,
 		NumPredict:      64,
 	})
 	if err != nil {
-		t.Fatalf("ClassifyIntent returned error: %v", err)
+		t.Fatalf("ClassifySkill returned error: %v", err)
 	}
-	if classification.Intent != "service_restart" {
-		t.Fatalf("unexpected intent: %q", classification.Intent)
+	if classification.Skill != "service_restart" {
+		t.Fatalf("unexpected skill: %q", classification.Skill)
 	}
 	if classification.Arguments["service"] != "tailscale" {
 		t.Fatalf("unexpected args: %#v", classification.Arguments)

@@ -2,9 +2,11 @@ package router
 
 import (
 	"context"
+	"log/slog"
 	"strings"
 
 	"openlight/internal/router/rules"
+	"openlight/internal/router/semantic"
 	"openlight/internal/skills"
 )
 
@@ -43,12 +45,18 @@ type Classifier interface {
 type Router struct {
 	registry   *skills.Registry
 	classifier Classifier
+	logger     *slog.Logger
 }
 
 func New(registry *skills.Registry, classifier Classifier) *Router {
+	return NewWithLogger(registry, classifier, nil)
+}
+
+func NewWithLogger(registry *skills.Registry, classifier Classifier, logger *slog.Logger) *Router {
 	return &Router{
 		registry:   registry,
 		classifier: classifier,
+		logger:     logger,
 	}
 }
 
@@ -58,15 +66,26 @@ func (r *Router) Route(ctx context.Context, text string) (Decision, error) {
 		return Decision{Mode: ModeUnknown}, nil
 	}
 
+	normalized := semantic.Normalize(text)
+	r.logDebug(
+		"router pipeline started",
+		"text", shortTextForLog(text),
+		"normalized_text", shortTextForLog(normalized),
+		"classifier_enabled", r.classifier != nil,
+	)
+
 	if decision, ok := routeSlash(text); ok {
+		r.logDebug("router matched slash command", "skill", decision.SkillName, "args", decision.Args)
 		return decision, nil
 	}
 
 	if decision, ok := routeExplicit(text); ok {
+		r.logDebug("router matched explicit command", "skill", decision.SkillName, "args", decision.Args)
 		return decision, nil
 	}
 
 	if skill, ok := r.registry.ResolveIdentifier(text); ok {
+		r.logDebug("router matched registry alias", "skill", skill.Definition().Name)
 		return Decision{
 			Mode:      ModeAlias,
 			SkillName: skill.Definition().Name,
@@ -75,6 +94,7 @@ func (r *Router) Route(ctx context.Context, text string) (Decision, error) {
 	}
 
 	if match, ok := rules.Parse(text); ok {
+		r.logDebug("router matched semantic rule", "skill", match.SkillName, "args", match.Args, "normalized_text", shortTextForLog(normalized))
 		return Decision{
 			Mode:      ModeRule,
 			SkillName: match.SkillName,
@@ -83,16 +103,37 @@ func (r *Router) Route(ctx context.Context, text string) (Decision, error) {
 	}
 
 	if r.classifier != nil {
+		r.logDebug("router invoking llm classifier", "normalized_text", shortTextForLog(normalized))
 		decision, ok, err := r.classifier.Classify(ctx, text)
 		if err != nil {
 			return Decision{}, err
 		}
 		if ok {
+			r.logDebug("router accepted llm classifier decision", "skill", decision.SkillName, "confidence", decision.Confidence, "clarify", decision.ShouldClarify())
 			return decision, nil
 		}
+		r.logDebug("router classifier produced no executable match")
 	}
 
+	r.logDebug("router finished with no match", "normalized_text", shortTextForLog(normalized))
 	return Decision{Mode: ModeUnknown}, nil
+}
+
+const maxLoggedTextChars = 160
+
+func (r *Router) logDebug(msg string, args ...any) {
+	if r.logger != nil {
+		r.logger.Debug(msg, args...)
+	}
+}
+
+func shortTextForLog(value string) string {
+	value = strings.TrimSpace(value)
+	runes := []rune(value)
+	if len(runes) <= maxLoggedTextChars {
+		return value
+	}
+	return strings.TrimSpace(string(runes[:maxLoggedTextChars])) + "..."
 }
 
 func routeSlash(text string) (Decision, bool) {

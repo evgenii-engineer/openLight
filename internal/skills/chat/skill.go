@@ -69,6 +69,7 @@ func NewSkillWithOptions(provider llm.Provider, store HistoryStore, options Opti
 func (s *Skill) Definition() skills.Definition {
 	return skills.Definition{
 		Name:        "chat",
+		Group:       skills.GroupChat,
 		Description: "Talk to the local LLM in free-form mode.",
 		Aliases:     []string{"ask", "assistant", "llm chat"},
 		Usage:       "/chat <message>",

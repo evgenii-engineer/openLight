@@ -20,6 +20,7 @@ func NewStatusSkill(provider Provider) skills.Skill {
 func (s *statusSkill) Definition() skills.Definition {
 	return skills.Definition{
 		Name:        "status",
+		Group:       skills.GroupSystem,
 		Description: "Show a compact system overview.",
 		Aliases:     []string{"system status", "overall status"},
 		Usage:       "/status",
@@ -66,6 +67,7 @@ func NewCPUSkill(provider Provider) skills.Skill {
 func (s *cpuSkill) Definition() skills.Definition {
 	return skills.Definition{
 		Name:        "cpu",
+		Group:       skills.GroupSystem,
 		Description: "Show CPU usage.",
 		Aliases:     []string{"processor usage", "show cpu"},
 		Usage:       "/cpu",
@@ -91,6 +93,7 @@ func NewMemorySkill(provider Provider) skills.Skill {
 func (s *memorySkill) Definition() skills.Definition {
 	return skills.Definition{
 		Name:        "memory",
+		Group:       skills.GroupSystem,
 		Description: "Show RAM usage.",
 		Aliases:     []string{"ram", "show memory usage"},
 		Usage:       "/memory",
@@ -123,6 +126,7 @@ func NewDiskSkill(provider Provider) skills.Skill {
 func (s *diskSkill) Definition() skills.Definition {
 	return skills.Definition{
 		Name:        "disk",
+		Group:       skills.GroupSystem,
 		Description: "Show disk usage for the root filesystem.",
 		Aliases:     []string{"storage", "disk space"},
 		Usage:       "/disk",
@@ -155,6 +159,7 @@ func NewUptimeSkill(provider Provider) skills.Skill {
 func (s *uptimeSkill) Definition() skills.Definition {
 	return skills.Definition{
 		Name:        "uptime",
+		Group:       skills.GroupSystem,
 		Description: "Show system uptime.",
 		Aliases:     []string{"running for"},
 		Usage:       "/uptime",
@@ -180,6 +185,7 @@ func NewHostnameSkill(provider Provider) skills.Skill {
 func (s *hostnameSkill) Definition() skills.Definition {
 	return skills.Definition{
 		Name:        "hostname",
+		Group:       skills.GroupSystem,
 		Description: "Show the system hostname.",
 		Aliases:     []string{"host"},
 		Usage:       "/hostname",
@@ -205,6 +211,7 @@ func NewIPSkill(provider Provider) skills.Skill {
 func (s *ipSkill) Definition() skills.Definition {
 	return skills.Definition{
 		Name:        "ip",
+		Group:       skills.GroupSystem,
 		Description: "Show local IPv4 addresses.",
 		Aliases:     []string{"ip address", "network ip"},
 		Usage:       "/ip",
@@ -230,6 +237,7 @@ func NewTemperatureSkill(provider Provider) skills.Skill {
 func (s *temperatureSkill) Definition() skills.Definition {
 	return skills.Definition{
 		Name:        "temperature",
+		Group:       skills.GroupSystem,
 		Description: "Show system temperature when available.",
 		Aliases:     []string{"temp", "cpu temp"},
 		Usage:       "/temperature",

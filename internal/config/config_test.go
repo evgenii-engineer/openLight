@@ -40,6 +40,7 @@ llm:
   endpoint: "http://127.0.0.1:11434"
   model: "qwen2.5:0.5b"
   execute_threshold: 0.9
+  mutating_execute_threshold: 0.97
   clarify_threshold: 0.7
   decision_input_chars: 120
   decision_num_predict: 48
@@ -88,7 +89,7 @@ log:
 	if !cfg.LLM.Enabled || cfg.LLM.Provider != "ollama" || cfg.LLM.Model != "qwen2.5:0.5b" {
 		t.Fatalf("unexpected llm config: %#v", cfg.LLM)
 	}
-	if cfg.LLM.ExecuteThreshold != 0.9 || cfg.LLM.ClarifyThreshold != 0.7 {
+	if cfg.LLM.ExecuteThreshold != 0.9 || cfg.LLM.MutatingExecuteThreshold != 0.97 || cfg.LLM.ClarifyThreshold != 0.7 {
 		t.Fatalf("unexpected llm thresholds: %#v", cfg.LLM)
 	}
 	if cfg.LLM.APIKey != "" {
@@ -149,7 +150,7 @@ storage:
 	if cfg.LLM.Provider != "generic" {
 		t.Fatalf("unexpected llm provider: %q", cfg.LLM.Provider)
 	}
-	if cfg.LLM.ExecuteThreshold != 0.80 || cfg.LLM.ClarifyThreshold != 0.60 {
+	if cfg.LLM.ExecuteThreshold != 0.80 || cfg.LLM.MutatingExecuteThreshold != 0.95 || cfg.LLM.ClarifyThreshold != 0.60 {
 		t.Fatalf("unexpected llm thresholds: %#v", cfg.LLM)
 	}
 	if cfg.Chat.HistoryLimit != 6 || cfg.Chat.HistoryChars != 900 || cfg.Chat.MaxResponseChars != 400 {
@@ -203,6 +204,39 @@ llm:
 	}
 }
 
+func TestLoadAllowsCustomLLMProviderNames(t *testing.T) {
+	clearConfigEnv(t)
+
+	configPath := filepath.Join(t.TempDir(), "agent.yaml")
+	writeConfig(t, configPath, `
+telegram:
+  bot_token: "token"
+
+auth:
+  allowed_user_ids: [1]
+
+storage:
+  sqlite_path: "./agent.db"
+
+llm:
+  enabled: true
+  provider: "my-provider"
+  endpoint: "http://127.0.0.1:8080"
+`)
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+
+	if cfg.LLM.Provider != "my-provider" {
+		t.Fatalf("unexpected llm provider: %q", cfg.LLM.Provider)
+	}
+	if cfg.LLM.Endpoint != "http://127.0.0.1:8080" {
+		t.Fatalf("unexpected llm endpoint: %q", cfg.LLM.Endpoint)
+	}
+}
+
 func clearConfigEnv(t *testing.T) {
 	t.Helper()
 
@@ -219,6 +253,7 @@ func clearConfigEnv(t *testing.T) {
 		"LLM_MODEL",
 		"OPENAI_API_KEY",
 		"LLM_EXECUTE_THRESHOLD",
+		"LLM_MUTATING_EXECUTE_THRESHOLD",
 		"LLM_CLARIFY_THRESHOLD",
 		"LLM_DECISION_INPUT_CHARS",
 		"LLM_DECISION_NUM_PREDICT",

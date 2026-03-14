@@ -19,6 +19,7 @@ func NewListSkill(manager Manager) skills.Skill {
 func (s *listSkill) Definition() skills.Definition {
 	return skills.Definition{
 		Name:        "service_list",
+		Group:       skills.GroupServices,
 		Description: "List whitelisted services and their current status.",
 		Aliases:     []string{"services", "list services"},
 		Usage:       "/services",
@@ -57,6 +58,7 @@ func NewStatusSkill(manager Manager) skills.Skill {
 func (s *statusSkill) Definition() skills.Definition {
 	return skills.Definition{
 		Name:        "service_status",
+		Group:       skills.GroupServices,
 		Description: "Show status for a whitelisted service.",
 		Aliases:     []string{"service status"},
 		Usage:       "/service [name]",
@@ -96,9 +98,11 @@ func NewRestartSkill(manager Manager) skills.Skill {
 func (s *restartSkill) Definition() skills.Definition {
 	return skills.Definition{
 		Name:        "service_restart",
+		Group:       skills.GroupServices,
 		Description: "Restart a whitelisted service.",
 		Aliases:     []string{"restart service"},
 		Usage:       "/restart <name>",
+		Mutating:    true,
 	}
 }
 
@@ -130,6 +134,7 @@ func NewLogsSkill(manager Manager, lines int) skills.Skill {
 func (s *logsSkill) Definition() skills.Definition {
 	return skills.Definition{
 		Name:        "service_logs",
+		Group:       skills.GroupServices,
 		Description: "Show recent logs for a whitelisted service.",
 		Aliases:     []string{"logs", "service logs"},
 		Usage:       "/logs [name]",

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -103,7 +104,11 @@ func TestAgentHandleMessagePersistsConversationAndNotes(t *testing.T) {
 
 type stubLLMProvider struct{}
 
-func (stubLLMProvider) ClassifyIntent(context.Context, string, llm.ClassificationRequest) (llm.Classification, error) {
+func (stubLLMProvider) ClassifyRoute(context.Context, string, llm.RouteClassificationRequest) (llm.RouteClassification, error) {
+	return llm.RouteClassification{}, nil
+}
+
+func (stubLLMProvider) ClassifySkill(context.Context, string, llm.SkillClassificationRequest) (llm.Classification, error) {
 	return llm.Classification{}, nil
 }
 
@@ -143,7 +148,7 @@ func TestAgentFallsBackToChatSkillForUnknownText(t *testing.T) {
 	if err := agent.HandleMessage(ctx, telegram.IncomingMessage{
 		ChatID: 200,
 		UserID: 100,
-		Text:   "привет, расскажи про память",
+		Text:   "как поживаешь сегодня",
 	}); err != nil {
 		t.Fatalf("HandleMessage returned error: %v", err)
 	}
@@ -291,12 +296,114 @@ func TestAgentRepliesWithClarificationWithoutExecutingSkill(t *testing.T) {
 	if err := agent.HandleMessage(ctx, telegram.IncomingMessage{
 		ChatID: 200,
 		UserID: 100,
-		Text:   "перезапусти сервис",
+		Text:   "сделай что-нибудь с этим",
 	}); err != nil {
 		t.Fatalf("HandleMessage returned error: %v", err)
 	}
 
 	if len(transport.sent) != 1 || transport.sent[0] != "Which service should I restart?" {
 		t.Fatalf("unexpected sent messages: %#v", transport.sent)
+	}
+}
+
+type pendingClarificationClassifier struct {
+	inputs []string
+}
+
+func (c *pendingClarificationClassifier) Classify(_ context.Context, text string) (router.Decision, bool, error) {
+	c.inputs = append(c.inputs, text)
+	return router.Decision{
+		Mode:                  router.ModeLLM,
+		Confidence:            0.71,
+		NeedsClarification:    true,
+		ClarificationQuestion: "Do you want me to show overall status?",
+	}, true, nil
+}
+
+type integrationStatusSkill struct{}
+
+func (integrationStatusSkill) Definition() skills.Definition {
+	return skills.Definition{
+		Name:        "status",
+		Group:       skills.GroupSystem,
+		Description: "Show overall host status.",
+	}
+}
+
+func (integrationStatusSkill) Execute(context.Context, skills.Input) (skills.Result, error) {
+	return skills.Result{Text: "status ok"}, nil
+}
+
+func TestAgentUsesPendingClarificationContextOnFollowUp(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "agent.db")
+	repo, err := sqlite.New(ctx, dbPath, nil)
+	if err != nil {
+		t.Fatalf("sqlite.New returned error: %v", err)
+	}
+	defer repo.Close()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(integrationStatusSkill{})
+
+	classifier := &pendingClarificationClassifier{}
+	transport := &fakeTransport{}
+	agent := NewAgent(
+		transport,
+		auth.New([]int64{100}, []int64{200}),
+		router.New(registry, classifier),
+		registry,
+		repo,
+		nil,
+		time.Second,
+	)
+
+	if err := agent.HandleMessage(ctx, telegram.IncomingMessage{
+		ChatID: 200,
+		UserID: 100,
+		Text:   "покажи общий статус",
+	}); err != nil {
+		t.Fatalf("HandleMessage returned error on clarification step: %v", err)
+	}
+
+	if len(transport.sent) != 1 || transport.sent[0] != "Do you want me to show overall status?" {
+		t.Fatalf("unexpected clarification sent messages: %#v", transport.sent)
+	}
+
+	setting, ok, err := repo.GetSetting(ctx, pendingClarificationKey(200))
+	if err != nil {
+		t.Fatalf("GetSetting returned error: %v", err)
+	}
+	if !ok || strings.TrimSpace(setting.Value) == "" {
+		t.Fatalf("expected pending clarification to be stored, got ok=%v setting=%#v", ok, setting)
+	}
+
+	if err := agent.HandleMessage(ctx, telegram.IncomingMessage{
+		ChatID: 200,
+		UserID: 100,
+		Text:   "да, сделай",
+	}); err != nil {
+		t.Fatalf("HandleMessage returned error on follow-up step: %v", err)
+	}
+
+	if len(transport.sent) != 2 || transport.sent[1] != "status ok" {
+		t.Fatalf("unexpected sent messages after follow-up: %#v", transport.sent)
+	}
+
+	if len(classifier.inputs) != 2 {
+		t.Fatalf("expected raw classifier calls only, got %#v", classifier.inputs)
+	}
+
+	setting, ok, err = repo.GetSetting(ctx, pendingClarificationKey(200))
+	if err != nil {
+		t.Fatalf("GetSetting returned error after follow-up: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected pending clarification setting row to remain present")
+	}
+	if strings.TrimSpace(setting.Value) != "" {
+		t.Fatalf("expected pending clarification to be cleared, got %#v", setting)
 	}
 }

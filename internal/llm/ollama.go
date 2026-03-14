@@ -15,8 +15,6 @@ import (
 
 const ollamaKeepAlive = "30m"
 
-const defaultDecisionNumPredict = 64
-
 type OllamaProvider struct {
 	endpoint string
 	model    string
@@ -35,19 +33,37 @@ func NewOllamaProvider(endpoint, model string, timeout time.Duration, logger *sl
 	}
 }
 
-func (p *OllamaProvider) ClassifyIntent(ctx context.Context, text string, request ClassificationRequest) (Classification, error) {
-	prompt := buildIntentPrompt(limitText(text, request.InputChars), request)
+func (p *OllamaProvider) ClassifyRoute(ctx context.Context, text string, request RouteClassificationRequest) (RouteClassification, error) {
+	prompt := buildRoutePrompt(limitText(text, request.InputChars), request)
+	responseText, err := p.generate(ctx, prompt, 0.1, decisionNumPredict(request.NumPredict))
+	if err != nil {
+		return RouteClassification{}, err
+	}
+	if p.logger != nil {
+		p.logger.Debug("ollama route raw response", "response", responseText)
+	}
+
+	var classification RouteClassification
+	if err := json.Unmarshal([]byte(extractJSON(responseText)), &classification); err != nil {
+		return RouteClassification{}, fmt.Errorf("decode ollama route response: %w", err)
+	}
+
+	return normalizeRouteClassification(classification), nil
+}
+
+func (p *OllamaProvider) ClassifySkill(ctx context.Context, text string, request SkillClassificationRequest) (Classification, error) {
+	prompt := buildSkillPrompt(limitText(text, request.InputChars), request)
 	responseText, err := p.generate(ctx, prompt, 0.1, decisionNumPredict(request.NumPredict))
 	if err != nil {
 		return Classification{}, err
 	}
 	if p.logger != nil {
-		p.logger.Debug("ollama decision raw response", "response", responseText)
+		p.logger.Debug("ollama skill raw response", "response", responseText)
 	}
 
 	var classification Classification
 	if err := json.Unmarshal([]byte(extractJSON(responseText)), &classification); err != nil {
-		return Classification{}, fmt.Errorf("decode ollama intent response: %w", err)
+		return Classification{}, fmt.Errorf("decode ollama skill response: %w", err)
 	}
 
 	return normalizeClassification(classification), nil
@@ -178,80 +194,4 @@ func (p *OllamaProvider) generate(ctx context.Context, prompt string, temperatur
 	}
 
 	return responseText, nil
-}
-
-func buildIntentPrompt(text string, request ClassificationRequest) string {
-	return fmt.Sprintf(
-		"You are a routing classifier for a Telegram-first local agent.\n\n"+
-			"Your job is to choose exactly one intent from this list:\n%s\n\n"+
-			"Return only valid JSON with this schema:\n"+
-			"{\n"+
-			"  \"intent\": \"string\",\n"+
-			"  \"arguments\": {},\n"+
-			"  \"confidence\": 0.0,\n"+
-			"  \"needs_clarification\": false,\n"+
-			"  \"clarification_question\": \"\"\n"+
-			"}\n\n"+
-			"Rules:\n"+
-			"- Never invent unsupported intents.\n"+
-			"- If the message is ambiguous, set needs_clarification=true.\n"+
-			"- If a service name is present, put it in arguments.service.\n"+
-			"- If note text is present, put it in arguments.text.\n"+
-			"- If note id is present, put it in arguments.id.\n"+
-			"- If the user clearly wants free-form conversation, use \"chat\".\n"+
-			"- If unsure, use \"unknown\".\n"+
-			"- Return JSON only.\n\n"+
-			"User message:\n%q\n\n"+
-			"Allowed services:\n%s\n",
-		strings.Join(request.AllowedIntents, "\n"),
-		text,
-		encodePromptList(request.AllowedServices),
-	)
-}
-
-func buildSummaryPrompt(text string) string {
-	return fmt.Sprintf(
-		"Return only valid JSON with a single field named summary.\n"+
-			"Summarize this text briefly and clearly.\n"+
-			"Text: %q\n",
-		text,
-	)
-}
-
-func extractJSON(value string) string {
-	value = strings.TrimSpace(value)
-	start := strings.Index(value, "{")
-	end := strings.LastIndex(value, "}")
-	if start >= 0 && end >= start {
-		return value[start : end+1]
-	}
-	return value
-}
-
-func totalChatMessageChars(messages []ChatMessage) int {
-	total := 0
-	for _, message := range messages {
-		total += utf8.RuneCountInString(message.Content)
-	}
-	return total
-}
-
-func decisionNumPredict(value int) int {
-	if value <= 0 {
-		return defaultDecisionNumPredict
-	}
-	return value
-}
-
-func encodePromptList(values []string) string {
-	if len(values) == 0 {
-		return "[]"
-	}
-
-	encoded, err := json.Marshal(values)
-	if err != nil {
-		return "[]"
-	}
-
-	return string(encoded)
 }

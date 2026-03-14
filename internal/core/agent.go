@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -13,6 +14,7 @@ import (
 	"openlight/internal/auth"
 	"openlight/internal/models"
 	"openlight/internal/router"
+	"openlight/internal/router/semantic"
 	"openlight/internal/skills"
 	"openlight/internal/storage"
 	"openlight/internal/telegram"
@@ -34,6 +36,12 @@ type Agent struct {
 }
 
 const maxLoggedMessageChars = 160
+const pendingClarificationTTL = 10 * time.Minute
+
+type pendingClarification struct {
+	SourceText string `json:"source_text"`
+	Question   string `json:"question"`
+}
 
 func NewAgent(
 	transport Transport,
@@ -76,15 +84,41 @@ func (a *Agent) HandleMessage(ctx context.Context, message telegram.IncomingMess
 		return a.reply(ctx, message.ChatID, message.UserID, "access denied")
 	}
 
-	decision, err := a.router.Route(ctx, message.Text)
+	decisionText := message.Text
+	decision, err := a.router.Route(ctx, decisionText)
 	if err != nil {
 		a.logError("route message", "error", err)
 		return a.reply(ctx, message.ChatID, message.UserID, "internal error")
 	}
 
+	pending, hasPending := a.loadPendingClarification(ctx, message.ChatID)
+	if hasPending && shouldUsePendingClarification(message.Text, decision) {
+		clarifiedText := composeClarifiedText(pending, message.Text)
+		a.logDebug(
+			"routing with pending clarification context",
+			"message_text", shortTextForLog(message.Text),
+			"pending_source_text", shortTextForLog(pending.SourceText),
+			"pending_question", pending.Question,
+			"clarified_text", shortTextForLog(clarifiedText),
+		)
+
+		clarifiedDecision, clarifiedErr := a.router.Route(ctx, clarifiedText)
+		if clarifiedErr != nil {
+			a.logError("route message with pending clarification", "error", clarifiedErr)
+		} else {
+			decisionText = clarifiedText
+			decision = clarifiedDecision
+		}
+	}
+
+	if hasPending {
+		a.clearPendingClarification(ctx, message.ChatID)
+	}
+
 	a.logRouteDecision("router decision", message, decision)
 
 	if decision.ShouldClarify() {
+		a.savePendingClarification(ctx, message.ChatID, decisionText, decision.ClarificationQuestion)
 		a.logInfo(
 			"requesting clarification",
 			"message_text", shortTextForLog(message.Text),
@@ -208,6 +242,59 @@ func (a *Agent) saveSkillCall(ctx context.Context, call models.SkillCall) {
 	}
 }
 
+func (a *Agent) savePendingClarification(ctx context.Context, chatID int64, sourceText, question string) {
+	payload, err := json.Marshal(pendingClarification{
+		SourceText: strings.TrimSpace(sourceText),
+		Question:   strings.TrimSpace(question),
+	})
+	if err != nil {
+		a.logError("marshal pending clarification", "error", err, "chat_id", chatID)
+		return
+	}
+
+	if err := a.repository.SetSetting(ctx, pendingClarificationKey(chatID), string(payload)); err != nil {
+		a.logError("save pending clarification", "error", err, "chat_id", chatID)
+	}
+}
+
+func (a *Agent) loadPendingClarification(ctx context.Context, chatID int64) (pendingClarification, bool) {
+	setting, ok, err := a.repository.GetSetting(ctx, pendingClarificationKey(chatID))
+	if err != nil {
+		a.logError("load pending clarification", "error", err, "chat_id", chatID)
+		return pendingClarification{}, false
+	}
+	if !ok || strings.TrimSpace(setting.Value) == "" {
+		return pendingClarification{}, false
+	}
+
+	if time.Since(setting.UpdatedAt) > pendingClarificationTTL {
+		a.clearPendingClarification(ctx, chatID)
+		return pendingClarification{}, false
+	}
+
+	var pending pendingClarification
+	if err := json.Unmarshal([]byte(setting.Value), &pending); err != nil {
+		a.logWarn("invalid pending clarification payload", "chat_id", chatID, "error", err)
+		a.clearPendingClarification(ctx, chatID)
+		return pendingClarification{}, false
+	}
+
+	pending.SourceText = strings.TrimSpace(pending.SourceText)
+	pending.Question = strings.TrimSpace(pending.Question)
+	if pending.SourceText == "" || pending.Question == "" {
+		a.clearPendingClarification(ctx, chatID)
+		return pendingClarification{}, false
+	}
+
+	return pending, true
+}
+
+func (a *Agent) clearPendingClarification(ctx context.Context, chatID int64) {
+	if err := a.repository.SetSetting(ctx, pendingClarificationKey(chatID), ""); err != nil {
+		a.logError("clear pending clarification", "error", err, "chat_id", chatID)
+	}
+}
+
 func (a *Agent) logWarn(msg string, args ...any) {
 	if a.logger != nil {
 		a.logger.Warn(msg, args...)
@@ -300,4 +387,64 @@ func shortTextForLog(value string) string {
 	}
 
 	return strings.TrimSpace(string(runes[:maxLoggedMessageChars])) + fmt.Sprintf("...(%d chars)", utf8.RuneCountInString(value))
+}
+
+func pendingClarificationKey(chatID int64) string {
+	return "pending_clarification:" + strconv.FormatInt(chatID, 10)
+}
+
+func composeClarifiedText(pending pendingClarification, answer string) string {
+	return fmt.Sprintf(
+		"Previous request: %q\nClarification question: %q\nUser answer: %q",
+		strings.TrimSpace(pending.SourceText),
+		strings.TrimSpace(pending.Question),
+		strings.TrimSpace(answer),
+	)
+}
+
+func shouldUsePendingClarification(text string, decision router.Decision) bool {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" || strings.HasPrefix(trimmed, "/") {
+		return false
+	}
+
+	if decision.ShouldClarify() || !decision.Matched() {
+		return true
+	}
+
+	if decision.SkillName != "chat" {
+		return false
+	}
+
+	return looksLikeClarificationAnswer(trimmed)
+}
+
+func looksLikeClarificationAnswer(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return false
+	}
+
+	for _, phrase := range []string{"thanks", "thank you", "спасибо", "благодарю"} {
+		if strings.Contains(lower, phrase) {
+			return false
+		}
+	}
+
+	normalized := semantic.Normalize(text)
+	if normalized == "" {
+		return false
+	}
+
+	for _, token := range strings.Fields(normalized) {
+		if _, err := strconv.Atoi(token); err == nil {
+			return true
+		}
+		switch token {
+		case "yes", "да", "ага", "угу", "ok", "okay", "ок", "ладно", "sure", "confirm", "confirmed", "подтверждаю", "сделай", "давай", "continue", "go", "ahead":
+			return true
+		}
+	}
+
+	return false
 }

@@ -1,173 +1,288 @@
 # openLight
 
-Lightweight Telegram-first AI agent for Raspberry Pi, built in Go and designed to run with a local LLM.
+![Go](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go&logoColor=white)
+![License](https://img.shields.io/badge/License-MIT-green)
+![Target](https://img.shields.io/badge/Target-Raspberry%20Pi-red)
 
-`openLight` is a practical alternative to heavier agent frameworks like OpenClaw. It focuses on the simple local loop that people actually want on a Raspberry Pi: system checks, service control, notes, and lightweight chat through Telegram, without dragging in a full autonomous stack.
+Telegram-first local agent for Raspberry Pi.
 
-- Telegram-first interface
-- Local LLM via Ollama
-- Raspberry Pi friendly
-- SQLite storage
-- Small skill-based architecture
+Deterministic host skills, SQLite state, and just enough LLM.
 
-## Why It Exists
+`openLight` is a small Go runtime for a very specific job: expose a narrow set of useful host skills through Telegram, keep routing deterministic, and use an LLM only where natural language actually helps.
 
-Most AI-agent frameworks are built for broad automation, multi-step planning, or cloud-heavy workflows. That is useful, but it is often too much for an edge device.
+[Architecture](./ARCHITECTURE.md) · [Config Templates](./configs) · [Systemd Unit](./deployments/systemd/openlight-agent.service) · [Docker Compose for Ollama](./deployments/docker/ollama-compose.yaml)
 
-`openLight` takes the opposite approach:
+## At A Glance
 
-- one machine
-- one Telegram interface
-- a small toolset
-- optional local intelligence
-- predictable behaviour first, LLM second
+| Area | Choice |
+| --- | --- |
+| Language | Go |
+| Runtime | single binary |
+| Storage | SQLite |
+| Interface | Telegram |
+| LLM providers | Ollama, OpenAI, generic HTTP |
+| Routing model | deterministic first, LLM fallback |
+| Deployment target | Raspberry Pi and small Linux hosts |
+| Process model | systemd-friendly |
 
-It is not trying to be a general autonomous platform. It is trying to be a useful bot you can actually run on a Raspberry Pi every day.
+## Why openLight
 
-## Demo / Use Cases
+Most agent projects start with autonomy and then try to add safety back in.  
+`openLight` does the opposite:
 
-Good fits:
+- deterministic routing first
+- LLM fallback second
+- one small binary
+- SQLite persistence
+- Raspberry Pi-friendly deployment
+- narrow, auditable skills instead of general shell access
 
-- home server or homelab Raspberry Pi
-- remote Telegram control for `tailscale`, `jellyfin`, `nginx`, and similar services
-- private local assistant with Ollama on-device
-- lightweight ops bot for status, logs, and restarts
-- simple note capture and reminders without extra infrastructure
+This makes it a good fit for:
 
-## Telegram Examples
+- Raspberry Pi home servers
+- Telegram-based status and maintenance bots
+- local-first assistants with Ollama
+- simple remote ops with OpenAI as a fallback provider
+
+## Design Position
+
+| openLight | General-purpose agent stacks |
+| --- | --- |
+| Telegram-first host assistant | broad multi-tool autonomy |
+| deterministic routing first | often LLM-first orchestration |
+| explicit skills and groups | generic tool surfaces |
+| single Go binary | larger runtime stacks |
+| Raspberry Pi-friendly deploy | server or dev-machine oriented |
+| SQLite state and simple ops | broader platform concerns |
+
+## Highlights
+
+- `system` skills: `status`, `cpu`, `memory`, `disk`, `uptime`, `hostname`, `ip`, `temperature`
+- `services` skills: `service_list`, `service_status`, `service_logs`, `service_restart`
+- `notes` skills: `note_add`, `note_list`, `note_delete`
+- `chat` mode: free-form fallback when no tool matches
+- two-stage LLM routing: route to group, then choose one concrete skill
+- local or remote LLM providers: Ollama, OpenAI, or generic HTTP
+- polling and webhook Telegram transports
+- Raspberry Pi deploy scripts and systemd unit included
+
+## What It Feels Like
 
 ```text
-You: /skills
-Bot: Available skills:
+You: покажи общий статус
+Bot: Hostname: raspberry
+CPU: 2.0%
+Memory: 1.9 GiB used / 7.9 GiB total
+Disk: 864.1 GiB free / 916.3 GiB total
+Uptime: 2d 4h 11m
+Temperature: 58.7C
+```
 
-Chat
-- chat: Talk to the local LLM in free-form mode.
-
-Notes
-- note_add: Add a short note to SQLite storage.
-- note_list: List the latest saved notes.
-- note_delete: Delete a saved note by id.
+```text
+You: покажи логи tailscale
+Bot: Logs for tailscale:
 ...
 ```
 
 ```text
-You: service_list
-Bot: Allowed services:
-- tailscale: active
+You: добавь заметку купить ssd
+Bot: Saved note #3
 ```
 
 ```text
-You: note_add buy SSD
-Bot: Saved note #1
-
-You: note_list
-Bot: Notes:
-- #1 buy SSD
-
-You: note_delete 1
-Bot: Deleted note #1
+You: привет, как дела
+Bot: Привет. Чем помочь?
 ```
 
-```text
-You: chat привет, как дела
-Bot: Привет! Всё нормально. Чем помочь?
+## Runtime Model
+
+The core idea is simple:
+
+`deterministic routing first, LLM second`
+
+```mermaid
+flowchart TD
+    A[Telegram message] --> B[Auth + persistence]
+    B --> C[Deterministic routing]
+    C --> D{Matched?}
+    D -- yes --> E[Execute skill]
+    D -- no --> F[LLM route classifier]
+    F --> G{chat or group}
+    G -- chat --> H[Chat skill]
+    G -- group --> I[LLM skill classifier]
+    I --> J[Validate]
+    J --> E
+    H --> K[Reply]
+    E --> K
 ```
 
-```text
-You: restart tailscale
-Bot: Service restarted: tailscale
-```
+What the LLM does here:
+
+- decide `chat` vs one skill group
+- choose one concrete skill in that group
+- extract minimal arguments
+
+What the LLM does not do:
+
+- execute commands
+- plan long tool chains
+- bypass validation
+- access arbitrary shell tools
+
+For the full breakdown, see [ARCHITECTURE.md](./ARCHITECTURE.md).
 
 ## Quick Start
 
-First, create your local config and fill in `configs/agent.rpi.yaml` with:
+1. Initialize a config:
+
+```bash
+make init-rpi-config
+```
+
+2. Fill in:
 
 - `telegram.bot_token`
 - `auth.allowed_user_ids`
 - `auth.allowed_chat_ids`
 
-By default the bot uses Telegram long polling with `telegram.mode: "polling"`.
+3. Pick an LLM provider:
 
-Then bring the agent up in 3 commands:
+- `ollama` for local inference
+- `openai` for hosted inference
+- `generic` for a custom HTTP adapter
+
+4. Deploy:
 
 ```bash
-make init-rpi-config
 make deploy-rpi-all
 ssh pi@raspberrypi.local "journalctl -u openlight-agent -f"
 ```
 
-If you use your own Raspberry user or host, keep them in `Makefile.local` so you can still use the same commands.
+Config templates:
 
-## Skills / Commands
+- [configs/agent.example.yaml](./configs/agent.example.yaml)
+- [configs/agent.openai.example.yaml](./configs/agent.openai.example.yaml)
+- [configs/agent.rpi.ollama.example.yaml](./configs/agent.rpi.ollama.example.yaml)
 
-### Chat
+## LLM Setup
 
-- `/chat <message>`
-- `chat <message>`
-- plain text fallback when no tool matches
+Ollama example:
 
-### Notes
+```yaml
+llm:
+  enabled: true
+  provider: "ollama"
+  endpoint: "http://127.0.0.1:11434"
+  model: "qwen2.5:0.5b"
+  execute_threshold: 0.80
+  mutating_execute_threshold: 0.95
+  clarify_threshold: 0.60
+  decision_input_chars: 160
+  decision_num_predict: 128
 
-- `note_add <text>`
-- `note_list`
-- `note_delete <id>`
+chat:
+  history_limit: 6
+  history_chars: 900
+  max_response_chars: 400
+```
 
-### Services
+OpenAI example:
 
-- `service_list`
-- `service_status [service]`
-- `service_logs [service]`
-- `service_restart <service>`
-- natural language examples:
-  - `restart tailscale`
-  - `show jellyfin logs`
+```yaml
+llm:
+  enabled: true
+  provider: "openai"
+  endpoint: "https://api.openai.com/v1"
+  model: "gpt-4o-mini"
+  api_key: ""
+  execute_threshold: 0.80
+  mutating_execute_threshold: 0.95
+  clarify_threshold: 0.60
+  decision_input_chars: 160
+  decision_num_predict: 128
+```
 
-If only one service is whitelisted, `service_status` and `service_logs` can omit the service name.
+Notes:
 
-### System
+- `chat.*` affects only free-form chat
+- `llm.decision_*` affects only structured routing
+- the same `llm.model` is used for route classification and skill classification
+- `OPENAI_API_KEY` can be used instead of `llm.api_key`
 
-- `/status`
-- `/cpu`
-- `/memory`
-- `/disk`
-- `/uptime`
-- `/hostname`
-- `/ip`
-- `/temperature`
+## Telegram Modes
 
-### Core
+`openLight` supports:
 
-- `/start`
-- `/help`
-- `/skills`
-- `/ping`
+- `telegram.mode: "polling"`
+- `telegram.mode: "webhook"`
 
-## Architecture Overview
+Webhook mode needs a public `https://...` URL that Telegram can reach.
 
-The runtime flow is:
+Example:
 
-`Telegram transport -> auth -> router -> skill execution -> optional LLM -> SQLite persistence`
+```yaml
+telegram:
+  bot_token: "123456:replace-me"
+  api_base_url: "https://api.telegram.org"
+  mode: "webhook"
+  poll_timeout: 25s
+  webhook:
+    url: "https://bot.example.com/openlight/webhook"
+    listen_addr: ":8081"
+    secret_token: "replace-me"
+    drop_pending_updates: false
+```
 
-High level components:
+## Built-In Skills
 
-- transport: Telegram Bot API polling and replies
-- auth: user/chat whitelist checks
-- router: slash commands, explicit commands, rule-based parsing, optional LLM classifier
-- skills: chat, notes, services, system metrics, meta commands
-- llm: Ollama, OpenAI Responses API, or generic HTTP provider
-- storage: SQLite for messages, notes, skill calls, and settings
+| Group | Skills |
+| --- | --- |
+| `system` | `status`, `cpu`, `memory`, `disk`, `uptime`, `hostname`, `ip`, `temperature` |
+| `services` | `service_list`, `service_status`, `service_logs`, `service_restart` |
+| `notes` | `note_add`, `note_list`, `note_delete` |
+| `core` | `start`, `help`, `skills`, `ping` |
+| `chat` | free-form LLM conversation |
 
-Full breakdown lives in [ARCHITECTURE.md](./ARCHITECTURE.md).
+## Local Ollama
 
-## Deploy To Raspberry Pi
+Local Ollama compose lives in [deployments/docker/ollama-compose.yaml](./deployments/docker/ollama-compose.yaml).
 
-The repo already includes:
+```bash
+make ollama-up
+make ollama-pull
+curl http://127.0.0.1:11434/api/generate \
+  -d '{"model":"qwen2.5:0.5b","prompt":"reply with ok","stream":false}'
+```
+
+## Build, Test, Deploy
+
+Build:
+
+```bash
+make build-rpi
+```
+
+Run tests:
+
+```bash
+GOCACHE=/tmp/go-build GOSUMDB=off go test ./...
+```
+
+Run real Ollama smoke tests:
+
+```bash
+make ollama-up
+make ollama-pull
+make test-e2e-ollama
+make ollama-down
+```
+
+Deploy helpers:
 
 - [Makefile](./Makefile)
-- [deploy-rpi.sh](./scripts/deploy-rpi.sh)
-- [deploy-rpi-config.sh](./scripts/deploy-rpi-config.sh)
-- [deploy-rpi-service.sh](./scripts/deploy-rpi-service.sh)
-- [openlight-agent.service](./deployments/systemd/openlight-agent.service)
+- [scripts/deploy-rpi.sh](./scripts/deploy-rpi.sh)
+- [scripts/deploy-rpi-config.sh](./scripts/deploy-rpi-config.sh)
+- [scripts/deploy-rpi-service.sh](./scripts/deploy-rpi-service.sh)
 
 Deploy layout:
 
@@ -185,114 +300,20 @@ make deploy-rpi-service
 make deploy-rpi-all
 ```
 
-## Why This Stack
+## Extending
 
-### Why Not OpenClaw
+`openLight` is designed to grow in two directions:
 
-OpenClaw is aimed at broader agent workflows. `openLight` is for the smaller, sharper problem:
+- new LLM providers through [internal/llm/factory.go](./internal/llm/factory.go)
+- new skills and modules through [internal/skills/module.go](./internal/skills/module.go)
 
-- one Raspberry Pi
-- one Telegram interface
-- a small toolset
-- low memory footprint
-- predictable behaviour
+The practical extension guide lives in [ARCHITECTURE.md](./ARCHITECTURE.md).
 
-If you want a compact operator bot, `openLight` is the simpler fit.
+## Security Notes
 
-### Why Go
-
-- small static binaries
-- easy deployment to Raspberry Pi
-- low runtime overhead
-- good fit for long-running services
-- straightforward concurrency and context-based cancellation
-
-### Why Raspberry Pi
-
-- cheap and available edge hardware
-- good enough for a Telegram bot, SQLite, and a small local LLM
-- ideal for private homelab and home server use
-
-## LLM Setup
-
-Example Ollama config:
-
-```yaml
-llm:
-  enabled: true
-  provider: "ollama"
-  endpoint: "http://127.0.0.1:11434"
-  model: "qwen2.5:0.5b"
-  execute_threshold: 0.80
-  clarify_threshold: 0.60
-
-chat:
-  history_limit: 6
-  history_chars: 900
-  max_response_chars: 400
-```
-
-Templates:
-
-- [agent.example.yaml](./configs/agent.example.yaml)
-- [agent.openai.example.yaml](./configs/agent.openai.example.yaml)
-- [agent.rpi.ollama.example.yaml](./configs/agent.rpi.ollama.example.yaml)
-
-Example OpenAI config:
-
-```yaml
-llm:
-  enabled: true
-  provider: "openai"
-  endpoint: "https://api.openai.com/v1"
-  model: "gpt-4o-mini"
-  api_key: ""
-  execute_threshold: 0.80
-  clarify_threshold: 0.60
-  decision_input_chars: 160
-  decision_num_predict: 64
-```
-
-Set the key either in `llm.api_key` or with `OPENAI_API_KEY`.
-
-`openLight` uses the OpenAI Responses API for this provider. Inference from the current implementation: the same configured model is used for both chat and structured decision routing, so a model with Structured Outputs support is the safest choice for routing.
-
-## Telegram Webhooks
-
-`openLight` supports both transport modes:
-
-- `telegram.mode: "polling"` for the current simple `getUpdates` flow
-- `telegram.mode: "webhook"` for inbound Telegram webhooks
-
-Webhook mode needs a public `https://...` URL that Telegram can reach. Example:
-
-```yaml
-telegram:
-  bot_token: "123456:replace-me"
-  api_base_url: "https://api.telegram.org"
-  mode: "webhook"
-  poll_timeout: 25s
-  webhook:
-    url: "https://bot.example.com/openlight/webhook"
-    listen_addr: ":8081"
-    secret_token: "replace-me"
-    drop_pending_updates: false
-```
-
-In webhook mode the agent will:
-
-- start a local HTTP server on `telegram.webhook.listen_addr`
-- call Telegram `setWebhook` on startup
-- validate `X-Telegram-Bot-Api-Secret-Token` when `secret_token` is set
-
-If you switch back to polling, the agent automatically calls `deleteWebhook` on startup so `getUpdates` works again.
-
-## Build And Test
-
-```bash
-make build-rpi
-GOCACHE=/tmp/go-build GOSUMDB=off go test ./...
-```
+- Telegram access is controlled by user/chat whitelist checks
+- service management is limited to explicitly allowed services
+- there is no general shell execution path in the bot runtime
 
 ## Roadmap
 
@@ -316,21 +337,6 @@ GOCACHE=/tmp/go-build GOSUMDB=off go test ./...
 - safer shell and file-oriented tools
 - richer service and host management skills
 
-## Security Notes
-
-- secrets live in config or environment, not in code
-- service operations are restricted to `services.allowed`
-- user/chat access is whitelist-based
-- no uncontrolled shell execution for service commands
-
 ## License
 
-This project is licensed under the MIT License.
-
-## Contact
-
-Author: Evgenii Isupov
-
-GitHub: https://github.com/evgenii-engineer
-
-For bugs or feature requests please open a GitHub issue.
+MIT. See [LICENSE](./LICENSE).

@@ -55,19 +55,26 @@ func run() error {
 
 	var llmProvider basellm.Provider
 	if cfg.LLM.Enabled {
-		llmProvider = buildLLMProvider(cfg, logger)
+		llmProvider, err = buildLLMProvider(cfg, logger)
+		if err != nil {
+			return err
+		}
 	}
 
-	registry := buildRegistry(cfg, repository, logger, llmProvider)
+	registry, err := buildRegistry(cfg, repository, logger, llmProvider)
+	if err != nil {
+		return err
+	}
 
 	var classifier router.Classifier
 	if llmProvider != nil {
 		classifier = routerllm.NewClassifier(llmProvider, registry, routerllm.Options{
-			AllowedServices:  cfg.Services.Allowed,
-			ExecuteThreshold: cfg.LLM.ExecuteThreshold,
-			ClarifyThreshold: cfg.LLM.ClarifyThreshold,
-			InputChars:       cfg.LLM.DecisionInputChars,
-			NumPredict:       cfg.LLM.DecisionNumPredict,
+			AllowedServices:          cfg.Services.Allowed,
+			ExecuteThreshold:         cfg.LLM.ExecuteThreshold,
+			MutatingExecuteThreshold: cfg.LLM.MutatingExecuteThreshold,
+			ClarifyThreshold:         cfg.LLM.ClarifyThreshold,
+			InputChars:               cfg.LLM.DecisionInputChars,
+			NumPredict:               cfg.LLM.DecisionNumPredict,
 		}, logger.With("component", "router-llm"))
 	}
 
@@ -87,7 +94,7 @@ func run() error {
 	agent := core.NewAgent(
 		bot,
 		auth.New(cfg.Auth.AllowedUserIDs, cfg.Auth.AllowedChatIDs),
-		router.New(registry, classifier),
+		router.NewWithLogger(registry, classifier, logger.With("component", "router")),
 		registry,
 		repository,
 		logger.With("component", "agent"),
@@ -108,51 +115,39 @@ func isExpectedShutdown(err error) bool {
 	return err == nil || errors.Is(err, context.Canceled)
 }
 
-func buildRegistry(cfg config.Config, repository storage.Repository, logger *slog.Logger, llmProvider basellm.Provider) *skills.Registry {
+func buildRegistry(cfg config.Config, repository storage.Repository, logger *slog.Logger, llmProvider basellm.Provider) (*skills.Registry, error) {
 	registry := skills.NewRegistry()
 
 	systemProvider := systemskills.NewLocalProvider()
 	serviceManager := serviceskills.NewSystemdManager(cfg.Services.Allowed, logger.With("component", "systemd"))
 
-	registry.MustRegister(skills.NewStartSkill())
-	registry.MustRegister(skills.NewPingSkill())
-	registry.MustRegister(systemskills.NewStatusSkill(systemProvider))
-	registry.MustRegister(systemskills.NewCPUSkill(systemProvider))
-	registry.MustRegister(systemskills.NewMemorySkill(systemProvider))
-	registry.MustRegister(systemskills.NewDiskSkill(systemProvider))
-	registry.MustRegister(systemskills.NewUptimeSkill(systemProvider))
-	registry.MustRegister(systemskills.NewHostnameSkill(systemProvider))
-	registry.MustRegister(systemskills.NewIPSkill(systemProvider))
-	registry.MustRegister(systemskills.NewTemperatureSkill(systemProvider))
-	registry.MustRegister(serviceskills.NewListSkill(serviceManager))
-	registry.MustRegister(serviceskills.NewStatusSkill(serviceManager))
-	registry.MustRegister(serviceskills.NewRestartSkill(serviceManager))
-	registry.MustRegister(serviceskills.NewLogsSkill(serviceManager, cfg.Services.LogLines))
-	registry.MustRegister(notes.NewAddSkill(repository))
-	registry.MustRegister(notes.NewListSkill(repository, cfg.Notes.ListLimit))
-	registry.MustRegister(notes.NewDeleteSkill(repository))
+	modules := []skills.Module{
+		systemskills.NewModule(systemProvider),
+		serviceskills.NewModule(serviceManager, cfg.Services.LogLines),
+		notes.NewModule(repository, cfg.Notes.ListLimit),
+	}
 	if llmProvider != nil {
-		registry.MustRegister(chatskills.NewSkillWithOptions(llmProvider, repository, chatskills.Options{
+		modules = append(modules, chatskills.NewModule(llmProvider, repository, chatskills.Options{
 			HistoryLimit:     cfg.Chat.HistoryLimit,
 			HistoryChars:     cfg.Chat.HistoryChars,
 			MaxResponseChars: cfg.Chat.MaxResponseChars,
 		}))
 	}
-	registry.MustRegister(skills.NewSkillsSkill(registry))
-	registry.MustRegister(skills.NewHelpSkill(registry))
+	modules = append(modules, skills.NewCoreModule())
 
-	return registry
+	if err := skills.RegisterModules(registry, modules...); err != nil {
+		return nil, err
+	}
+
+	return registry, nil
 }
 
-func buildLLMProvider(cfg config.Config, logger *slog.Logger) basellm.Provider {
+func buildLLMProvider(cfg config.Config, logger *slog.Logger) (basellm.Provider, error) {
 	llmLogger := logger.With("component", "llm")
-
-	switch cfg.LLM.Provider {
-	case "ollama":
-		return basellm.NewOllamaProvider(cfg.LLM.Endpoint, cfg.LLM.Model, cfg.Agent.RequestTimeout, llmLogger)
-	case "openai":
-		return basellm.NewOpenAIProvider(cfg.LLM.Endpoint, cfg.LLM.Model, cfg.LLM.APIKey, cfg.Agent.RequestTimeout, llmLogger)
-	default:
-		return basellm.NewHTTPProvider(cfg.LLM.Endpoint, cfg.Agent.RequestTimeout, llmLogger)
-	}
+	return basellm.BuildProvider(cfg.LLM.Provider, basellm.ProviderConfig{
+		Endpoint: cfg.LLM.Endpoint,
+		Model:    cfg.LLM.Model,
+		APIKey:   cfg.LLM.APIKey,
+		Timeout:  cfg.Agent.RequestTimeout,
+	}, llmLogger)
 }

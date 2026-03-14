@@ -72,8 +72,8 @@ func NewOpenAIProvider(endpoint, model, apiKey string, timeout time.Duration, lo
 	}
 }
 
-func (p *OpenAIProvider) ClassifyIntent(ctx context.Context, text string, request ClassificationRequest) (Classification, error) {
-	prompt := buildIntentPrompt(limitText(text, request.InputChars), request)
+func (p *OpenAIProvider) ClassifyRoute(ctx context.Context, text string, request RouteClassificationRequest) (RouteClassification, error) {
+	prompt := buildRoutePrompt(limitText(text, request.InputChars), request)
 	responseText, err := p.createTextResponse(ctx, openAIResponsesRequest{
 		Model:           p.model,
 		Input:           prompt,
@@ -81,7 +81,35 @@ func (p *OpenAIProvider) ClassifyIntent(ctx context.Context, text string, reques
 		MaxOutputTokens: decisionNumPredict(request.NumPredict),
 		Store:           false,
 		Text: openAITextSpec{
-			Format: openAIJSONSchemaFormat("decision_response", decisionResponseSchema(request.AllowedIntents)),
+			Format: openAIJSONSchemaFormat("route_response", routeResponseSchema(groupKeys(request.Groups))),
+		},
+	})
+	if err != nil {
+		return RouteClassification{}, err
+	}
+
+	if p.logger != nil {
+		p.logger.Debug("openai route raw response", "response", responseText)
+	}
+
+	var classification RouteClassification
+	if err := json.Unmarshal([]byte(responseText), &classification); err != nil {
+		return RouteClassification{}, fmt.Errorf("decode openai route response: %w", err)
+	}
+
+	return normalizeRouteClassification(classification), nil
+}
+
+func (p *OpenAIProvider) ClassifySkill(ctx context.Context, text string, request SkillClassificationRequest) (Classification, error) {
+	prompt := buildSkillPrompt(limitText(text, request.InputChars), request)
+	responseText, err := p.createTextResponse(ctx, openAIResponsesRequest{
+		Model:           p.model,
+		Input:           prompt,
+		Temperature:     0.1,
+		MaxOutputTokens: decisionNumPredict(request.NumPredict),
+		Store:           false,
+		Text: openAITextSpec{
+			Format: openAIJSONSchemaFormat("skill_response", skillResponseSchema(request.AllowedSkills)),
 		},
 	})
 	if err != nil {
@@ -89,12 +117,12 @@ func (p *OpenAIProvider) ClassifyIntent(ctx context.Context, text string, reques
 	}
 
 	if p.logger != nil {
-		p.logger.Debug("openai decision raw response", "response", responseText)
+		p.logger.Debug("openai skill raw response", "response", responseText)
 	}
 
 	var classification Classification
 	if err := json.Unmarshal([]byte(responseText), &classification); err != nil {
-		return Classification{}, fmt.Errorf("decode openai intent response: %w", err)
+		return Classification{}, fmt.Errorf("decode openai skill response: %w", err)
 	}
 
 	return normalizeClassification(classification), nil
@@ -263,52 +291,5 @@ func openAIJSONSchemaFormat(name string, schema map[string]any) map[string]any {
 		"name":   name,
 		"strict": true,
 		"schema": schema,
-	}
-}
-
-func decisionResponseSchema(allowedIntents []string) map[string]any {
-	intentSchema := map[string]any{"type": "string"}
-	if len(allowedIntents) > 0 {
-		intentSchema["enum"] = allowedIntents
-	}
-
-	return map[string]any{
-		"type":                 "object",
-		"additionalProperties": false,
-		"properties": map[string]any{
-			"intent": intentSchema,
-			"arguments": map[string]any{
-				"type":                 "object",
-				"additionalProperties": false,
-				"properties": map[string]any{
-					"service": map[string]any{"type": "string"},
-					"text":    map[string]any{"type": "string"},
-					"id":      map[string]any{"type": "string"},
-				},
-				"required": []string{
-					"service",
-					"text",
-					"id",
-				},
-			},
-			"confidence": map[string]any{
-				"type":    "number",
-				"minimum": 0,
-				"maximum": 1,
-			},
-			"needs_clarification": map[string]any{
-				"type": "boolean",
-			},
-			"clarification_question": map[string]any{
-				"type": "string",
-			},
-		},
-		"required": []string{
-			"intent",
-			"arguments",
-			"confidence",
-			"needs_clarification",
-			"clarification_question",
-		},
 	}
 }

@@ -16,6 +16,7 @@ func NewStartSkill() Skill {
 func (StartSkill) Definition() Definition {
 	return Definition{
 		Name:        "start",
+		Group:       GroupCore,
 		Description: "Show a short introduction and the main commands.",
 		Aliases:     []string{"hello", "hi"},
 		Usage:       "/start",
@@ -37,6 +38,7 @@ func NewPingSkill() Skill {
 func (PingSkill) Definition() Definition {
 	return Definition{
 		Name:        "ping",
+		Group:       GroupCore,
 		Description: "Quick connectivity check.",
 		Aliases:     []string{"healthcheck"},
 		Usage:       "/ping",
@@ -58,6 +60,7 @@ func NewSkillsSkill(registry *Registry) Skill {
 func (s *SkillsSkill) Definition() Definition {
 	return Definition{
 		Name:        "skills",
+		Group:       GroupCore,
 		Description: "List available skills.",
 		Aliases:     []string{"list skills", "what can you do"},
 		Usage:       "/skills",
@@ -65,36 +68,9 @@ func (s *SkillsSkill) Definition() Definition {
 }
 
 func (s *SkillsSkill) Execute(_ context.Context, _ Input) (Result, error) {
-	grouped := make(map[string][]Definition)
-	groupInfo := make(map[string]skillGroup)
-
-	for _, definition := range s.registry.List() {
-		if definition.Hidden {
-			continue
-		}
-
-		group := skillGroupFor(definition.Name)
-		grouped[group.Title] = append(grouped[group.Title], definition)
-		groupInfo[group.Title] = group
-	}
-
-	titles := make([]string, 0, len(grouped))
-	for title := range grouped {
-		titles = append(titles, title)
-	}
-
-	sort.Slice(titles, func(i, j int) bool {
-		left := groupInfo[titles[i]]
-		right := groupInfo[titles[j]]
-		if left.Order != right.Order {
-			return left.Order < right.Order
-		}
-		return titles[i] < titles[j]
-	})
-
 	lines := []string{"Available skills:"}
-	for _, title := range titles {
-		definitions := grouped[title]
+	for _, group := range s.registry.ListGroups() {
+		definitions := s.registry.ListByGroup(group.Key)
 		sort.SliceStable(definitions, func(i, j int) bool {
 			left := skillOrder(definitions[i].Name)
 			right := skillOrder(definitions[j].Name)
@@ -104,7 +80,7 @@ func (s *SkillsSkill) Execute(_ context.Context, _ Input) (Result, error) {
 			return definitions[i].Name < definitions[j].Name
 		})
 
-		lines = append(lines, "", title)
+		lines = append(lines, "", group.Title)
 		for _, definition := range definitions {
 			lines = append(lines, fmt.Sprintf("- %s: %s", definition.Name, definition.Description))
 		}
@@ -124,6 +100,7 @@ func NewHelpSkill(registry *Registry) Skill {
 func (h *HelpSkill) Definition() Definition {
 	return Definition{
 		Name:        "help",
+		Group:       GroupCore,
 		Description: "Show usage for a command or skill.",
 		Aliases:     []string{"usage", "manual"},
 		Usage:       "/help [skill]",
@@ -143,7 +120,10 @@ func (h *HelpSkill) Execute(_ context.Context, input Input) (Result, error) {
 		return Result{}, fmt.Errorf("%w: %s", ErrSkillNotFound, topic)
 	}
 
-	definition := skill.Definition()
+	definition, ok := h.registry.Definition(skill.Definition().Name)
+	if !ok {
+		definition = skill.Definition()
+	}
 	lines := []string{
 		fmt.Sprintf("%s: %s", definition.Name, definition.Description),
 	}
@@ -158,28 +138,6 @@ func (h *HelpSkill) Execute(_ context.Context, input Input) (Result, error) {
 	}
 
 	return Result{Text: strings.Join(lines, "\n")}, nil
-}
-
-type skillGroup struct {
-	Title string
-	Order int
-}
-
-func skillGroupFor(name string) skillGroup {
-	switch name {
-	case "chat":
-		return skillGroup{Title: "Chat", Order: 0}
-	case "note_add", "note_list", "note_delete":
-		return skillGroup{Title: "Notes", Order: 1}
-	case "service_list", "service_status", "service_restart", "service_logs":
-		return skillGroup{Title: "Services", Order: 2}
-	case "status", "cpu", "memory", "disk", "uptime", "hostname", "ip", "temperature":
-		return skillGroup{Title: "System", Order: 3}
-	case "start", "help", "skills", "ping":
-		return skillGroup{Title: "Core", Order: 4}
-	default:
-		return skillGroup{Title: "Other", Order: 99}
-	}
 }
 
 func skillOrder(name string) int {

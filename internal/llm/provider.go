@@ -13,20 +13,42 @@ import (
 )
 
 type Classification struct {
-	Intent                string            `json:"intent"`
+	Skill                 string            `json:"skill"`
 	Arguments             map[string]string `json:"arguments"`
 	Confidence            float64           `json:"confidence"`
 	NeedsClarification    bool              `json:"needs_clarification"`
 	ClarificationQuestion string            `json:"clarification_question"`
-
-	// Backward-compatible fields for older generic providers.
-	SkillName string            `json:"skill_name"`
-	Args      map[string]string `json:"args"`
 }
 
-type ClassificationRequest struct {
-	AllowedIntents  []string
+type RouteClassification struct {
+	Intent                string  `json:"intent"`
+	Confidence            float64 `json:"confidence"`
+	NeedsClarification    bool    `json:"needs_clarification"`
+	ClarificationQuestion string  `json:"clarification_question"`
+}
+
+type SkillOption struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Mutating    bool   `json:"mutating"`
+}
+
+type GroupOption struct {
+	Key         string `json:"key"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+}
+
+type RouteClassificationRequest struct {
+	Groups     []GroupOption
+	InputChars int
+	NumPredict int
+}
+
+type SkillClassificationRequest struct {
+	AllowedSkills   []string
 	AllowedServices []string
+	CandidateSkills []SkillOption
 	InputChars      int
 	NumPredict      int
 }
@@ -37,7 +59,8 @@ type ChatMessage struct {
 }
 
 type Provider interface {
-	ClassifyIntent(ctx context.Context, text string, request ClassificationRequest) (Classification, error)
+	ClassifyRoute(ctx context.Context, text string, request RouteClassificationRequest) (RouteClassification, error)
+	ClassifySkill(ctx context.Context, text string, request SkillClassificationRequest) (Classification, error)
 	Summarize(ctx context.Context, text string) (string, error)
 	Chat(ctx context.Context, messages []ChatMessage) (string, error)
 }
@@ -58,19 +81,36 @@ func NewHTTPProvider(endpoint string, timeout time.Duration, logger *slog.Logger
 	}
 }
 
-func (p *HTTPProvider) ClassifyIntent(ctx context.Context, text string, request ClassificationRequest) (Classification, error) {
+func (p *HTTPProvider) ClassifyRoute(ctx context.Context, text string, request RouteClassificationRequest) (RouteClassification, error) {
+	text = limitText(text, request.InputChars)
+
+	var response RouteClassification
+	if err := p.do(ctx, map[string]any{
+		"task":            "route",
+		"text":            text,
+		"groups":          request.Groups,
+		"input_chars":     request.InputChars,
+		"num_predict":     request.NumPredict,
+		"response_schema": "route_v1",
+	}, &response); err != nil {
+		return RouteClassification{}, err
+	}
+	return normalizeRouteClassification(response), nil
+}
+
+func (p *HTTPProvider) ClassifySkill(ctx context.Context, text string, request SkillClassificationRequest) (Classification, error) {
 	text = limitText(text, request.InputChars)
 
 	var response Classification
 	if err := p.do(ctx, map[string]any{
-		"task":             "intent",
+		"task":             "skill",
 		"text":             text,
-		"skills":           request.AllowedIntents,
-		"intents":          request.AllowedIntents,
+		"skills":           request.AllowedSkills,
 		"allowed_services": request.AllowedServices,
+		"candidate_skills": request.CandidateSkills,
 		"input_chars":      request.InputChars,
 		"num_predict":      request.NumPredict,
-		"response_schema":  "decision_v1",
+		"response_schema":  "skill_v1",
 	}, &response); err != nil {
 		return Classification{}, err
 	}
@@ -143,30 +183,35 @@ func (p *HTTPProvider) do(ctx context.Context, payload map[string]any, out any) 
 }
 
 func normalizeClassification(classification Classification) Classification {
-	intent := strings.TrimSpace(classification.Intent)
-	if intent == "" {
-		intent = strings.TrimSpace(classification.SkillName)
-	}
-
+	skill := strings.TrimSpace(classification.Skill)
 	arguments := normalizeStringMap(classification.Arguments)
-	if len(arguments) == 0 {
-		arguments = normalizeStringMap(classification.Args)
-	}
-
-	confidence := classification.Confidence
-	switch {
-	case confidence < 0:
-		confidence = 0
-	case confidence > 1:
-		confidence = 1
-	}
 
 	return Classification{
-		Intent:                intent,
+		Skill:                 skill,
 		Arguments:             arguments,
-		Confidence:            confidence,
+		Confidence:            clampConfidence(classification.Confidence),
 		NeedsClarification:    classification.NeedsClarification,
 		ClarificationQuestion: strings.TrimSpace(classification.ClarificationQuestion),
+	}
+}
+
+func normalizeRouteClassification(classification RouteClassification) RouteClassification {
+	return RouteClassification{
+		Intent:                strings.TrimSpace(classification.Intent),
+		Confidence:            clampConfidence(classification.Confidence),
+		NeedsClarification:    classification.NeedsClarification,
+		ClarificationQuestion: strings.TrimSpace(classification.ClarificationQuestion),
+	}
+}
+
+func clampConfidence(confidence float64) float64 {
+	switch {
+	case confidence < 0:
+		return 0
+	case confidence > 1:
+		return 1
+	default:
+		return confidence
 	}
 }
 

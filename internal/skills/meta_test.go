@@ -10,13 +10,13 @@ func TestSkillsSkillGroupsOutput(t *testing.T) {
 	t.Parallel()
 
 	registry := NewRegistry()
-	registry.MustRegister(testSkill{definition: Definition{Name: "chat", Description: "chat"}})
-	registry.MustRegister(testSkill{definition: Definition{Name: "note_add", Description: "add"}})
-	registry.MustRegister(testSkill{definition: Definition{Name: "note_list", Description: "list"}})
-	registry.MustRegister(testSkill{definition: Definition{Name: "note_delete", Description: "delete"}})
-	registry.MustRegister(testSkill{definition: Definition{Name: "service_logs", Description: "logs"}})
-	registry.MustRegister(testSkill{definition: Definition{Name: "cpu", Description: "cpu"}})
-	registry.MustRegister(testSkill{definition: Definition{Name: "help", Description: "help"}})
+	registry.MustRegister(testSkill{definition: Definition{Name: "chat", Group: GroupChat, Description: "chat"}})
+	registry.MustRegister(testSkill{definition: Definition{Name: "note_add", Group: GroupNotes, Description: "add"}})
+	registry.MustRegister(testSkill{definition: Definition{Name: "note_list", Group: GroupNotes, Description: "list"}})
+	registry.MustRegister(testSkill{definition: Definition{Name: "note_delete", Group: GroupNotes, Description: "delete"}})
+	registry.MustRegister(testSkill{definition: Definition{Name: "service_logs", Group: GroupServices, Description: "logs"}})
+	registry.MustRegister(testSkill{definition: Definition{Name: "cpu", Group: GroupSystem, Description: "cpu"}})
+	registry.MustRegister(testSkill{definition: Definition{Name: "help", Group: GroupCore, Description: "help"}})
 
 	result, err := NewSkillsSkill(registry).Execute(context.Background(), Input{})
 	if err != nil {

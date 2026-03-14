@@ -56,15 +56,16 @@ type ServicesConfig struct {
 }
 
 type LLMConfig struct {
-	Enabled            bool    `yaml:"enabled"`
-	Provider           string  `yaml:"provider"`
-	Endpoint           string  `yaml:"endpoint"`
-	Model              string  `yaml:"model"`
-	APIKey             string  `yaml:"api_key"`
-	ExecuteThreshold   float64 `yaml:"execute_threshold"`
-	ClarifyThreshold   float64 `yaml:"clarify_threshold"`
-	DecisionInputChars int     `yaml:"decision_input_chars"`
-	DecisionNumPredict int     `yaml:"decision_num_predict"`
+	Enabled                  bool    `yaml:"enabled"`
+	Provider                 string  `yaml:"provider"`
+	Endpoint                 string  `yaml:"endpoint"`
+	Model                    string  `yaml:"model"`
+	APIKey                   string  `yaml:"api_key"`
+	ExecuteThreshold         float64 `yaml:"execute_threshold"`
+	MutatingExecuteThreshold float64 `yaml:"mutating_execute_threshold"`
+	ClarifyThreshold         float64 `yaml:"clarify_threshold"`
+	DecisionInputChars       int     `yaml:"decision_input_chars"`
+	DecisionNumPredict       int     `yaml:"decision_num_predict"`
 }
 
 type ChatConfig struct {
@@ -123,11 +124,12 @@ func defaultConfig() Config {
 			LogLines: 100,
 		},
 		LLM: LLMConfig{
-			Provider:           "generic",
-			ExecuteThreshold:   0.80,
-			ClarifyThreshold:   0.60,
-			DecisionInputChars: 160,
-			DecisionNumPredict: 64,
+			Provider:                 "generic",
+			ExecuteThreshold:         0.80,
+			MutatingExecuteThreshold: 0.95,
+			ClarifyThreshold:         0.60,
+			DecisionInputChars:       160,
+			DecisionNumPredict:       128,
 		},
 		Chat: ChatConfig{
 			HistoryLimit:     6,
@@ -156,16 +158,12 @@ func (c Config) Validate() error {
 		return errors.New("SQLITE_PATH is required")
 	case len(c.Auth.AllowedUserIDs) == 0 && len(c.Auth.AllowedChatIDs) == 0:
 		return errors.New("at least one of ALLOWED_USER_IDS or ALLOWED_CHAT_IDS is required")
-	case c.LLM.Enabled && strings.TrimSpace(c.LLM.Endpoint) == "":
-		return errors.New("LLM_ENDPOINT is required when LLM_ENABLED is true")
-	case c.LLM.Enabled && (c.LLM.Provider == "ollama" || c.LLM.Provider == "openai") && strings.TrimSpace(c.LLM.Model) == "":
-		return errors.New("LLM_MODEL is required when LLM_PROVIDER is ollama or openai")
-	case c.LLM.Enabled && c.LLM.Provider == "openai" && strings.TrimSpace(c.LLM.APIKey) == "":
-		return errors.New("OPENAI_API_KEY is required when LLM_PROVIDER is openai")
-	case c.LLM.Enabled && c.LLM.Provider != "generic" && c.LLM.Provider != "ollama" && c.LLM.Provider != "openai":
-		return errors.New("LLM_PROVIDER must be one of: generic, ollama, openai")
+	case c.LLM.Enabled && strings.TrimSpace(c.LLM.Provider) == "":
+		return errors.New("LLM_PROVIDER is required when LLM_ENABLED is true")
 	case c.LLM.ExecuteThreshold <= 0 || c.LLM.ExecuteThreshold > 1:
 		return errors.New("llm.execute_threshold must be greater than zero and less than or equal to one")
+	case c.LLM.MutatingExecuteThreshold < c.LLM.ExecuteThreshold || c.LLM.MutatingExecuteThreshold > 1:
+		return errors.New("llm.mutating_execute_threshold must be greater than or equal to llm.execute_threshold and less than or equal to one")
 	case c.LLM.ClarifyThreshold <= 0 || c.LLM.ClarifyThreshold >= c.LLM.ExecuteThreshold:
 		return errors.New("llm.clarify_threshold must be greater than zero and less than llm.execute_threshold")
 	case c.LLM.DecisionInputChars <= 0:
@@ -233,6 +231,9 @@ func overrideFromEnv(cfg *Config) {
 	}
 	if value := strings.TrimSpace(os.Getenv("LLM_EXECUTE_THRESHOLD")); value != "" {
 		cfg.LLM.ExecuteThreshold = parseFloat(value, cfg.LLM.ExecuteThreshold)
+	}
+	if value := strings.TrimSpace(os.Getenv("LLM_MUTATING_EXECUTE_THRESHOLD")); value != "" {
+		cfg.LLM.MutatingExecuteThreshold = parseFloat(value, cfg.LLM.MutatingExecuteThreshold)
 	}
 	if value := strings.TrimSpace(os.Getenv("LLM_CLARIFY_THRESHOLD")); value != "" {
 		cfg.LLM.ClarifyThreshold = parseFloat(value, cfg.LLM.ClarifyThreshold)

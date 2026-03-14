@@ -4,7 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"testing"
+	"time"
+
+	"openlight/internal/config"
+	basellm "openlight/internal/llm"
 )
 
 func TestIsExpectedShutdown(t *testing.T) {
@@ -37,5 +43,66 @@ func TestIsExpectedShutdownRejectsOtherErrors(t *testing.T) {
 
 	if isExpectedShutdown(context.DeadlineExceeded) {
 		t.Fatal("did not expect deadline exceeded to be treated as clean shutdown")
+	}
+}
+
+func TestBuildRegistryRegistersBuiltInModules(t *testing.T) {
+	t.Parallel()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	registry, err := buildRegistry(config.Config{
+		Services: config.ServicesConfig{
+			Allowed:  []string{"tailscale"},
+			LogLines: 50,
+		},
+		Notes: config.NotesConfig{
+			ListLimit: 10,
+		},
+		Chat: config.ChatConfig{
+			HistoryLimit:     6,
+			HistoryChars:     200,
+			MaxResponseChars: 100,
+		},
+	}, nil, logger, nil)
+	if err != nil {
+		t.Fatalf("buildRegistry returned error: %v", err)
+	}
+
+	for _, name := range []string{"start", "ping", "status", "service_status", "note_add", "skills", "help"} {
+		if _, ok := registry.Get(name); !ok {
+			t.Fatalf("expected skill %q to be registered", name)
+		}
+	}
+	if _, ok := registry.Get("chat"); ok {
+		t.Fatal("did not expect chat skill without llm provider")
+	}
+}
+
+func TestBuildRegistryRegistersChatModuleWhenLLMEnabled(t *testing.T) {
+	t.Parallel()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	provider := basellm.NewHTTPProvider("http://127.0.0.1:1", time.Second, logger)
+
+	registry, err := buildRegistry(config.Config{
+		Services: config.ServicesConfig{
+			Allowed:  []string{"tailscale"},
+			LogLines: 50,
+		},
+		Notes: config.NotesConfig{
+			ListLimit: 10,
+		},
+		Chat: config.ChatConfig{
+			HistoryLimit:     6,
+			HistoryChars:     200,
+			MaxResponseChars: 100,
+		},
+	}, nil, logger, provider)
+	if err != nil {
+		t.Fatalf("buildRegistry returned error: %v", err)
+	}
+
+	if _, ok := registry.Get("chat"); !ok {
+		t.Fatal("expected chat skill to be registered when llm provider is configured")
 	}
 }

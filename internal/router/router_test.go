@@ -136,6 +136,24 @@ func TestRouterExplicitNoteAddCommand(t *testing.T) {
 	}
 }
 
+func TestRouterRuleBasedRussianNoteAddParsing(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "note_add"})
+
+	decision, err := router.New(registry, nil).Route(context.Background(), "добавь заметку купить ssd")
+	if err != nil {
+		t.Fatalf("route returned error: %v", err)
+	}
+	if decision.Mode != router.ModeRule || decision.SkillName != "note_add" {
+		t.Fatalf("unexpected decision: %#v", decision)
+	}
+	if decision.Args["text"] != "купить ssd" {
+		t.Fatalf("unexpected note args: %#v", decision.Args)
+	}
+}
+
 func TestRouterExplicitTwoWordCommand(t *testing.T) {
 	t.Parallel()
 

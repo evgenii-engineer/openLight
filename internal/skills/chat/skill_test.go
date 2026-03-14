@@ -15,7 +15,11 @@ type stubProvider struct {
 	messages []llm.ChatMessage
 }
 
-func (s *stubProvider) ClassifyIntent(context.Context, string, llm.ClassificationRequest) (llm.Classification, error) {
+func (s *stubProvider) ClassifyRoute(context.Context, string, llm.RouteClassificationRequest) (llm.RouteClassification, error) {
+	return llm.RouteClassification{}, nil
+}
+
+func (s *stubProvider) ClassifySkill(context.Context, string, llm.SkillClassificationRequest) (llm.Classification, error) {
 	return llm.Classification{}, nil
 }
 

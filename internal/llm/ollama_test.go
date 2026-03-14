@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-func TestOllamaProviderClassifyIntent(t *testing.T) {
+func TestOllamaProviderClassifyRoute(t *testing.T) {
 	t.Parallel()
 
 	provider := NewOllamaProvider("http://ollama.local:11434", "phi3", time.Second, nil)
@@ -39,8 +39,11 @@ func TestOllamaProviderClassifyIntent(t *testing.T) {
 			if !strings.Contains(prompt, "restart tailscale") {
 				t.Fatalf("unexpected prompt: %v", payload["prompt"])
 			}
-			if !strings.Contains(prompt, "service_restart") || !strings.Contains(prompt, "Allowed services") {
-				t.Fatalf("prompt is missing decision instructions: %s", prompt)
+			if !strings.Contains(prompt, "Choose one route for a Telegram local agent.") {
+				t.Fatalf("prompt is missing route instructions: %s", prompt)
+			}
+			if !strings.Contains(prompt, "- services: Inspect whitelisted services") {
+				t.Fatalf("prompt is missing route group context: %s", prompt)
 			}
 			options, ok := payload["options"].(map[string]any)
 			if !ok {
@@ -54,29 +57,123 @@ func TestOllamaProviderClassifyIntent(t *testing.T) {
 			}
 
 			return jsonHTTPResponse(map[string]any{
-				"response": `{"intent":"service_restart","arguments":{"service":"tailscale"},"confidence":0.92,"needs_clarification":false,"clarification_question":""}`,
+				"response": `{"intent":"services","confidence":0.92,"needs_clarification":false,"clarification_question":""}`,
 			}), nil
 		}),
 	}
 
-	classification, err := provider.ClassifyIntent(context.Background(), "restart tailscale", ClassificationRequest{
-		AllowedIntents:  []string{"service_restart", "unknown"},
-		AllowedServices: []string{"tailscale"},
-		InputChars:      160,
-		NumPredict:      64,
+	classification, err := provider.ClassifyRoute(context.Background(), "restart tailscale", RouteClassificationRequest{
+		Groups: []GroupOption{
+			{Key: "services", Title: "Services", Description: "Inspect whitelisted services, view logs, and restart them."},
+			{Key: "system", Title: "System", Description: "Read system metrics and host information."},
+		},
+		InputChars: 160,
+		NumPredict: 64,
 	})
 	if err != nil {
-		t.Fatalf("ClassifyIntent returned error: %v", err)
+		t.Fatalf("ClassifyRoute returned error: %v", err)
 	}
-	if classification.Intent != "service_restart" {
+	if classification.Intent != "services" {
 		t.Fatalf("unexpected intent: %q", classification.Intent)
+	}
+}
+
+func TestOllamaProviderClassifySkill(t *testing.T) {
+	t.Parallel()
+
+	provider := NewOllamaProvider("http://ollama.local:11434", "phi3", time.Second, nil)
+	provider.client = &http.Client{
+		Timeout: time.Second,
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			prompt, ok := payload["prompt"].(string)
+			if !ok {
+				t.Fatalf("unexpected prompt payload: %#v", payload["prompt"])
+			}
+			if !strings.Contains(prompt, "Available skills:") {
+				t.Fatalf("prompt is missing available skills heading: %s", prompt)
+			}
+			if !strings.Contains(prompt, "Choose one skill inside the already selected group.") {
+				t.Fatalf("prompt is missing second-layer instructions: %s", prompt)
+			}
+			if !strings.Contains(prompt, "service_restart: Restart a whitelisted service.") {
+				t.Fatalf("prompt is missing skill description: %s", prompt)
+			}
+			if !strings.Contains(prompt, "Allowed services") || !strings.Contains(prompt, "tailscale") {
+				t.Fatalf("prompt is missing services: %s", prompt)
+			}
+
+			return jsonHTTPResponse(map[string]any{
+				"response": `{"skill":"service_restart","arguments":{"service":"tailscale","text":"","id":""},"confidence":0.92,"needs_clarification":false,"clarification_question":""}`,
+			}), nil
+		}),
+	}
+
+	classification, err := provider.ClassifySkill(context.Background(), "restart tailscale", SkillClassificationRequest{
+		AllowedSkills:   []string{"service_restart"},
+		AllowedServices: []string{"tailscale"},
+		CandidateSkills: []SkillOption{
+			{Name: "service_restart", Description: "Restart a whitelisted service.", Mutating: true},
+		},
+		InputChars: 160,
+		NumPredict: 64,
+	})
+	if err != nil {
+		t.Fatalf("ClassifySkill returned error: %v", err)
+	}
+	if classification.Skill != "service_restart" {
+		t.Fatalf("unexpected skill: %q", classification.Skill)
 	}
 	if classification.Arguments["service"] != "tailscale" {
 		t.Fatalf("unexpected args: %#v", classification.Arguments)
 	}
 }
 
-func TestOllamaProviderClassifyIntentTruncatesInputText(t *testing.T) {
+func TestOllamaProviderClassifySkillOmitsAllowedServicesWhenEmpty(t *testing.T) {
+	t.Parallel()
+
+	provider := NewOllamaProvider("http://ollama.local:11434", "phi3", time.Second, nil)
+	provider.client = &http.Client{
+		Timeout: time.Second,
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			prompt, ok := payload["prompt"].(string)
+			if !ok {
+				t.Fatalf("unexpected prompt payload: %#v", payload["prompt"])
+			}
+			if strings.Contains(prompt, "Allowed services") {
+				t.Fatalf("did not expect allowed services section: %s", prompt)
+			}
+
+			return jsonHTTPResponse(map[string]any{
+				"response": `{"skill":"status","arguments":{"service":"","text":"","id":""},"confidence":0.92,"needs_clarification":false,"clarification_question":""}`,
+			}), nil
+		}),
+	}
+
+	classification, err := provider.ClassifySkill(context.Background(), "show overall status", SkillClassificationRequest{
+		AllowedSkills: []string{"status"},
+		CandidateSkills: []SkillOption{
+			{Name: "status", Description: "Show overall host status.", Mutating: false},
+		},
+		InputChars: 160,
+		NumPredict: 64,
+	})
+	if err != nil {
+		t.Fatalf("ClassifySkill returned error: %v", err)
+	}
+	if classification.Skill != "status" {
+		t.Fatalf("unexpected skill: %q", classification.Skill)
+	}
+}
+
+func TestOllamaProviderClassifyRouteTruncatesInputText(t *testing.T) {
 	t.Parallel()
 
 	const rawText = "restart tailscale right now please"
@@ -102,19 +199,17 @@ func TestOllamaProviderClassifyIntentTruncatesInputText(t *testing.T) {
 			}
 
 			return jsonHTTPResponse(map[string]any{
-				"response": `{"intent":"service_restart","arguments":{"service":"tailscale"},"confidence":0.92,"needs_clarification":false,"clarification_question":""}`,
+				"response": `{"intent":"services","confidence":0.92,"needs_clarification":false,"clarification_question":""}`,
 			}), nil
 		}),
 	}
 
-	_, err := provider.ClassifyIntent(context.Background(), rawText, ClassificationRequest{
-		AllowedIntents:  []string{"service_restart", "unknown"},
-		AllowedServices: []string{"tailscale"},
-		InputChars:      10,
-		NumPredict:      64,
+	_, err := provider.ClassifyRoute(context.Background(), rawText, RouteClassificationRequest{
+		InputChars: 10,
+		NumPredict: 64,
 	})
 	if err != nil {
-		t.Fatalf("ClassifyIntent returned error: %v", err)
+		t.Fatalf("ClassifyRoute returned error: %v", err)
 	}
 }
 

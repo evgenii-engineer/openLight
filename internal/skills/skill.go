@@ -4,10 +4,12 @@ import "context"
 
 type Definition struct {
 	Name        string
+	Group       Group
 	Description string
 	Aliases     []string
 	Usage       string
 	Examples    []string
+	Mutating    bool
 	Hidden      bool
 }
 

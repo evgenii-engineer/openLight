@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	basellm "openlight/internal/llm"
@@ -10,13 +11,20 @@ import (
 )
 
 type stubProvider struct {
-	classification basellm.Classification
-	request        basellm.ClassificationRequest
+	routeClassification basellm.RouteClassification
+	skillClassification basellm.Classification
+	routeRequest        basellm.RouteClassificationRequest
+	skillRequest        basellm.SkillClassificationRequest
 }
 
-func (s *stubProvider) ClassifyIntent(_ context.Context, _ string, request basellm.ClassificationRequest) (basellm.Classification, error) {
-	s.request = request
-	return s.classification, nil
+func (s *stubProvider) ClassifyRoute(_ context.Context, _ string, request basellm.RouteClassificationRequest) (basellm.RouteClassification, error) {
+	s.routeRequest = request
+	return s.routeClassification, nil
+}
+
+func (s *stubProvider) ClassifySkill(_ context.Context, _ string, request basellm.SkillClassificationRequest) (basellm.Classification, error) {
+	s.skillRequest = request
+	return s.skillClassification, nil
 }
 
 func (s *stubProvider) Summarize(context.Context, string) (string, error) {
@@ -28,11 +36,13 @@ func (s *stubProvider) Chat(context.Context, []basellm.ChatMessage) (string, err
 }
 
 type testSkill struct {
-	name string
+	name     string
+	group    skills.Group
+	mutating bool
 }
 
 func (s testSkill) Definition() skills.Definition {
-	return skills.Definition{Name: s.name}
+	return skills.Definition{Name: s.name, Group: s.group, Mutating: s.mutating}
 }
 
 func (s testSkill) Execute(context.Context, skills.Input) (skills.Result, error) {
@@ -43,13 +53,17 @@ func TestClassifierRoutesHighConfidenceIntent(t *testing.T) {
 	t.Parallel()
 
 	registry := skills.NewRegistry()
-	registry.MustRegister(testSkill{name: "service_restart"})
+	registry.MustRegister(testSkill{name: "service_restart", group: skills.GroupServices, mutating: true})
 
 	classifier := NewClassifier(&stubProvider{
-		classification: basellm.Classification{
-			Intent:     "service_restart",
+		routeClassification: basellm.RouteClassification{
+			Intent:     "services",
+			Confidence: 0.97,
+		},
+		skillClassification: basellm.Classification{
+			Skill:      "service_restart",
 			Arguments:  map[string]string{"service": "tailscale"},
-			Confidence: 0.93,
+			Confidence: 0.97,
 		},
 	}, registry, Options{
 		AllowedServices: []string{"tailscale"},
@@ -74,11 +88,15 @@ func TestClassifierAsksForClarificationOnMidConfidence(t *testing.T) {
 	t.Parallel()
 
 	registry := skills.NewRegistry()
-	registry.MustRegister(testSkill{name: "service_restart"})
+	registry.MustRegister(testSkill{name: "service_restart", group: skills.GroupServices, mutating: true})
 
 	classifier := NewClassifier(&stubProvider{
-		classification: basellm.Classification{
-			Intent:     "service_restart",
+		routeClassification: basellm.RouteClassification{
+			Intent:     "services",
+			Confidence: 0.95,
+		},
+		skillClassification: basellm.Classification{
+			Skill:      "service_restart",
 			Arguments:  map[string]string{},
 			Confidence: 0.72,
 		},
@@ -105,12 +123,11 @@ func TestClassifierFallsBackOnLowConfidenceUnknown(t *testing.T) {
 	t.Parallel()
 
 	registry := skills.NewRegistry()
-	registry.MustRegister(testSkill{name: "chat"})
+	registry.MustRegister(testSkill{name: "chat", group: skills.GroupChat})
 
 	classifier := NewClassifier(&stubProvider{
-		classification: basellm.Classification{
+		routeClassification: basellm.RouteClassification{
 			Intent:     "unknown",
-			Arguments:  map[string]string{},
 			Confidence: 0.32,
 		},
 	}, registry, Options{}, nil)
@@ -128,12 +145,11 @@ func TestClassifierRoutesChatWithOriginalText(t *testing.T) {
 	t.Parallel()
 
 	registry := skills.NewRegistry()
-	registry.MustRegister(testSkill{name: "chat"})
+	registry.MustRegister(testSkill{name: "chat", group: skills.GroupChat})
 
 	classifier := NewClassifier(&stubProvider{
-		classification: basellm.Classification{
+		routeClassification: basellm.RouteClassification{
 			Intent:     "chat",
-			Arguments:  map[string]string{"text": "ignored"},
 			Confidence: 0.88,
 		},
 	}, registry, Options{}, nil)
@@ -157,15 +173,21 @@ func TestClassifierDefaultsSingleAllowedService(t *testing.T) {
 	t.Parallel()
 
 	registry := skills.NewRegistry()
-	registry.MustRegister(testSkill{name: "service_status"})
+	registry.MustRegister(testSkill{name: "service_status", group: skills.GroupServices})
 
-	classifier := NewClassifier(&stubProvider{
-		classification: basellm.Classification{
-			Intent:     "service_status",
+	provider := &stubProvider{
+		routeClassification: basellm.RouteClassification{
+			Intent:     "services",
+			Confidence: 0.91,
+		},
+		skillClassification: basellm.Classification{
+			Skill:      "service_status",
 			Arguments:  map[string]string{},
 			Confidence: 0.91,
 		},
-	}, registry, Options{
+	}
+
+	classifier := NewClassifier(provider, registry, Options{
 		AllowedServices: []string{"tailscale"},
 	}, nil)
 
@@ -179,25 +201,114 @@ func TestClassifierDefaultsSingleAllowedService(t *testing.T) {
 	if decision.SkillName != "service_status" || decision.Args["service"] != "tailscale" {
 		t.Fatalf("unexpected decision: %#v", decision)
 	}
+	if !slices.Equal(provider.skillRequest.AllowedServices, []string{"tailscale"}) {
+		t.Fatalf("expected allowed services for services group, got %#v", provider.skillRequest.AllowedServices)
+	}
+}
+
+func TestClassifierRequiresHigherConfidenceForMutatingSkill(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "service_restart", group: skills.GroupServices, mutating: true})
+
+	classifier := NewClassifier(&stubProvider{
+		routeClassification: basellm.RouteClassification{
+			Intent:     "services",
+			Confidence: 0.91,
+		},
+		skillClassification: basellm.Classification{
+			Skill:      "service_restart",
+			Arguments:  map[string]string{"service": "tailscale"},
+			Confidence: 0.91,
+		},
+	}, registry, Options{
+		AllowedServices: []string{"tailscale"},
+	}, nil)
+
+	decision, ok, err := classifier.Classify(context.Background(), "restart tailscale")
+	if err != nil {
+		t.Fatalf("Classify returned error: %v", err)
+	}
+	if !ok || !decision.ShouldClarify() {
+		t.Fatalf("expected clarification for mutating skill, got %#v", decision)
+	}
+}
+
+func TestClassifierPassesVisibleSkillsToLLMWithoutHeuristicShortlist(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "memory", group: skills.GroupSystem})
+	registry.MustRegister(testSkill{name: "cpu", group: skills.GroupSystem})
+	registry.MustRegister(testSkill{name: "chat", group: skills.GroupChat})
+	registry.MustRegister(testSkill{name: "skills", group: skills.GroupCore})
+
+	provider := &stubProvider{
+		routeClassification: basellm.RouteClassification{
+			Intent:     "system",
+			Confidence: 0.92,
+		},
+		skillClassification: basellm.Classification{
+			Skill:      "memory",
+			Arguments:  map[string]string{},
+			Confidence: 0.92,
+		},
+	}
+
+	classifier := NewClassifier(provider, registry, Options{}, nil)
+
+	_, ok, err := classifier.Classify(context.Background(), "что там по оперативке")
+	if err != nil {
+		t.Fatalf("Classify returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected classifier match")
+	}
+	if !slices.Contains(provider.skillRequest.AllowedSkills, "memory") {
+		t.Fatalf("expected memory in allowed skills, got %#v", provider.skillRequest.AllowedSkills)
+	}
+	if !slices.Contains(provider.skillRequest.AllowedSkills, "cpu") {
+		t.Fatalf("expected cpu in allowed skills, got %#v", provider.skillRequest.AllowedSkills)
+	}
+	if slices.Contains(provider.skillRequest.AllowedSkills, "chat") {
+		t.Fatalf("did not expect chat in skill allowed skills, got %#v", provider.skillRequest.AllowedSkills)
+	}
+	if len(provider.routeRequest.Groups) == 0 {
+		t.Fatalf("expected groups in route request: %#v", provider.routeRequest)
+	}
+	if len(provider.skillRequest.CandidateSkills) == 0 {
+		t.Fatalf("expected available skills in skill request: %#v", provider.skillRequest)
+	}
+	if !slices.Contains(groupOptionKeys(provider.routeRequest.Groups), "system") {
+		t.Fatalf("expected system group in route request: %#v", provider.routeRequest.Groups)
+	}
+	if len(provider.skillRequest.AllowedServices) != 0 {
+		t.Fatalf("did not expect allowed services for non-services group, got %#v", provider.skillRequest.AllowedServices)
+	}
 }
 
 func TestClassifierPassesDecisionLimitsToProvider(t *testing.T) {
 	t.Parallel()
 
 	registry := skills.NewRegistry()
-	registry.MustRegister(testSkill{name: "cpu"})
+	registry.MustRegister(testSkill{name: "cpu", group: skills.GroupSystem})
 
 	provider := &stubProvider{
-		classification: basellm.Classification{
-			Intent:     "cpu",
+		routeClassification: basellm.RouteClassification{
+			Intent:     "system",
+			Confidence: 0.91,
+		},
+		skillClassification: basellm.Classification{
+			Skill:      "cpu",
 			Arguments:  map[string]string{},
 			Confidence: 0.91,
 		},
 	}
 
 	classifier := NewClassifier(provider, registry, Options{
-		InputChars: 120,
-		NumPredict: 48,
+		InputChars: 160,
+		NumPredict: 128,
 	}, nil)
 
 	_, ok, err := classifier.Classify(context.Background(), "что с cpu")
@@ -207,10 +318,16 @@ func TestClassifierPassesDecisionLimitsToProvider(t *testing.T) {
 	if !ok {
 		t.Fatal("expected classifier match")
 	}
-	if provider.request.InputChars != 120 {
-		t.Fatalf("unexpected input chars: %#v", provider.request)
+	if provider.routeRequest.InputChars != defaultRouteInputChars {
+		t.Fatalf("unexpected route input chars: %#v", provider.routeRequest)
 	}
-	if provider.request.NumPredict != 48 {
-		t.Fatalf("unexpected num_predict: %#v", provider.request)
+	if provider.routeRequest.NumPredict != defaultRouteNumPredict {
+		t.Fatalf("unexpected route num_predict: %#v", provider.routeRequest)
+	}
+	if provider.skillRequest.InputChars != defaultSkillInputChars {
+		t.Fatalf("unexpected skill input chars: %#v", provider.skillRequest)
+	}
+	if provider.skillRequest.NumPredict != defaultSkillNumPredict {
+		t.Fatalf("unexpected skill num_predict: %#v", provider.skillRequest)
 	}
 }

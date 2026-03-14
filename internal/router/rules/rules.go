@@ -1,11 +1,10 @@
 package rules
 
 import (
-	"regexp"
 	"strings"
-)
 
-var nonAlnum = regexp.MustCompile(`[^\p{L}\p{N}\s._/-]+`)
+	"openlight/internal/router/semantic"
+)
 
 type Match struct {
 	SkillName string
@@ -89,10 +88,7 @@ func Parse(text string) (Match, bool) {
 }
 
 func normalize(value string) string {
-	value = strings.ToLower(strings.TrimSpace(value))
-	value = nonAlnum.ReplaceAllString(value, " ")
-	value = strings.Join(strings.Fields(value), " ")
-	return value
+	return semantic.Normalize(value)
 }
 
 func containsAny(text string, patterns ...string) bool {

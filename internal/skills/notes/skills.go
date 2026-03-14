@@ -27,9 +27,11 @@ func NewAddSkill(store Store) skills.Skill {
 func (s *addSkill) Definition() skills.Definition {
 	return skills.Definition{
 		Name:        "note_add",
+		Group:       skills.GroupNotes,
 		Description: "Add a short note to SQLite storage.",
 		Aliases:     []string{"add note", "remember"},
 		Usage:       "/note <text>",
+		Mutating:    true,
 	}
 }
 
@@ -62,6 +64,7 @@ func NewListSkill(store Store, limit int) skills.Skill {
 func (s *listSkill) Definition() skills.Definition {
 	return skills.Definition{
 		Name:        "note_list",
+		Group:       skills.GroupNotes,
 		Description: "List the latest saved notes.",
 		Aliases:     []string{"notes", "list notes"},
 		Usage:       "/notes",
@@ -96,9 +99,11 @@ func NewDeleteSkill(store Store) skills.Skill {
 func (s *deleteSkill) Definition() skills.Definition {
 	return skills.Definition{
 		Name:        "note_delete",
+		Group:       skills.GroupNotes,
 		Description: "Delete a saved note by id.",
 		Aliases:     []string{"delete note", "remove note", "note delete"},
 		Usage:       "/note_delete <id>",
+		Mutating:    true,
 	}
 }
 

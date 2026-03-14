@@ -65,3 +65,49 @@ func TestRegistryAllowsAliasThatNormalizesToOwnName(t *testing.T) {
 		t.Fatalf("expected self-normalizing alias to be allowed, got: %v", err)
 	}
 }
+
+func TestRegistryDefaultsMissingGroupToOther(t *testing.T) {
+	t.Parallel()
+
+	registry := NewRegistry()
+	registry.MustRegister(testSkill{definition: Definition{
+		Name: "custom_tool",
+	}})
+
+	definitions := registry.List()
+	if len(definitions) != 1 {
+		t.Fatalf("unexpected definitions: %#v", definitions)
+	}
+	if definitions[0].Group.Key != GroupOther.Key {
+		t.Fatalf("expected default other group, got %#v", definitions[0].Group)
+	}
+}
+
+func TestRegistryListsGroupsAndSkillsByGroup(t *testing.T) {
+	t.Parallel()
+
+	registry := NewRegistry()
+	registry.MustRegister(testSkill{definition: Definition{
+		Name:        "cpu",
+		Group:       GroupSystem,
+		Description: "cpu",
+	}})
+	registry.MustRegister(testSkill{definition: Definition{
+		Name:        "note_add",
+		Group:       GroupNotes,
+		Description: "add note",
+	}})
+
+	groups := registry.ListGroups()
+	if len(groups) != 2 {
+		t.Fatalf("unexpected groups: %#v", groups)
+	}
+	if groups[0].Key != GroupNotes.Key || groups[1].Key != GroupSystem.Key {
+		t.Fatalf("unexpected group order: %#v", groups)
+	}
+
+	systemSkills := registry.ListByGroup(GroupSystem.Key)
+	if len(systemSkills) != 1 || systemSkills[0].Name != "cpu" {
+		t.Fatalf("unexpected system skills: %#v", systemSkills)
+	}
+}
