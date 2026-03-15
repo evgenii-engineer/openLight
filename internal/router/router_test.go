@@ -66,15 +66,57 @@ func TestRouterRuleBasedLogsParsing(t *testing.T) {
 	registry := skills.NewRegistry()
 	registry.MustRegister(testSkill{name: "service_logs"})
 
-	decision, err := router.New(registry, nil).Route(context.Background(), "show jellyfin logs")
-	if err != nil {
-		t.Fatalf("route returned error: %v", err)
+	cases := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "service before logs", input: "show jellyfin logs", want: "jellyfin"},
+		{name: "service after logs", input: "show logs tailscale", want: "tailscale"},
+		{name: "russian logs command", input: "покажи логи tailscale", want: "tailscale"},
+		{name: "service alias after logs", input: "покажи логи tailscaled", want: "tailscaled"},
 	}
-	if decision.Mode != router.ModeRule || decision.SkillName != "service_logs" {
-		t.Fatalf("unexpected decision: %#v", decision)
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			decision, err := router.New(registry, nil).Route(context.Background(), tc.input)
+			if err != nil {
+				t.Fatalf("route returned error: %v", err)
+			}
+			if decision.Mode != router.ModeRule || decision.SkillName != "service_logs" {
+				t.Fatalf("unexpected decision: %#v", decision)
+			}
+			if got := decision.Args["service"]; got != tc.want {
+				t.Fatalf("expected %q service, got %q", tc.want, got)
+			}
+		})
 	}
-	if got := decision.Args["service"]; got != "jellyfin" {
-		t.Fatalf("expected jellyfin service, got %q", got)
+}
+
+func TestRouterDoesNotTreatGenericServicePhraseAsConcreteService(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "service_status"})
+	registry.MustRegister(testSkill{name: "service_logs"})
+	registry.MustRegister(testSkill{name: "service_restart"})
+
+	cases := []string{
+		"статус сервиса",
+		"покажи логи сервиса",
+		"перезапусти сервис",
+	}
+
+	for _, input := range cases {
+		t.Run(input, func(t *testing.T) {
+			decision, err := router.New(registry, nil).Route(context.Background(), input)
+			if err != nil {
+				t.Fatalf("route returned error: %v", err)
+			}
+			if decision.Matched() {
+				t.Fatalf("expected no match for generic service phrase, got %#v", decision)
+			}
+		})
 	}
 }
 

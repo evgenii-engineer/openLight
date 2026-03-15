@@ -107,7 +107,7 @@ func TestOllamaProviderClassifySkill(t *testing.T) {
 			}
 
 			return jsonHTTPResponse(map[string]any{
-				"response": `{"skill":"service_restart","arguments":{"service":"tailscale","text":"","id":"","path":"","content":"","find":"","replace":"","runtime":"","code":""},"confidence":0.92,"needs_clarification":false,"clarification_question":""}`,
+				"response": `{"skill":"service_restart","arguments":{"service":"tailscale","text":"","id":"","path":"","content":"","find":"","replace":"","runtime":"","code":""},"needs_clarification":false,"clarification_question":""}`,
 			}), nil
 		}),
 	}
@@ -152,7 +152,7 @@ func TestOllamaProviderClassifySkillOmitsAllowedServicesWhenEmpty(t *testing.T) 
 			}
 
 			return jsonHTTPResponse(map[string]any{
-				"response": `{"skill":"status","arguments":{"service":"","text":"","id":"","path":"","content":"","find":"","replace":"","runtime":"","code":""},"confidence":0.92,"needs_clarification":false,"clarification_question":""}`,
+				"response": `{"skill":"status","arguments":{"service":"","text":"","id":"","path":"","content":"","find":"","replace":"","runtime":"","code":""},"needs_clarification":false,"clarification_question":""}`,
 			}), nil
 		}),
 	}
@@ -164,6 +164,44 @@ func TestOllamaProviderClassifySkillOmitsAllowedServicesWhenEmpty(t *testing.T) 
 		},
 		InputChars: 160,
 		NumPredict: 64,
+	})
+	if err != nil {
+		t.Fatalf("ClassifySkill returned error: %v", err)
+	}
+	if classification.Skill != "status" {
+		t.Fatalf("unexpected skill: %q", classification.Skill)
+	}
+}
+
+func TestOllamaProviderClassifySkillFallsBackToAllowedSkillsWhenCandidatesMissing(t *testing.T) {
+	t.Parallel()
+
+	provider := NewOllamaProvider("http://ollama.local:11434", "phi3", time.Second, nil)
+	provider.client = &http.Client{
+		Timeout: time.Second,
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			prompt, ok := payload["prompt"].(string)
+			if !ok {
+				t.Fatalf("unexpected prompt payload: %#v", payload["prompt"])
+			}
+			if !strings.Contains(prompt, "status: Select this skill when it best matches the request. [read]") {
+				t.Fatalf("prompt is missing allowed-skills fallback description: %s", prompt)
+			}
+
+			return jsonHTTPResponse(map[string]any{
+				"response": `{"skill":"status","arguments":{"service":"","text":"","id":"","path":"","content":"","find":"","replace":"","runtime":"","code":""},"needs_clarification":false,"clarification_question":""}`,
+			}), nil
+		}),
+	}
+
+	classification, err := provider.ClassifySkill(context.Background(), "show overall status", SkillClassificationRequest{
+		AllowedSkills: []string{"status"},
+		InputChars:    160,
+		NumPredict:    64,
 	})
 	if err != nil {
 		t.Fatalf("ClassifySkill returned error: %v", err)

@@ -46,7 +46,8 @@ func buildRoutePrompt(text string, request RouteClassificationRequest) string {
 }
 
 func buildSkillPrompt(text string, request SkillClassificationRequest) string {
-	availableSkills := renderCandidateSkills(request.CandidateSkills)
+	skills := effectiveCandidateSkills(request)
+	availableSkills := renderCandidateSkills(skills)
 	allowedServicesSection := ""
 	if len(request.AllowedServices) > 0 {
 		allowedServicesSection = fmt.Sprintf("Allowed services: %s\n", encodePromptList(request.AllowedServices))
@@ -58,7 +59,7 @@ func buildSkillPrompt(text string, request SkillClassificationRequest) string {
 	return fmt.Sprintf(
 		"Choose one skill inside the already selected group.\n"+
 			"Return JSON only:\n"+
-			"{\"skill\":\"string\",\"arguments\":{\"service\":\"\",\"text\":\"\",\"id\":\"\",\"path\":\"\",\"content\":\"\",\"find\":\"\",\"replace\":\"\",\"runtime\":\"\",\"code\":\"\"},\"confidence\":0.0,\"needs_clarification\":false,\"clarification_question\":\"\"}\n\n"+
+			"{\"skill\":\"string\",\"arguments\":{\"service\":\"\",\"text\":\"\",\"id\":\"\",\"path\":\"\",\"content\":\"\",\"find\":\"\",\"replace\":\"\",\"runtime\":\"\",\"code\":\"\"},\"needs_clarification\":false,\"clarification_question\":\"\"}\n\n"+
 			"Available skills:\n%s\n"+
 			"%s%s\n"+
 			"Rules:\n"+
@@ -76,12 +77,12 @@ func buildSkillPrompt(text string, request SkillClassificationRequest) string {
 			"- if needs_clarification=false then clarification_question must be \"\"\n"+
 			"- if needs_clarification=true then ask one short question\n\n"+
 			"Examples:\n"+
-			"\"сколько памяти занято\" -> {\"skill\":\"memory\",\"arguments\":{\"service\":\"\",\"text\":\"\",\"id\":\"\",\"path\":\"\",\"content\":\"\",\"find\":\"\",\"replace\":\"\",\"runtime\":\"\",\"code\":\"\"},\"confidence\":0.95,\"needs_clarification\":false,\"clarification_question\":\"\"}\n"+
-			"\"покажи логи tailscale\" -> {\"skill\":\"service_logs\",\"arguments\":{\"service\":\"tailscale\",\"text\":\"\",\"id\":\"\",\"path\":\"\",\"content\":\"\",\"find\":\"\",\"replace\":\"\",\"runtime\":\"\",\"code\":\"\"},\"confidence\":0.95,\"needs_clarification\":false,\"clarification_question\":\"\"}\n"+
-			"\"удали заметку 3\" -> {\"skill\":\"note_delete\",\"arguments\":{\"service\":\"\",\"text\":\"\",\"id\":\"3\",\"path\":\"\",\"content\":\"\",\"find\":\"\",\"replace\":\"\",\"runtime\":\"\",\"code\":\"\"},\"confidence\":0.95,\"needs_clarification\":false,\"clarification_question\":\"\"}\n"+
-			"\"read /etc/hostname\" -> {\"skill\":\"file_read\",\"arguments\":{\"service\":\"\",\"text\":\"\",\"id\":\"\",\"path\":\"/etc/hostname\",\"content\":\"\",\"find\":\"\",\"replace\":\"\",\"runtime\":\"\",\"code\":\"\"},\"confidence\":0.95,\"needs_clarification\":false,\"clarification_question\":\"\"}\n"+
-			"\"run python: print('hello')\" -> {\"skill\":\"exec_code\",\"arguments\":{\"service\":\"\",\"text\":\"\",\"id\":\"\",\"path\":\"\",\"content\":\"\",\"find\":\"\",\"replace\":\"\",\"runtime\":\"python\",\"code\":\"print('hello')\"},\"confidence\":0.95,\"needs_clarification\":false,\"clarification_question\":\"\"}\n"+
-			"\"сделай что-нибудь с интернетом\" -> {\"skill\":\"\",\"arguments\":{\"service\":\"\",\"text\":\"\",\"id\":\"\",\"path\":\"\",\"content\":\"\",\"find\":\"\",\"replace\":\"\",\"runtime\":\"\",\"code\":\"\"},\"confidence\":0.40,\"needs_clarification\":true,\"clarification_question\":\"Check status, logs, or restart a service?\"}\n\n"+
+			"\"сколько памяти занято\" -> {\"skill\":\"memory\",\"arguments\":{\"service\":\"\",\"text\":\"\",\"id\":\"\",\"path\":\"\",\"content\":\"\",\"find\":\"\",\"replace\":\"\",\"runtime\":\"\",\"code\":\"\"},\"needs_clarification\":false,\"clarification_question\":\"\"}\n"+
+			"\"покажи логи tailscale\" -> {\"skill\":\"service_logs\",\"arguments\":{\"service\":\"tailscale\",\"text\":\"\",\"id\":\"\",\"path\":\"\",\"content\":\"\",\"find\":\"\",\"replace\":\"\",\"runtime\":\"\",\"code\":\"\"},\"needs_clarification\":false,\"clarification_question\":\"\"}\n"+
+			"\"удали заметку 3\" -> {\"skill\":\"note_delete\",\"arguments\":{\"service\":\"\",\"text\":\"\",\"id\":\"3\",\"path\":\"\",\"content\":\"\",\"find\":\"\",\"replace\":\"\",\"runtime\":\"\",\"code\":\"\"},\"needs_clarification\":false,\"clarification_question\":\"\"}\n"+
+			"\"read /etc/hostname\" -> {\"skill\":\"file_read\",\"arguments\":{\"service\":\"\",\"text\":\"\",\"id\":\"\",\"path\":\"/etc/hostname\",\"content\":\"\",\"find\":\"\",\"replace\":\"\",\"runtime\":\"\",\"code\":\"\"},\"needs_clarification\":false,\"clarification_question\":\"\"}\n"+
+			"\"run python: print('hello')\" -> {\"skill\":\"exec_code\",\"arguments\":{\"service\":\"\",\"text\":\"\",\"id\":\"\",\"path\":\"\",\"content\":\"\",\"find\":\"\",\"replace\":\"\",\"runtime\":\"python\",\"code\":\"print('hello')\"},\"needs_clarification\":false,\"clarification_question\":\"\"}\n"+
+			"\"сделай что-нибудь с интернетом\" -> {\"skill\":\"\",\"arguments\":{\"service\":\"\",\"text\":\"\",\"id\":\"\",\"path\":\"\",\"content\":\"\",\"find\":\"\",\"replace\":\"\",\"runtime\":\"\",\"code\":\"\"},\"needs_clarification\":true,\"clarification_question\":\"Check status, logs, or restart a service?\"}\n\n"+
 			"User: %q\n",
 		availableSkills,
 		allowedServicesSection,
@@ -126,15 +127,36 @@ func renderCandidateSkills(skills []SkillOption) string {
 
 	lines := make([]string, 0, len(skills))
 	for _, skill := range skills {
-		mode := "read-only"
+		mode := "read"
 		if skill.Mutating {
 			mode = "write"
-		} else {
-			mode = "read"
 		}
 		lines = append(lines, fmt.Sprintf("- %s: %s [%s]", skill.Name, skill.Description, mode))
 	}
 	return strings.Join(lines, "\n")
+}
+
+func effectiveCandidateSkills(request SkillClassificationRequest) []SkillOption {
+	if len(request.CandidateSkills) > 0 {
+		return request.CandidateSkills
+	}
+
+	if len(request.AllowedSkills) == 0 {
+		return nil
+	}
+
+	skills := make([]SkillOption, 0, len(request.AllowedSkills))
+	for _, name := range request.AllowedSkills {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		skills = append(skills, SkillOption{
+			Name:        name,
+			Description: "Select this skill when it best matches the request.",
+		})
+	}
+	return skills
 }
 
 func renderGroupOptions(groups []GroupOption) string {

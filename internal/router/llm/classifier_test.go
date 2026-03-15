@@ -61,9 +61,8 @@ func TestClassifierRoutesHighConfidenceIntent(t *testing.T) {
 			Confidence: 0.97,
 		},
 		skillClassification: basellm.Classification{
-			Skill:      "service_restart",
-			Arguments:  map[string]string{"service": "tailscale"},
-			Confidence: 0.97,
+			Skill:     "service_restart",
+			Arguments: map[string]string{"service": "tailscale"},
 		},
 	}, registry, Options{
 		AllowedServices: []string{"tailscale"},
@@ -84,7 +83,7 @@ func TestClassifierRoutesHighConfidenceIntent(t *testing.T) {
 	}
 }
 
-func TestClassifierAsksForClarificationOnMidConfidence(t *testing.T) {
+func TestClassifierAsksForClarificationWhenRequiredArgsAreMissing(t *testing.T) {
 	t.Parallel()
 
 	registry := skills.NewRegistry()
@@ -96,9 +95,8 @@ func TestClassifierAsksForClarificationOnMidConfidence(t *testing.T) {
 			Confidence: 0.95,
 		},
 		skillClassification: basellm.Classification{
-			Skill:      "service_restart",
-			Arguments:  map[string]string{},
-			Confidence: 0.72,
+			Skill:     "service_restart",
+			Arguments: map[string]string{},
 		},
 	}, registry, Options{
 		AllowedServices: []string{"tailscale"},
@@ -181,9 +179,8 @@ func TestClassifierDefaultsSingleAllowedService(t *testing.T) {
 			Confidence: 0.91,
 		},
 		skillClassification: basellm.Classification{
-			Skill:      "service_status",
-			Arguments:  map[string]string{},
-			Confidence: 0.91,
+			Skill:     "service_status",
+			Arguments: map[string]string{},
 		},
 	}
 
@@ -206,7 +203,7 @@ func TestClassifierDefaultsSingleAllowedService(t *testing.T) {
 	}
 }
 
-func TestClassifierRequiresHigherConfidenceForMutatingSkill(t *testing.T) {
+func TestClassifierRoutesMutatingSkillWhenRouteIsConfident(t *testing.T) {
 	t.Parallel()
 
 	registry := skills.NewRegistry()
@@ -218,9 +215,8 @@ func TestClassifierRequiresHigherConfidenceForMutatingSkill(t *testing.T) {
 			Confidence: 0.91,
 		},
 		skillClassification: basellm.Classification{
-			Skill:      "service_restart",
-			Arguments:  map[string]string{"service": "tailscale"},
-			Confidence: 0.91,
+			Skill:     "service_restart",
+			Arguments: map[string]string{"service": "tailscale"},
 		},
 	}, registry, Options{
 		AllowedServices: []string{"tailscale"},
@@ -230,8 +226,84 @@ func TestClassifierRequiresHigherConfidenceForMutatingSkill(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Classify returned error: %v", err)
 	}
-	if !ok || !decision.ShouldClarify() {
-		t.Fatalf("expected clarification for mutating skill, got %#v", decision)
+	if !ok {
+		t.Fatalf("expected classifier match")
+	}
+	if decision.ShouldClarify() {
+		t.Fatalf("did not expect clarification for mutating skill, got %#v", decision)
+	}
+	if decision.SkillName != "service_restart" || decision.Args["service"] != "tailscale" {
+		t.Fatalf("unexpected decision: %#v", decision)
+	}
+	if decision.Confidence != 0.91 {
+		t.Fatalf("expected route confidence, got %#v", decision)
+	}
+}
+
+func TestClassifierUsesRouteConfidenceForValidSkillSelection(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "status", group: skills.GroupSystem})
+
+	classifier := NewClassifier(&stubProvider{
+		routeClassification: basellm.RouteClassification{
+			Intent:     "system",
+			Confidence: 0.95,
+		},
+		skillClassification: basellm.Classification{
+			Skill:     "status",
+			Arguments: map[string]string{},
+		},
+	}, registry, Options{}, nil)
+
+	decision, ok, err := classifier.Classify(context.Background(), "общий статус")
+	if err != nil {
+		t.Fatalf("Classify returned error: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected status decision")
+	}
+	if decision.SkillName != "status" {
+		t.Fatalf("unexpected decision: %#v", decision)
+	}
+	if decision.Confidence != 0.95 {
+		t.Fatalf("expected route confidence, got %#v", decision)
+	}
+}
+
+func TestClassifierClarifiesMissingRequiredArgsUsingRouteConfidence(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "file_read", group: skills.GroupFiles})
+
+	classifier := NewClassifier(&stubProvider{
+		routeClassification: basellm.RouteClassification{
+			Intent:     "files",
+			Confidence: 0.94,
+		},
+		skillClassification: basellm.Classification{
+			Skill:     "file_read",
+			Arguments: map[string]string{},
+		},
+	}, registry, Options{}, nil)
+
+	decision, ok, err := classifier.Classify(context.Background(), "read something")
+	if err != nil {
+		t.Fatalf("Classify returned error: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected clarification decision")
+	}
+	if !decision.ShouldClarify() {
+		t.Fatalf("expected clarification, got %#v", decision)
+	}
+	if decision.ClarificationQuestion != "Which file should I read?" {
+		t.Fatalf("unexpected clarification question: %q", decision.ClarificationQuestion)
+	}
+	if decision.Confidence != 0.94 {
+		t.Fatalf("expected route confidence, got %#v", decision)
 	}
 }
 
@@ -247,9 +319,8 @@ func TestClassifierRoutesFileReadWithPath(t *testing.T) {
 			Confidence: 0.93,
 		},
 		skillClassification: basellm.Classification{
-			Skill:      "file_read",
-			Arguments:  map[string]string{"path": "/etc/hostname"},
-			Confidence: 0.93,
+			Skill:     "file_read",
+			Arguments: map[string]string{"path": "/etc/hostname"},
 		},
 	}, registry, Options{}, nil)
 
@@ -277,9 +348,8 @@ func TestClassifierPassesWorkbenchRuntimesAndRoutesExecCode(t *testing.T) {
 			Confidence: 0.98,
 		},
 		skillClassification: basellm.Classification{
-			Skill:      "exec_code",
-			Arguments:  map[string]string{"runtime": "python", "code": "print('hello')"},
-			Confidence: 0.98,
+			Skill:     "exec_code",
+			Arguments: map[string]string{"runtime": "python", "code": "print('hello')"},
 		},
 	}
 
@@ -318,9 +388,8 @@ func TestClassifierPassesVisibleSkillsToLLMWithoutHeuristicShortlist(t *testing.
 			Confidence: 0.92,
 		},
 		skillClassification: basellm.Classification{
-			Skill:      "memory",
-			Arguments:  map[string]string{},
-			Confidence: 0.92,
+			Skill:     "memory",
+			Arguments: map[string]string{},
 		},
 	}
 
@@ -371,9 +440,8 @@ func TestClassifierPassesDecisionLimitsToProvider(t *testing.T) {
 			Confidence: 0.91,
 		},
 		skillClassification: basellm.Classification{
-			Skill:      "cpu",
-			Arguments:  map[string]string{},
-			Confidence: 0.91,
+			Skill:     "cpu",
+			Arguments: map[string]string{},
 		},
 	}
 

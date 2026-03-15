@@ -15,7 +15,6 @@ import (
 type Classification struct {
 	Skill                 string            `json:"skill"`
 	Arguments             map[string]string `json:"arguments"`
-	Confidence            float64           `json:"confidence"`
 	NeedsClarification    bool              `json:"needs_clarification"`
 	ClarificationQuestion string            `json:"clarification_question"`
 }
@@ -112,7 +111,7 @@ func (p *HTTPProvider) ClassifySkill(ctx context.Context, text string, request S
 		"candidate_skills": request.CandidateSkills,
 		"input_chars":      request.InputChars,
 		"num_predict":      request.NumPredict,
-		"response_schema":  "skill_v1",
+		"response_schema":  "skill_v2",
 	}, &response); err != nil {
 		return Classification{}, err
 	}
@@ -191,7 +190,6 @@ func normalizeClassification(classification Classification) Classification {
 	return Classification{
 		Skill:                 skill,
 		Arguments:             arguments,
-		Confidence:            clampConfidence(classification.Confidence),
 		NeedsClarification:    classification.NeedsClarification,
 		ClarificationQuestion: strings.TrimSpace(classification.ClarificationQuestion),
 	}

@@ -14,20 +14,18 @@ import (
 )
 
 const (
-	defaultExecuteThreshold         = 0.80
-	defaultMutatingExecuteThreshold = 0.95
-	defaultClarifyThreshold         = 0.60
-	defaultRouteInputChars          = 96
-	defaultRouteNumPredict          = 64
-	defaultSkillInputChars          = 128
-	defaultSkillNumPredict          = 96
+	defaultExecuteThreshold = 0.80
+	defaultClarifyThreshold = 0.60
+	defaultRouteInputChars  = 96
+	defaultRouteNumPredict  = 64
+	defaultSkillInputChars  = 128
+	defaultSkillNumPredict  = 96
 )
 
 type Options struct {
 	AllowedServices          []string
 	AllowedWorkbenchRuntimes []string
 	ExecuteThreshold         float64
-	MutatingExecuteThreshold float64
 	ClarifyThreshold         float64
 	InputChars               int
 	NumPredict               int
@@ -41,7 +39,6 @@ type Classifier struct {
 	allowedWorkbenchRuntimes []string
 	skillCatalog             map[string]skills.Definition
 	executeThreshold         float64
-	mutatingExecuteThreshold float64
 	clarifyThreshold         float64
 	routeInputChars          int
 	routeNumPredict          int
@@ -53,11 +50,6 @@ func NewClassifier(provider basellm.Provider, registry *skills.Registry, options
 	executeThreshold := options.ExecuteThreshold
 	if executeThreshold <= 0 || executeThreshold > 1 {
 		executeThreshold = defaultExecuteThreshold
-	}
-
-	mutatingExecuteThreshold := options.MutatingExecuteThreshold
-	if mutatingExecuteThreshold < executeThreshold || mutatingExecuteThreshold > 1 {
-		mutatingExecuteThreshold = defaultMutatingExecuteThreshold
 	}
 
 	clarifyThreshold := options.ClarifyThreshold
@@ -73,7 +65,6 @@ func NewClassifier(provider basellm.Provider, registry *skills.Registry, options
 		allowedWorkbenchRuntimes: normalizeList(options.AllowedWorkbenchRuntimes),
 		skillCatalog:             buildSkillCatalog(registry),
 		executeThreshold:         executeThreshold,
-		mutatingExecuteThreshold: mutatingExecuteThreshold,
 		clarifyThreshold:         clarifyThreshold,
 		routeInputChars:          effectiveLayerInputChars(options.InputChars, defaultRouteInputChars),
 		routeNumPredict:          effectiveLayerNumPredict(options.NumPredict, defaultRouteNumPredict),
@@ -157,13 +148,13 @@ func (c *Classifier) Classify(ctx context.Context, text string) (router.Decision
 			return router.Decision{}, false, err
 		}
 
-		decision, ok := c.resolveSkillDecision(text, allowedSkills, classification)
+		decision, ok := c.resolveSkillDecision(text, allowedSkills, routeClassification.Confidence, classification)
 		if c.logger != nil {
 			c.logger.Debug(
 				"llm skill completed",
 				"group", groupKey,
 				"decision_skill", classification.Skill,
-				"decision_confidence", classification.Confidence,
+				"decision_confidence", decision.Confidence,
 				"decision_args", classification.Arguments,
 				"decision_needs_clarification", classification.NeedsClarification,
 				"decision_available_skills", skillOptionNames(availableSkills),
@@ -318,23 +309,24 @@ func (c *Classifier) resolveRouteDecision(text string, availableGroups []basellm
 	return router.Decision{}, false, "", false
 }
 
-func (c *Classifier) resolveSkillDecision(text string, allowedSkills []string, classification basellm.Classification) (router.Decision, bool) {
+func (c *Classifier) resolveSkillDecision(text string, allowedSkills []string, routeConfidence float64, classification basellm.Classification) (router.Decision, bool) {
 	skillName := normalizeIntent(classification.Skill)
 	arguments := normalizeArguments(classification.Arguments)
+	decisionConfidence := routeConfidence
 
 	if question := clarificationQuestionForSkillResponse(skillName, arguments, classification.ClarificationQuestion); classification.NeedsClarification && question != "" {
 		if c.logger != nil {
 			c.logger.Debug(
 				"llm skill requested clarification",
 				"skill", skillName,
-				"confidence", classification.Confidence,
+				"decision_confidence", decisionConfidence,
 				"question", question,
 				"args", arguments,
 			)
 		}
 		return router.Decision{
 			Mode:                  router.ModeLLM,
-			Confidence:            classification.Confidence,
+			Confidence:            decisionConfidence,
 			NeedsClarification:    true,
 			ClarificationQuestion: question,
 		}, true
@@ -346,7 +338,7 @@ func (c *Classifier) resolveSkillDecision(text string, allowedSkills []string, c
 			c.logger.Debug(
 				"llm skill defaulted to the only available skill",
 				"skill", skillName,
-				"confidence", classification.Confidence,
+				"decision_confidence", decisionConfidence,
 				"args", arguments,
 			)
 		}
@@ -356,7 +348,7 @@ func (c *Classifier) resolveSkillDecision(text string, allowedSkills []string, c
 		if c.logger != nil {
 			c.logger.Debug(
 				"llm skill returned no executable skill",
-				"confidence", classification.Confidence,
+				"decision_confidence", decisionConfidence,
 				"args", arguments,
 			)
 		}
@@ -375,14 +367,14 @@ func (c *Classifier) resolveSkillDecision(text string, allowedSkills []string, c
 			c.logger.Debug(
 				"llm skill missing required arguments",
 				"skill", skillName,
-				"confidence", classification.Confidence,
+				"decision_confidence", decisionConfidence,
 				"question", question,
 				"args", arguments,
 			)
 		}
 		return router.Decision{
 			Mode:                  router.ModeLLM,
-			Confidence:            classification.Confidence,
+			Confidence:            decisionConfidence,
 			NeedsClarification:    true,
 			ClarificationQuestion: question,
 		}, true
@@ -396,49 +388,11 @@ func (c *Classifier) resolveSkillDecision(text string, allowedSkills []string, c
 		return router.Decision{}, false
 	}
 
-	executeThreshold := c.executeThreshold
-	if skill.Definition().Mutating {
-		executeThreshold = c.mutatingExecuteThreshold
-	}
-	if classification.Confidence < executeThreshold {
-		if c.logger != nil {
-			c.logger.Debug(
-				"llm skill below execute threshold",
-				"skill", skillName,
-				"confidence", classification.Confidence,
-				"execute_threshold", executeThreshold,
-				"clarify_threshold", c.clarifyThreshold,
-				"mutating", skill.Definition().Mutating,
-				"args", arguments,
-			)
-		}
-		if classification.Confidence >= c.clarifyThreshold {
-			if question := clarificationQuestionForSkillResponse(skillName, arguments, classification.ClarificationQuestion); question != "" {
-				if c.logger != nil {
-					c.logger.Debug(
-						"llm skill downgraded to clarification",
-						"skill", skillName,
-						"confidence", classification.Confidence,
-						"question", question,
-						"args", arguments,
-					)
-				}
-				return router.Decision{
-					Mode:                  router.ModeLLM,
-					Confidence:            classification.Confidence,
-					NeedsClarification:    true,
-					ClarificationQuestion: question,
-				}, true
-			}
-		}
-		return router.Decision{}, false
-	}
-
 	return router.Decision{
 		Mode:       router.ModeLLM,
 		SkillName:  skill.Definition().Name,
 		Args:       c.routeArguments(text, skillName, arguments),
-		Confidence: classification.Confidence,
+		Confidence: decisionConfidence,
 	}, true
 }
 

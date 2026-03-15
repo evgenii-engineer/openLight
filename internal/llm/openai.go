@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -28,17 +30,28 @@ type OpenAIProvider struct {
 }
 
 type openAIResponsesRequest struct {
-	Model           string         `json:"model"`
-	Instructions    string         `json:"instructions,omitempty"`
-	Input           any            `json:"input"`
-	Temperature     float64        `json:"temperature,omitempty"`
-	MaxOutputTokens int            `json:"max_output_tokens,omitempty"`
-	Store           bool           `json:"store"`
-	Text            openAITextSpec `json:"text"`
+	Model             string         `json:"model"`
+	Instructions      string         `json:"instructions,omitempty"`
+	Input             any            `json:"input"`
+	Temperature       float64        `json:"temperature,omitempty"`
+	MaxOutputTokens   int            `json:"max_output_tokens,omitempty"`
+	Store             bool           `json:"store"`
+	Text              openAITextSpec `json:"text"`
+	Tools             []openAITool   `json:"tools,omitempty"`
+	ToolChoice        any            `json:"tool_choice,omitempty"`
+	ParallelToolCalls *bool          `json:"parallel_tool_calls,omitempty"`
 }
 
 type openAITextSpec struct {
 	Format any `json:"format"`
+}
+
+type openAITool struct {
+	Type        string         `json:"type"`
+	Name        string         `json:"name,omitempty"`
+	Description string         `json:"description,omitempty"`
+	Parameters  map[string]any `json:"parameters,omitempty"`
+	Strict      bool           `json:"strict,omitempty"`
 }
 
 type openAIResponse struct {
@@ -46,8 +59,14 @@ type openAIResponse struct {
 }
 
 type openAIOutputItem struct {
-	Type    string                `json:"type"`
-	Content []openAIOutputContent `json:"content"`
+	ID        string                `json:"id"`
+	Type      string                `json:"type"`
+	Status    string                `json:"status"`
+	Role      string                `json:"role"`
+	Name      string                `json:"name"`
+	Arguments string                `json:"arguments"`
+	CallID    string                `json:"call_id"`
+	Content   []openAIOutputContent `json:"content"`
 }
 
 type openAIOutputContent struct {
@@ -101,28 +120,45 @@ func (p *OpenAIProvider) ClassifyRoute(ctx context.Context, text string, request
 }
 
 func (p *OpenAIProvider) ClassifySkill(ctx context.Context, text string, request SkillClassificationRequest) (Classification, error) {
-	prompt := buildSkillPrompt(limitText(text, request.InputChars), request)
-	responseText, err := p.createTextResponse(ctx, openAIResponsesRequest{
+	response, err := p.createResponse(ctx, openAIResponsesRequest{
 		Model:           p.model,
-		Input:           prompt,
+		Instructions:    buildSkillToolInstructions(request),
+		Input:           limitText(text, request.InputChars),
 		Temperature:     0.1,
 		MaxOutputTokens: decisionNumPredict(request.NumPredict),
 		Store:           false,
 		Text: openAITextSpec{
-			Format: openAIJSONSchemaFormat("skill_response", skillResponseSchema(request.AllowedSkills)),
+			Format: map[string]any{
+				"type": "text",
+			},
 		},
+		Tools:             openAISkillTools(request),
+		ToolChoice:        "required",
+		ParallelToolCalls: openAIBool(false),
 	})
 	if err != nil {
 		return Classification{}, err
 	}
 
-	if p.logger != nil {
-		p.logger.Debug("openai skill raw response", "response", responseText)
+	call, ok := openAIFirstFunctionCall(response)
+	if !ok {
+		responseText := strings.TrimSpace(openAIResponseText(response))
+		if p.logger != nil {
+			p.logger.Debug("openai skill raw response", "response", responseText)
+		}
+		if responseText == "" {
+			return Classification{}, fmt.Errorf("openai skill response missing function call")
+		}
+		return Classification{}, fmt.Errorf("openai skill response missing function call: %s", responseText)
 	}
 
-	var classification Classification
-	if err := json.Unmarshal([]byte(responseText), &classification); err != nil {
-		return Classification{}, fmt.Errorf("decode openai skill response: %w", err)
+	if p.logger != nil {
+		p.logger.Debug("openai skill raw response", "tool", call.Name, "arguments", call.Arguments)
+	}
+
+	classification, err := openAIClassificationFromFunctionCall(call)
+	if err != nil {
+		return Classification{}, err
 	}
 
 	return normalizeClassification(classification), nil
@@ -183,32 +219,46 @@ func (p *OpenAIProvider) Chat(ctx context.Context, messages []ChatMessage) (stri
 }
 
 func (p *OpenAIProvider) createTextResponse(ctx context.Context, payload openAIResponsesRequest) (string, error) {
+	response, err := p.createResponse(ctx, payload)
+	if err != nil {
+		return "", err
+	}
+
+	responseText := strings.TrimSpace(openAIResponseText(response))
+	if responseText == "" {
+		return "", fmt.Errorf("empty openai response text")
+	}
+
+	return responseText, nil
+}
+
+func (p *OpenAIProvider) createResponse(ctx context.Context, payload openAIResponsesRequest) (openAIResponse, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return "", fmt.Errorf("marshal openai responses payload: %w", err)
+		return openAIResponse{}, fmt.Errorf("marshal openai responses payload: %w", err)
 	}
 
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, p.endpoint+"/responses", bytes.NewReader(body))
 	if err != nil {
-		return "", fmt.Errorf("create openai responses request: %w", err)
+		return openAIResponse{}, fmt.Errorf("create openai responses request: %w", err)
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer "+p.apiKey)
 
 	response, err := p.client.Do(request)
 	if err != nil {
-		return "", fmt.Errorf("call openai responses endpoint: %w", err)
+		return openAIResponse{}, fmt.Errorf("call openai responses endpoint: %w", err)
 	}
 	defer response.Body.Close()
 
 	if response.StatusCode >= http.StatusBadRequest {
 		content, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
-		return "", fmt.Errorf("openai responses endpoint returned %d: %s", response.StatusCode, strings.TrimSpace(string(content)))
+		return openAIResponse{}, fmt.Errorf("openai responses endpoint returned %d: %s", response.StatusCode, strings.TrimSpace(string(content)))
 	}
 
 	var decoded openAIResponse
 	if err := json.NewDecoder(response.Body).Decode(&decoded); err != nil {
-		return "", fmt.Errorf("decode openai responses response: %w", err)
+		return openAIResponse{}, fmt.Errorf("decode openai responses response: %w", err)
 	}
 
 	responseText := strings.TrimSpace(openAIResponseText(decoded))
@@ -216,13 +266,11 @@ func (p *OpenAIProvider) createTextResponse(ctx context.Context, payload openAIR
 		p.logger.Debug("openai response completed",
 			"model", p.model,
 			"response_chars", utf8.RuneCountInString(responseText),
+			"function_calls", openAIFunctionCallCount(decoded),
 		)
 	}
-	if responseText == "" {
-		return "", fmt.Errorf("empty openai response text")
-	}
 
-	return responseText, nil
+	return decoded, nil
 }
 
 func openAIResponseText(response openAIResponse) string {
@@ -242,6 +290,84 @@ func openAIResponseText(response openAIResponse) string {
 		}
 	}
 	return builder.String()
+}
+
+func openAIFirstFunctionCall(response openAIResponse) (openAIOutputItem, bool) {
+	for _, item := range response.Output {
+		if item.Type == "function_call" {
+			return item, true
+		}
+	}
+	return openAIOutputItem{}, false
+}
+
+func openAIFunctionCallCount(response openAIResponse) int {
+	count := 0
+	for _, item := range response.Output {
+		if item.Type == "function_call" {
+			count++
+		}
+	}
+	return count
+}
+
+func openAIClassificationFromFunctionCall(call openAIOutputItem) (Classification, error) {
+	arguments, err := openAIArgumentsStringMap(call.Arguments)
+	if err != nil {
+		return Classification{}, fmt.Errorf("decode openai skill function arguments: %w", err)
+	}
+
+	if call.Name == openAIClarificationToolName {
+		return Classification{
+			NeedsClarification:    true,
+			ClarificationQuestion: strings.TrimSpace(arguments["question"]),
+		}, nil
+	}
+
+	return Classification{
+		Skill:     strings.TrimSpace(call.Name),
+		Arguments: arguments,
+	}, nil
+}
+
+func openAIArgumentsStringMap(raw string) (map[string]string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return map[string]string{}, nil
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
+		return nil, err
+	}
+
+	result := make(map[string]string, len(decoded))
+	for key, value := range decoded {
+		result[strings.TrimSpace(key)] = openAIArgumentString(value)
+	}
+	return result, nil
+}
+
+func openAIArgumentString(value any) string {
+	switch typed := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return typed
+	case bool:
+		return strconv.FormatBool(typed)
+	case float64:
+		if math.Trunc(typed) == typed {
+			return strconv.FormatInt(int64(typed), 10)
+		}
+		return strconv.FormatFloat(typed, 'f', -1, 64)
+	default:
+		encoded, err := json.Marshal(typed)
+		if err != nil {
+			return fmt.Sprint(typed)
+		}
+		return string(encoded)
+	}
 }
 
 func openAIChatInput(messages []ChatMessage) ([]map[string]any, string) {
@@ -292,4 +418,8 @@ func openAIJSONSchemaFormat(name string, schema map[string]any) map[string]any {
 		"strict": true,
 		"schema": schema,
 	}
+}
+
+func openAIBool(value bool) *bool {
+	return &value
 }

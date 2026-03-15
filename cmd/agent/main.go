@@ -74,7 +74,6 @@ func run() error {
 			AllowedServices:          cfg.Services.Allowed,
 			AllowedWorkbenchRuntimes: cfg.Workbench.AllowedRuntimes,
 			ExecuteThreshold:         cfg.LLM.ExecuteThreshold,
-			MutatingExecuteThreshold: cfg.LLM.MutatingExecuteThreshold,
 			ClarifyThreshold:         cfg.LLM.ClarifyThreshold,
 			InputChars:               cfg.LLM.DecisionInputChars,
 			NumPredict:               cfg.LLM.DecisionNumPredict,

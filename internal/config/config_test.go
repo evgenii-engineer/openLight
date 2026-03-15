@@ -52,7 +52,6 @@ llm:
   endpoint: "http://127.0.0.1:11434"
   model: "qwen2.5:0.5b"
   execute_threshold: 0.9
-  mutating_execute_threshold: 0.97
   clarify_threshold: 0.7
   decision_input_chars: 120
   decision_num_predict: 48
@@ -122,7 +121,7 @@ log:
 	if !cfg.LLM.Enabled || cfg.LLM.Provider != "ollama" || cfg.LLM.Model != "qwen2.5:0.5b" {
 		t.Fatalf("unexpected llm config: %#v", cfg.LLM)
 	}
-	if cfg.LLM.ExecuteThreshold != 0.9 || cfg.LLM.MutatingExecuteThreshold != 0.97 || cfg.LLM.ClarifyThreshold != 0.7 {
+	if cfg.LLM.ExecuteThreshold != 0.9 || cfg.LLM.ClarifyThreshold != 0.7 {
 		t.Fatalf("unexpected llm thresholds: %#v", cfg.LLM)
 	}
 	if cfg.LLM.APIKey != "" {
@@ -192,7 +191,7 @@ storage:
 	if cfg.LLM.Provider != "generic" {
 		t.Fatalf("unexpected llm provider: %q", cfg.LLM.Provider)
 	}
-	if cfg.LLM.ExecuteThreshold != 0.80 || cfg.LLM.MutatingExecuteThreshold != 0.95 || cfg.LLM.ClarifyThreshold != 0.60 {
+	if cfg.LLM.ExecuteThreshold != 0.80 || cfg.LLM.ClarifyThreshold != 0.60 {
 		t.Fatalf("unexpected llm thresholds: %#v", cfg.LLM)
 	}
 	if cfg.Chat.HistoryLimit != 6 || cfg.Chat.HistoryChars != 900 || cfg.Chat.MaxResponseChars != 400 {
@@ -325,7 +324,6 @@ func clearConfigEnv(t *testing.T) {
 		"LLM_MODEL",
 		"OPENAI_API_KEY",
 		"LLM_EXECUTE_THRESHOLD",
-		"LLM_MUTATING_EXECUTE_THRESHOLD",
 		"LLM_CLARIFY_THRESHOLD",
 		"LLM_DECISION_INPUT_CHARS",
 		"LLM_DECISION_NUM_PREDICT",

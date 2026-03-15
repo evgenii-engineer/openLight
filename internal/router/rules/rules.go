@@ -101,49 +101,56 @@ func containsAny(text string, patterns ...string) bool {
 }
 
 func extractAfterKeyword(text, keyword string) string {
-	prefix := keyword + " "
-	if !strings.Contains(text, prefix) {
-		return ""
+	fields := strings.Fields(text)
+	for idx, field := range fields {
+		if field != keyword {
+			continue
+		}
+		if service := firstConcreteServiceToken(fields[idx+1:]); service != "" {
+			return service
+		}
 	}
-	idx := strings.Index(text, prefix)
-	if idx < 0 {
-		return ""
-	}
-	service := strings.TrimSpace(text[idx+len(prefix):])
-	return firstToken(service)
+	return ""
 }
 
 func extractLogsService(text string) string {
-	switch {
-	case strings.HasPrefix(text, "logs "):
-		return firstToken(strings.TrimPrefix(text, "logs "))
-	case strings.HasPrefix(text, "log "):
-		return firstToken(strings.TrimPrefix(text, "log "))
-	case strings.Contains(text, " logs"):
-		prefix := strings.TrimSpace(strings.Split(text, " logs")[0])
-		return lastToken(prefix)
-	case strings.Contains(text, " log"):
-		prefix := strings.TrimSpace(strings.Split(text, " log")[0])
-		return lastToken(prefix)
-	default:
-		return ""
+	fields := strings.Fields(text)
+	for idx, field := range fields {
+		if field != "logs" && field != "log" {
+			continue
+		}
+		if service := firstMeaningfulToken(fields[idx+1:]); service != "" {
+			return service
+		}
+		if service := lastMeaningfulToken(fields[:idx]); service != "" {
+			return service
+		}
 	}
+	return ""
 }
 
 func extractStatusService(text string) string {
-	if strings.HasPrefix(text, "status ") {
-		return firstToken(strings.TrimPrefix(text, "status "))
+	fields := strings.Fields(text)
+	if len(fields) == 0 {
+		return ""
 	}
-	if strings.HasPrefix(text, "service ") {
-		return firstToken(strings.TrimPrefix(text, "service "))
+
+	if fields[0] == "status" {
+		return firstConcreteServiceToken(fields[1:])
 	}
-	if strings.Contains(text, " service status") {
-		prefix := strings.TrimSpace(strings.Split(text, " service status")[0])
-		return lastToken(prefix)
+
+	if fields[0] == "service" {
+		return firstConcreteServiceToken(fields[1:])
 	}
-	if strings.Contains(text, "status of ") {
-		return firstToken(strings.TrimSpace(strings.Split(text, "status of ")[1]))
+
+	if idx := indexSequence(fields, "service", "status"); idx > 0 {
+		return lastConcreteServiceToken(fields[:idx])
 	}
+
+	if idx := indexSequence(fields, "status", "of"); idx >= 0 {
+		return firstConcreteServiceToken(fields[idx+2:])
+	}
+
 	return ""
 }
 
@@ -189,4 +196,72 @@ func lastToken(text string) string {
 		return ""
 	}
 	return fields[len(fields)-1]
+}
+
+func firstMeaningfulToken(fields []string) string {
+	for _, field := range fields {
+		if !isLogsContextWord(field) {
+			return field
+		}
+	}
+	return ""
+}
+
+func lastMeaningfulToken(fields []string) string {
+	for idx := len(fields) - 1; idx >= 0; idx-- {
+		if !isLogsContextWord(fields[idx]) {
+			return fields[idx]
+		}
+	}
+	return ""
+}
+
+func firstConcreteServiceToken(fields []string) string {
+	for _, field := range fields {
+		if !isGenericServiceWord(field) {
+			return field
+		}
+	}
+	return ""
+}
+
+func lastConcreteServiceToken(fields []string) string {
+	for idx := len(fields) - 1; idx >= 0; idx-- {
+		if !isGenericServiceWord(fields[idx]) {
+			return fields[idx]
+		}
+	}
+	return ""
+}
+
+func isLogsContextWord(field string) bool {
+	return isGenericServiceWord(field)
+}
+
+func isGenericServiceWord(field string) bool {
+	switch field {
+	case "", "show", "check", "service", "services", "status", "restart", "logs", "log", "for", "of", "the", "me", "please", "recent", "latest", "last", "system", "overall", "agent", "all", "whole", "entire":
+		return true
+	default:
+		return false
+	}
+}
+
+func indexSequence(fields []string, sequence ...string) int {
+	if len(sequence) == 0 || len(fields) < len(sequence) {
+		return -1
+	}
+	for idx := 0; idx <= len(fields)-len(sequence); idx++ {
+		match := true
+		for offset, field := range sequence {
+			if fields[idx+offset] != field {
+				match = false
+				break
+			}
+		}
+		if match {
+			return idx
+		}
+	}
+	return -1
 }

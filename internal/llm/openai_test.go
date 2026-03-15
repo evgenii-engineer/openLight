@@ -101,44 +101,72 @@ func TestOpenAIProviderClassifySkill(t *testing.T) {
 				t.Fatalf("decode request: %v", err)
 			}
 
+			if payload["tool_choice"] != "required" {
+				t.Fatalf("unexpected tool_choice: %#v", payload["tool_choice"])
+			}
+			if payload["parallel_tool_calls"] != false {
+				t.Fatalf("unexpected parallel_tool_calls: %#v", payload["parallel_tool_calls"])
+			}
+
 			textConfig, ok := payload["text"].(map[string]any)
 			if !ok {
 				t.Fatalf("unexpected text config: %#v", payload["text"])
 			}
 			format, ok := textConfig["format"].(map[string]any)
-			if !ok || format["type"] != "json_schema" {
+			if !ok || format["type"] != "text" {
 				t.Fatalf("unexpected format config: %#v", textConfig["format"])
 			}
-			if format["name"] != "skill_response" {
-				t.Fatalf("unexpected format name: %#v", format["name"])
+
+			tools, ok := payload["tools"].([]any)
+			if !ok || len(tools) != 3 {
+				t.Fatalf("unexpected tools payload: %#v", payload["tools"])
 			}
-			schema, ok := format["schema"].(map[string]any)
+
+			firstTool, ok := tools[0].(map[string]any)
+			if !ok || firstTool["type"] != "function" || firstTool["name"] != "service_restart" {
+				t.Fatalf("unexpected first tool: %#v", tools[0])
+			}
+			if firstTool["strict"] != true {
+				t.Fatalf("expected strict function tool, got %#v", firstTool["strict"])
+			}
+
+			parameters, ok := firstTool["parameters"].(map[string]any)
 			if !ok {
-				t.Fatalf("unexpected format schema: %#v", format["schema"])
+				t.Fatalf("unexpected parameters schema: %#v", firstTool["parameters"])
 			}
-			properties, ok := schema["properties"].(map[string]any)
-			if !ok {
-				t.Fatalf("unexpected schema properties: %#v", schema["properties"])
-			}
-			arguments, ok := properties["arguments"].(map[string]any)
-			if !ok {
-				t.Fatalf("unexpected arguments schema: %#v", properties["arguments"])
-			}
-			required, ok := arguments["required"].([]any)
+			required, ok := parameters["required"].([]any)
 			if !ok || len(required) != 9 {
-				t.Fatalf("unexpected arguments required list: %#v", arguments["required"])
+				t.Fatalf("unexpected required list: %#v", parameters["required"])
+			}
+			properties, ok := parameters["properties"].(map[string]any)
+			if !ok {
+				t.Fatalf("unexpected parameters properties: %#v", parameters["properties"])
+			}
+			serviceProperty, ok := properties["service"].(map[string]any)
+			if !ok {
+				t.Fatalf("unexpected service property: %#v", properties["service"])
+			}
+			serviceType, ok := serviceProperty["type"].([]any)
+			if !ok || len(serviceType) != 2 || serviceType[0] != "string" || serviceType[1] != "null" {
+				t.Fatalf("unexpected service type: %#v", serviceProperty["type"])
+			}
+			serviceEnum, ok := serviceProperty["enum"].([]any)
+			if !ok || len(serviceEnum) != 2 || serviceEnum[0] != "tailscale" || serviceEnum[1] != nil {
+				t.Fatalf("unexpected service enum: %#v", serviceProperty["enum"])
+			}
+
+			lastTool, ok := tools[2].(map[string]any)
+			if !ok || lastTool["name"] != openAIClarificationToolName {
+				t.Fatalf("unexpected clarification tool: %#v", tools[2])
 			}
 
 			return jsonHTTPResponse(map[string]any{
 				"output": []map[string]any{
 					{
-						"type": "message",
-						"content": []map[string]any{
-							{
-								"type": "output_text",
-								"text": `{"skill":"service_restart","arguments":{"service":"tailscale","text":"","id":"","path":"","content":"","find":"","replace":"","runtime":"","code":""},"confidence":0.93,"needs_clarification":false,"clarification_question":""}`,
-							},
-						},
+						"type":      "function_call",
+						"name":      "service_restart",
+						"arguments": `{"service":"tailscale"}`,
+						"status":    "completed",
 					},
 				},
 			}), nil
@@ -159,6 +187,42 @@ func TestOpenAIProviderClassifySkill(t *testing.T) {
 	}
 	if classification.Arguments["service"] != "tailscale" {
 		t.Fatalf("unexpected args: %#v", classification.Arguments)
+	}
+}
+
+func TestOpenAIProviderClassifySkillClarificationTool(t *testing.T) {
+	t.Parallel()
+
+	provider := NewOpenAIProvider("https://api.openai.com/v1", "gpt-4o-mini", "secret", time.Second, nil)
+	provider.client = &http.Client{
+		Timeout: time.Second,
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			return jsonHTTPResponse(map[string]any{
+				"output": []map[string]any{
+					{
+						"type":      "function_call",
+						"name":      openAIClarificationToolName,
+						"arguments": `{"question":"Which service should I restart?"}`,
+						"status":    "completed",
+					},
+				},
+			}), nil
+		}),
+	}
+
+	classification, err := provider.ClassifySkill(context.Background(), "restart something", SkillClassificationRequest{
+		AllowedSkills: []string{"service_restart"},
+		InputChars:    160,
+		NumPredict:    64,
+	})
+	if err != nil {
+		t.Fatalf("ClassifySkill returned error: %v", err)
+	}
+	if !classification.NeedsClarification {
+		t.Fatalf("expected clarification classification: %#v", classification)
+	}
+	if classification.ClarificationQuestion != "Which service should I restart?" {
+		t.Fatalf("unexpected clarification question: %q", classification.ClarificationQuestion)
 	}
 }
 

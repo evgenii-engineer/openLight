@@ -147,11 +147,10 @@ func TestAgentRunPollingEndToEndWithRealOllamaResponds(t *testing.T) {
 	registry.MustRegister(skills.NewHelpSkill(registry))
 
 	classifier := routerllm.NewClassifier(provider, registry, routerllm.Options{
-		ExecuteThreshold:         0.80,
-		MutatingExecuteThreshold: 0.95,
-		ClarifyThreshold:         0.60,
-		InputChars:               160,
-		NumPredict:               128,
+		ExecuteThreshold: 0.80,
+		ClarifyThreshold: 0.60,
+		InputChars:       160,
+		NumPredict:       128,
 	}, nil)
 
 	bot := telegram.NewBot(telegram.Options{
@@ -207,11 +206,10 @@ func TestAgentRunPollingEndToEndWithRealOllamaNoteAdd(t *testing.T) {
 			return registry
 		},
 		routerllm.Options{
-			ExecuteThreshold:         0.80,
-			MutatingExecuteThreshold: 0.90,
-			ClarifyThreshold:         0.60,
-			InputChars:               160,
-			NumPredict:               128,
+			ExecuteThreshold: 0.80,
+			ClarifyThreshold: 0.60,
+			InputChars:       160,
+			NumPredict:       128,
 		},
 	)
 
@@ -241,11 +239,10 @@ func TestAgentRunPollingEndToEndWithRealOllamaStatus(t *testing.T) {
 			return registry
 		},
 		routerllm.Options{
-			ExecuteThreshold:         0.80,
-			MutatingExecuteThreshold: 0.95,
-			ClarifyThreshold:         0.60,
-			InputChars:               160,
-			NumPredict:               128,
+			ExecuteThreshold: 0.80,
+			ClarifyThreshold: 0.60,
+			InputChars:       160,
+			NumPredict:       128,
 		},
 	)
 
@@ -276,11 +273,10 @@ func TestAgentRunPollingEndToEndWithRealOllamaMemory(t *testing.T) {
 			return registry
 		},
 		routerllm.Options{
-			ExecuteThreshold:         0.80,
-			MutatingExecuteThreshold: 0.95,
-			ClarifyThreshold:         0.60,
-			InputChars:               160,
-			NumPredict:               128,
+			ExecuteThreshold: 0.80,
+			ClarifyThreshold: 0.60,
+			InputChars:       160,
+			NumPredict:       128,
 		},
 	)
 

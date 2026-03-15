@@ -22,7 +22,7 @@ For each incoming Telegram message, the runtime does the following:
 3. store the message in SQLite
 4. try deterministic routing first
 5. optionally fall back to LLM route classification, then LLM skill classification
-6. validate confidence, arguments, and mutating-skill thresholds
+6. validate the selected route, selected skill, and required arguments
 7. execute the selected skill
 8. store the result and send the reply
 
@@ -63,12 +63,16 @@ When enabled, the fallback is split into two steps:
 1. route classification: choose `chat`, `unknown`, or one visible skill group
 2. skill classification: choose one visible skill inside that group and extract minimal arguments
 
+Common English and Russian semantic variants still resolve in the deterministic layer.
+The LLM path is only used after deterministic routing has no match.
+
 The Go side remains authoritative:
 
 - it validates that the chosen skill belongs to the selected group
 - it checks required arguments
-- it applies execution thresholds
-- it uses a stricter threshold for mutating skills
+- it uses route-stage confidence as the execution gate for `chat` and tool groups
+- it treats the skill stage as skill selection, argument extraction, and clarification only
+- it never lets the LLM bypass Go-side allowlists or argument validation
 
 ## Main Runtime Pieces
 
@@ -150,6 +154,7 @@ Relevant files:
 - [internal/llm/factory.go](./internal/llm/factory.go)
 - [internal/llm/ollama.go](./internal/llm/ollama.go)
 - [internal/llm/openai.go](./internal/llm/openai.go)
+- [internal/llm/openai_tools.go](./internal/llm/openai_tools.go)
 
 ## Deployment Shape
 

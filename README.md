@@ -6,7 +6,7 @@
 
 Tiny AI control plane for your personal infrastructure.
 
-`openLight` keeps host access explicit and auditable, stores state in SQLite, and uses an LLM only for natural-language routing and chat. It is not a general-purpose shell agent.
+`openLight` keeps host access explicit and auditable, stores state in SQLite, and uses an optional LLM fallback for broader natural-language routing and chat. It is not a general-purpose shell agent.
 
 [Architecture](./ARCHITECTURE.md) · [Changelog](./CHANGELOG.md) · [Pi 5 Latency](#raspberry-pi-5-latency-snapshot) · [Install on Raspberry Pi](#raspberry-pi-setup) · [Configs](./configs/) · [Systemd Unit](./deployments/systemd/openlight-agent.service)
 
@@ -140,7 +140,8 @@ Useful first commands:
 - `/status`
 - `read /tmp/openlight/app.conf`
 
-Natural-language routing such as `show tailscale logs` or `прочитай /etc/hostname` is available only when `llm.enabled: true`.
+Common English and Russian variants such as `show logs tailscale` or `покажи логи tailscale` are handled by deterministic routing even when `llm.enabled: false`.
+Enabling the LLM broadens ambiguous natural-language routing and adds the `chat` skill.
 
 ## Raspberry Pi Setup
 
@@ -265,6 +266,8 @@ Notes:
 - the same `llm.model` is used for route classification, skill classification, and chat
 - `chat.*` affects only free-form chat
 - `llm.decision_*` affects only routing and skill selection
+- common semantic variants still work without the LLM; the classifier is there for broader or more ambiguous phrasing
+- route-stage confidence is the execution gate; skill classification focuses on choosing a concrete skill, extracting arguments, and requesting clarification when needed
 - `OPENAI_API_KEY` overrides `llm.api_key`
 
 ### Safety Boundaries
@@ -382,7 +385,8 @@ run /usr/bin/uptime
 note buy milk
 ```
 
-Commands can be sent as slash commands, explicit command text, or natural language when LLM routing is enabled.
+Commands can be sent as slash commands, explicit command text, or common deterministic English and Russian variants.
+Enabling the LLM broadens natural-language routing and adds the `chat` skill.
 
 ## Development
 
