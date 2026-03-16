@@ -120,7 +120,7 @@ For Raspberry Pi, use [Raspberry Pi Setup](#raspberry-pi-setup).
 - at least one of `auth.allowed_user_ids` or `auth.allowed_chat_ids`
 - `storage.sqlite_path`
 - `files.allowed` for safe file access
-- `services.allowed` for allowed systemd services
+- `services.allowed` for allowed services
 - `workbench.*` only if you want temporary code execution or allowlisted executables
 - `llm.*` and `chat.*` only if you want LLM routing and chat
 
@@ -228,7 +228,7 @@ ssh "$PI_USER@$PI_HOST" "journalctl -u openlight-agent -f"
 | `auth.*` | user and chat allowlists |
 | `storage.*` | SQLite database location |
 | `files.*` | allowed roots and read/list limits |
-| `services.*` | allowed systemd services and log line limits |
+| `services.*` | allowed services plus log line and log size limits |
 | `workbench.*` | optional temporary code execution and allowlisted files |
 | `llm.*` | optional LLM provider, thresholds, and routing limits |
 | `chat.*` | free-form chat history and response bounds |
@@ -277,7 +277,7 @@ The config defines the agent's safety envelope:
 | Setting | Effect |
 | --- | --- |
 | `files.allowed` | limits file read/write access to explicit roots |
-| `services.allowed` | limits service inspection and restart to explicit systemd units |
+| `services.allowed` | limits service inspection and restart to explicit systemd units or named Docker Compose services |
 | `workbench.enabled` | controls whether temporary code execution is available at all |
 | `workbench.allowed_runtimes` | limits `exec_code` runtimes |
 | `workbench.allowed_files` | limits `exec_file` to exact paths |
@@ -325,6 +325,9 @@ Configure `workbench.enabled: true` first.
 <summary><strong>Services</strong> — inspect, log, and restart explicitly allowed services</summary>
 
 Configure `services.allowed` first.
+Plain entries such as `tailscale` target `systemd` units.
+Docker Compose services use `name=compose:/absolute/path/to/docker-compose.yml` or `name=compose:/absolute/path/to/docker-compose.yml:service`.
+`services.log_lines` limits how many recent log lines are fetched, and `services.max_log_chars` caps how much log text is sent back in one reply.
 
 | Skill | What it does | Command shape | Example |
 | --- | --- | --- | --- |
@@ -435,7 +438,7 @@ Deploy layout on the Pi:
 
 - Telegram access is limited by user and chat allowlists
 - file access is limited to explicitly whitelisted roots
-- service actions are limited to explicitly allowed systemd units
+- service actions are limited to explicitly allowed systemd units or named Docker Compose services
 - workbench execution is limited to one workspace, allowed runtimes, and exact allowed files
 - the LLM cannot bypass validation or create arbitrary shell access
 

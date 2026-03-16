@@ -120,14 +120,16 @@ func (s *restartSkill) Execute(ctx context.Context, input skills.Input) (skills.
 }
 
 type logsSkill struct {
-	manager Manager
-	lines   int
+	manager  Manager
+	lines    int
+	maxChars int
 }
 
-func NewLogsSkill(manager Manager, lines int) skills.Skill {
+func NewLogsSkill(manager Manager, lines int, maxChars int) skills.Skill {
 	return &logsSkill{
-		manager: manager,
-		lines:   lines,
+		manager:  manager,
+		lines:    lines,
+		maxChars: maxChars,
 	}
 }
 
@@ -154,6 +156,8 @@ func (s *logsSkill) Execute(ctx context.Context, input skills.Input) (skills.Res
 
 	if logsText == "" {
 		logsText = "No log lines found."
+	} else {
+		logsText = limitLogOutput(logsText, s.maxChars)
 	}
 	return skills.Result{Text: fmt.Sprintf("Logs for %s:\n%s", displayServiceName(service), logsText)}, nil
 }
@@ -180,4 +184,34 @@ func resolveOptionalService(ctx context.Context, manager Manager, value string) 
 	}
 
 	return "", fmt.Errorf("%w: service name is required", skills.ErrInvalidArguments)
+}
+
+func limitLogOutput(text string, maxChars int) string {
+	if maxChars <= 0 {
+		return text
+	}
+
+	runes := []rune(text)
+	if len(runes) <= maxChars {
+		return text
+	}
+
+	suffix := "\n...\n[truncated]"
+	suffixRunes := []rune(suffix)
+	if maxChars <= len(suffixRunes) {
+		return string(suffixRunes[:maxChars])
+	}
+
+	limit := maxChars - len(suffixRunes)
+	split := limit
+	floor := limit / 2
+	for idx := limit; idx > floor; idx-- {
+		if runes[idx-1] == '\n' {
+			split = idx
+			break
+		}
+	}
+
+	trimmed := strings.TrimRight(string(runes[:split]), "\n")
+	return trimmed + suffix
 }

@@ -67,8 +67,9 @@ type WorkbenchConfig struct {
 }
 
 type ServicesConfig struct {
-	Allowed  []string `yaml:"allowed"`
-	LogLines int      `yaml:"log_lines"`
+	Allowed     []string `yaml:"allowed"`
+	LogLines    int      `yaml:"log_lines"`
+	MaxLogChars int      `yaml:"max_log_chars"`
 }
 
 type LLMConfig struct {
@@ -144,7 +145,8 @@ func defaultConfig() Config {
 			MaxOutputBytes: 8192,
 		},
 		Services: ServicesConfig{
-			LogLines: 100,
+			LogLines:    100,
+			MaxLogChars: 3000,
 		},
 		LLM: LLMConfig{
 			Provider:           "generic",
@@ -210,6 +212,8 @@ func (c Config) Validate() error {
 		return errors.New("workbench.max_output_bytes must be greater than zero")
 	case c.Services.LogLines <= 0:
 		return errors.New("services.log_lines must be greater than zero")
+	case c.Services.MaxLogChars <= 0:
+		return errors.New("services.max_log_chars must be greater than zero")
 	case c.Notes.ListLimit <= 0:
 		return errors.New("notes.list_limit must be greater than zero")
 	case c.Chat.HistoryLimit <= 0:
@@ -314,6 +318,9 @@ func overrideFromEnv(cfg *Config) {
 	if value := strings.TrimSpace(os.Getenv("SERVICE_LOG_LINES")); value != "" {
 		cfg.Services.LogLines = parseInt(value, cfg.Services.LogLines)
 	}
+	if value := strings.TrimSpace(os.Getenv("SERVICE_MAX_LOG_CHARS")); value != "" {
+		cfg.Services.MaxLogChars = parseInt(value, cfg.Services.MaxLogChars)
+	}
 	if value := strings.TrimSpace(os.Getenv("FILE_MAX_READ_BYTES")); value != "" {
 		cfg.Files.MaxReadBytes = parseInt(value, cfg.Files.MaxReadBytes)
 	}
@@ -359,7 +366,7 @@ func normalize(cfg *Config) {
 	}
 	cfg.Workbench.AllowedRuntimes = normalizeStrings(cfg.Workbench.AllowedRuntimes)
 	cfg.Workbench.AllowedFiles = normalizePaths(cfg.Workbench.AllowedFiles)
-	cfg.Services.Allowed = normalizeStrings(cfg.Services.Allowed)
+	cfg.Services.Allowed = normalizeServiceSpecs(cfg.Services.Allowed)
 
 	cfg.LLM.Provider = strings.ToLower(strings.TrimSpace(cfg.LLM.Provider))
 	if cfg.LLM.Provider == "" {
@@ -391,6 +398,60 @@ func normalizeStrings(values []string) []string {
 		}
 		seen[trimmed] = struct{}{}
 		result = append(result, trimmed)
+	}
+	return result
+}
+
+func normalizeServiceSpecs(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+
+		name, spec, hasAlias := strings.Cut(trimmed, "=")
+		if !hasAlias {
+			normalized := strings.ToLower(trimmed)
+			if _, ok := seen[normalized]; ok {
+				continue
+			}
+			seen[normalized] = struct{}{}
+			result = append(result, normalized)
+			continue
+		}
+
+		name = strings.ToLower(strings.TrimSpace(name))
+		spec = strings.TrimSpace(spec)
+		if name == "" || spec == "" {
+			continue
+		}
+
+		lowerSpec := strings.ToLower(spec)
+		switch {
+		case strings.HasPrefix(lowerSpec, "compose:"):
+			normalized := name + "=compose:" + strings.TrimSpace(spec[len("compose:"):])
+			if _, ok := seen[normalized]; ok {
+				continue
+			}
+			seen[normalized] = struct{}{}
+			result = append(result, normalized)
+		case strings.HasPrefix(lowerSpec, "systemd:"):
+			normalized := name + "=systemd:" + strings.ToLower(strings.TrimSpace(spec[len("systemd:"):]))
+			if _, ok := seen[normalized]; ok {
+				continue
+			}
+			seen[normalized] = struct{}{}
+			result = append(result, normalized)
+		default:
+			normalized := name + "=" + strings.ToLower(spec)
+			if _, ok := seen[normalized]; ok {
+				continue
+			}
+			seen[normalized] = struct{}{}
+			result = append(result, normalized)
+		}
 	}
 	return result
 }

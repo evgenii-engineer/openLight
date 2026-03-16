@@ -59,6 +59,28 @@ func TestStatusSkillFormatsResponse(t *testing.T) {
 	}
 }
 
+func TestStatusSkillFormatsGenericServiceName(t *testing.T) {
+	t.Parallel()
+
+	result, err := NewStatusSkill(stubManager{
+		status: Info{
+			Name:        "matrix.service",
+			LoadState:   "loaded",
+			ActiveState: "active",
+			SubState:    "running",
+			Description: "Matrix bridge",
+		},
+	}).Execute(context.Background(), skills.Input{Args: map[string]string{"service": "matrix"}})
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+
+	want := "Service: matrix\nLoad: loaded\nActive: active\nSub: running\nDescription: Matrix bridge"
+	if result.Text != want {
+		t.Fatalf("unexpected response: %q", result.Text)
+	}
+}
+
 func TestStatusSkillUsesSingleWhitelistedServiceWhenArgumentMissing(t *testing.T) {
 	t.Parallel()
 
@@ -106,7 +128,7 @@ func TestLogsSkillUsesSingleWhitelistedServiceWhenArgumentMissing(t *testing.T) 
 			Name: "tailscaled.service",
 		},
 		logs: "line one\nline two",
-	}, 50).Execute(context.Background(), skills.Input{Args: map[string]string{}})
+	}, 50, 3000).Execute(context.Background(), skills.Input{Args: map[string]string{}})
 	if err != nil {
 		t.Fatalf("Execute returned error: %v", err)
 	}
@@ -116,11 +138,32 @@ func TestLogsSkillUsesSingleWhitelistedServiceWhenArgumentMissing(t *testing.T) 
 	}
 }
 
+func TestLogsSkillTruncatesLongOutput(t *testing.T) {
+	t.Parallel()
+
+	result, err := NewLogsSkill(stubManager{
+		status: Info{
+			Name: "synapse.service",
+		},
+		logs: "line one\nline two\nline three\nline four",
+	}, 50, 24).Execute(context.Background(), skills.Input{Args: map[string]string{"service": "synapse"}})
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+
+	if want := "Logs for synapse:\nline one\n...\n[truncated]"; result.Text != want {
+		t.Fatalf("unexpected response: %q", result.Text)
+	}
+}
+
 func TestSystemdManagerRejectsNonWhitelistedService(t *testing.T) {
 	t.Parallel()
 
-	manager := NewSystemdManager([]string{"tailscale"}, nil)
-	_, err := manager.Status(context.Background(), "nginx")
+	manager, err := NewManager([]string{"tailscale"}, nil)
+	if err != nil {
+		t.Fatalf("NewManager returned error: %v", err)
+	}
+	_, err = manager.Status(context.Background(), "nginx")
 	if err == nil {
 		t.Fatal("expected non-whitelisted service to be rejected")
 	}
@@ -129,7 +172,10 @@ func TestSystemdManagerRejectsNonWhitelistedService(t *testing.T) {
 func TestSystemdManagerNormalizesTailscaleAlias(t *testing.T) {
 	t.Parallel()
 
-	manager := NewSystemdManager([]string{"tailscale"}, nil)
+	manager, err := NewManager([]string{"tailscale"}, nil)
+	if err != nil {
+		t.Fatalf("NewManager returned error: %v", err)
+	}
 	systemdManager, ok := manager.(*SystemdManager)
 	if !ok {
 		t.Fatal("expected concrete SystemdManager")
@@ -141,6 +187,64 @@ func TestSystemdManagerNormalizesTailscaleAlias(t *testing.T) {
 	}
 	if service != "tailscaled.service" {
 		t.Fatalf("unexpected normalized service: %q", service)
+	}
+}
+
+func TestSystemdManagerNormalizesGenericService(t *testing.T) {
+	t.Parallel()
+
+	manager, err := NewManager([]string{"matrix"}, nil)
+	if err != nil {
+		t.Fatalf("NewManager returned error: %v", err)
+	}
+	systemdManager, ok := manager.(*SystemdManager)
+	if !ok {
+		t.Fatal("expected concrete SystemdManager")
+	}
+
+	service, err := systemdManager.normalizeService("matrix")
+	if err != nil {
+		t.Fatalf("normalizeService returned error: %v", err)
+	}
+	if service != "matrix.service" {
+		t.Fatalf("unexpected normalized service: %q", service)
+	}
+}
+
+func TestSystemdManagerNormalizesComposeService(t *testing.T) {
+	t.Parallel()
+
+	manager, err := NewManager([]string{"synapse=compose:/home/damk/matrix/docker-compose.yml"}, nil)
+	if err != nil {
+		t.Fatalf("NewManager returned error: %v", err)
+	}
+	systemdManager, ok := manager.(*SystemdManager)
+	if !ok {
+		t.Fatal("expected concrete SystemdManager")
+	}
+
+	service, err := systemdManager.normalizeService("synapse")
+	if err != nil {
+		t.Fatalf("normalizeService returned error: %v", err)
+	}
+	if service != "synapse" {
+		t.Fatalf("unexpected normalized service: %q", service)
+	}
+}
+
+func TestAllowedServiceNamesUsesFriendlyComposeAlias(t *testing.T) {
+	t.Parallel()
+
+	names, err := AllowedServiceNames([]string{
+		"tailscale",
+		"synapse=compose:/home/damk/matrix/docker-compose.yml",
+	})
+	if err != nil {
+		t.Fatalf("AllowedServiceNames returned error: %v", err)
+	}
+
+	if len(names) != 2 || names[0] != "synapse" || names[1] != "tailscale" {
+		t.Fatalf("unexpected allowed service names: %#v", names)
 	}
 }
 

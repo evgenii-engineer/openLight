@@ -43,7 +43,10 @@ services:
   allowed:
     - tailscale
     - jellyfin
+    # Compose-backed services are also supported:
+    # - "synapse=compose:/home/pi/matrix/docker-compose.yml"
   log_lines: 100
+  max_log_chars: 3000
 
 llm:
   enabled: true

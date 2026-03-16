@@ -1,7 +1,9 @@
 package services
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os/exec"
@@ -30,9 +32,33 @@ type Manager interface {
 	Logs(ctx context.Context, service string, lines int) (string, error)
 }
 
+type serviceBackend string
+
+const (
+	backendSystemd serviceBackend = "systemd"
+	backendCompose serviceBackend = "compose"
+)
+
+type serviceTarget struct {
+	Name           string
+	Backend        serviceBackend
+	SystemdUnit    string
+	ComposeFile    string
+	ComposeService string
+}
+
 type SystemdManager struct {
-	allowed map[string]struct{}
-	logger  *slog.Logger
+	services map[string]serviceTarget
+	logger   *slog.Logger
+}
+
+type composePSRecord struct {
+	Name    string `json:"Name"`
+	Service string `json:"Service"`
+	State   string `json:"State"`
+	Status  string `json:"Status"`
+	Health  string `json:"Health"`
+	Image   string `json:"Image"`
 }
 
 var serviceAliases = map[string]string{
@@ -43,25 +69,35 @@ var displayServiceAliases = map[string]string{
 	"tailscaled": "tailscale",
 }
 
-func NewSystemdManager(allowed []string, logger *slog.Logger) Manager {
-	set := make(map[string]struct{}, len(allowed))
-	for _, service := range allowed {
-		normalized := canonicalServiceName(service)
-		if normalized == "" {
-			continue
-		}
-		set[normalized] = struct{}{}
+func NewManager(allowed []string, logger *slog.Logger) (Manager, error) {
+	targets, err := parseAllowedServices(allowed)
+	if err != nil {
+		return nil, err
 	}
 
 	return &SystemdManager{
-		allowed: set,
-		logger:  logger,
+		services: targets,
+		logger:   logger,
+	}, nil
+}
+
+func AllowedServiceNames(allowed []string) ([]string, error) {
+	targets, err := parseAllowedServices(allowed)
+	if err != nil {
+		return nil, err
 	}
+
+	names := make([]string, 0, len(targets))
+	for name := range targets {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names, nil
 }
 
 func (m *SystemdManager) List(ctx context.Context) ([]Info, error) {
-	names := make([]string, 0, len(m.allowed))
-	for name := range m.allowed {
+	names := make([]string, 0, len(m.services))
+	for name := range m.services {
 		names = append(names, name)
 	}
 	sort.Strings(names)
@@ -87,7 +123,7 @@ func (m *SystemdManager) List(ctx context.Context) ([]Info, error) {
 }
 
 func (m *SystemdManager) Status(ctx context.Context, service string) (Info, error) {
-	service, err := m.normalizeService(service)
+	target, err := m.resolveTarget(service)
 	if err != nil {
 		return Info{}, err
 	}
@@ -95,11 +131,81 @@ func (m *SystemdManager) Status(ctx context.Context, service string) (Info, erro
 		return Info{}, err
 	}
 
+	switch target.Backend {
+	case backendCompose:
+		return m.composeStatus(ctx, target)
+	default:
+		return m.systemdStatus(ctx, target)
+	}
+}
+
+func (m *SystemdManager) Restart(ctx context.Context, service string) error {
+	target, err := m.resolveTarget(service)
+	if err != nil {
+		return err
+	}
+	if err := ensureLinux(); err != nil {
+		return err
+	}
+
+	switch target.Backend {
+	case backendCompose:
+		return m.composeRestart(ctx, target)
+	default:
+		return m.systemdRestart(ctx, target)
+	}
+}
+
+func (m *SystemdManager) Logs(ctx context.Context, service string, lines int) (string, error) {
+	target, err := m.resolveTarget(service)
+	if err != nil {
+		return "", err
+	}
+	if err := ensureLinux(); err != nil {
+		return "", err
+	}
+
+	switch target.Backend {
+	case backendCompose:
+		return m.composeLogs(ctx, target, lines)
+	default:
+		return m.systemdLogs(ctx, target, lines)
+	}
+}
+
+func (m *SystemdManager) resolveTarget(service string) (serviceTarget, error) {
+	name := normalizeLookupName(service)
+	if name == "" {
+		return serviceTarget{}, fmt.Errorf("%w: service name is required", skills.ErrInvalidArguments)
+	}
+
+	target, ok := m.services[name]
+	if !ok {
+		return serviceTarget{}, fmt.Errorf("%w: %s", skills.ErrAccessDenied, name)
+	}
+	return target, nil
+}
+
+func (m *SystemdManager) normalizeService(service string) (string, error) {
+	target, err := m.resolveTarget(service)
+	if err != nil {
+		return "", err
+	}
+
+	switch target.Backend {
+	case backendCompose:
+		return target.ComposeService, nil
+	default:
+		return target.SystemdUnit, nil
+	}
+}
+
+func (m *SystemdManager) systemdStatus(ctx context.Context, target serviceTarget) (Info, error) {
 	output, err := runCombinedOutput(
 		ctx,
 		"systemctl",
 		"show",
-		service,
+		target.SystemdUnit,
 		"--property=Id,LoadState,ActiveState,SubState,Description",
 	)
 	if err != nil {
@@ -107,25 +213,15 @@ func (m *SystemdManager) Status(ctx context.Context, service string) (Info, erro
 	}
 
 	info := parseSystemctlShow(string(output))
-	if info.Name == "" {
-		info.Name = service
-	}
+	info.Name = target.Name
 	return info, nil
 }
 
-func (m *SystemdManager) Restart(ctx context.Context, service string) error {
-	service, err := m.normalizeService(service)
-	if err != nil {
-		return err
-	}
-	if err := ensureLinux(); err != nil {
-		return err
-	}
-
-	output, err := runCombinedOutput(ctx, "systemctl", "restart", service)
+func (m *SystemdManager) systemdRestart(ctx context.Context, target serviceTarget) error {
+	output, err := runCombinedOutput(ctx, "systemctl", "restart", target.SystemdUnit)
 	if err != nil {
 		if shouldRetryWithSudo(output) {
-			sudoOutput, sudoErr := runCombinedOutput(ctx, "sudo", "-n", "systemctl", "restart", service)
+			sudoOutput, sudoErr := runCombinedOutput(ctx, "sudo", "-n", "systemctl", "restart", target.SystemdUnit)
 			if sudoErr == nil {
 				return nil
 			}
@@ -137,20 +233,12 @@ func (m *SystemdManager) Restart(ctx context.Context, service string) error {
 	return nil
 }
 
-func (m *SystemdManager) Logs(ctx context.Context, service string, lines int) (string, error) {
-	service, err := m.normalizeService(service)
-	if err != nil {
-		return "", err
-	}
-	if err := ensureLinux(); err != nil {
-		return "", err
-	}
-
+func (m *SystemdManager) systemdLogs(ctx context.Context, target serviceTarget, lines int) (string, error) {
 	output, err := runCombinedOutput(
 		ctx,
 		"journalctl",
 		"-u",
-		service,
+		target.SystemdUnit,
 		"-n",
 		strconv.Itoa(lines),
 		"--no-pager",
@@ -163,15 +251,158 @@ func (m *SystemdManager) Logs(ctx context.Context, service string, lines int) (s
 	return strings.TrimSpace(string(output)), nil
 }
 
-func (m *SystemdManager) normalizeService(service string) (string, error) {
-	service = canonicalServiceName(service)
-	if service == "" {
-		return "", fmt.Errorf("%w: service name is required", skills.ErrInvalidArguments)
+func (m *SystemdManager) composeStatus(ctx context.Context, target serviceTarget) (Info, error) {
+	stdout, stderr, err := runOutput(ctx, "docker", "compose", "-f", target.ComposeFile, "ps", "--format", "json", target.ComposeService)
+	if err != nil {
+		return Info{}, unavailableError(stdout, stderr, err)
 	}
-	if _, ok := m.allowed[service]; !ok {
-		return "", fmt.Errorf("%w: %s", skills.ErrAccessDenied, service)
+
+	record, err := parseComposePS(stdout)
+	if err != nil {
+		message := strings.TrimSpace(string(stderr))
+		if message == "" {
+			message = err.Error()
+		}
+		return Info{}, fmt.Errorf("%w: %s", skills.ErrUnavailable, message)
 	}
-	return service + ".service", nil
+
+	return Info{
+		Name:        target.Name,
+		LoadState:   "compose",
+		ActiveState: composeActiveState(record.State),
+		SubState:    composeSubState(record),
+		Description: composeDescription(target, record),
+	}, nil
+}
+
+func (m *SystemdManager) composeRestart(ctx context.Context, target serviceTarget) error {
+	stdout, stderr, err := runOutput(ctx, "docker", "compose", "-f", target.ComposeFile, "restart", target.ComposeService)
+	if err != nil {
+		return unavailableError(stdout, stderr, err)
+	}
+	return nil
+}
+
+func (m *SystemdManager) composeLogs(ctx context.Context, target serviceTarget, lines int) (string, error) {
+	stdout, stderr, err := runOutput(ctx, "docker", "compose", "-f", target.ComposeFile, "logs", "--tail", strconv.Itoa(lines), target.ComposeService)
+	if err != nil {
+		return "", unavailableError(stdout, stderr, err)
+	}
+	return strings.TrimSpace(string(stdout)), nil
+}
+
+func parseAllowedServices(allowed []string) (map[string]serviceTarget, error) {
+	targets := make(map[string]serviceTarget, len(allowed))
+	for _, raw := range allowed {
+		target, err := parseAllowedService(raw)
+		if err != nil {
+			return nil, err
+		}
+		if target.Name == "" {
+			continue
+		}
+		if _, exists := targets[target.Name]; exists {
+			return nil, fmt.Errorf("duplicate allowed service name: %s", target.Name)
+		}
+		targets[target.Name] = target
+	}
+	return targets, nil
+}
+
+func parseAllowedService(raw string) (serviceTarget, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return serviceTarget{}, nil
+	}
+
+	name, spec, hasAlias := strings.Cut(raw, "=")
+	if !hasAlias {
+		unit := canonicalServiceName(raw)
+		if unit == "" {
+			return serviceTarget{}, fmt.Errorf("invalid service entry: %q", raw)
+		}
+		return serviceTarget{
+			Name:        displayServiceName(unit),
+			Backend:     backendSystemd,
+			SystemdUnit: unit + ".service",
+		}, nil
+	}
+
+	name = normalizeLookupName(name)
+	if name == "" {
+		return serviceTarget{}, fmt.Errorf("invalid service entry: %q", raw)
+	}
+
+	spec = strings.TrimSpace(spec)
+	if spec == "" {
+		return serviceTarget{}, fmt.Errorf("invalid service entry: %q", raw)
+	}
+
+	lowerSpec := strings.ToLower(spec)
+	switch {
+	case strings.HasPrefix(lowerSpec, "compose:"):
+		composeFile, composeService, err := parseComposeSpec(strings.TrimSpace(spec[len("compose:"):]), name)
+		if err != nil {
+			return serviceTarget{}, err
+		}
+		return serviceTarget{
+			Name:           name,
+			Backend:        backendCompose,
+			ComposeFile:    composeFile,
+			ComposeService: composeService,
+		}, nil
+	case strings.HasPrefix(lowerSpec, "systemd:"):
+		unit := canonicalServiceName(strings.TrimSpace(spec[len("systemd:"):]))
+		if unit == "" {
+			return serviceTarget{}, fmt.Errorf("invalid systemd service entry: %q", raw)
+		}
+		return serviceTarget{
+			Name:        name,
+			Backend:     backendSystemd,
+			SystemdUnit: unit + ".service",
+		}, nil
+	default:
+		unit := canonicalServiceName(spec)
+		if unit == "" {
+			return serviceTarget{}, fmt.Errorf("invalid systemd service entry: %q", raw)
+		}
+		return serviceTarget{
+			Name:        name,
+			Backend:     backendSystemd,
+			SystemdUnit: unit + ".service",
+		}, nil
+	}
+}
+
+func parseComposeSpec(spec string, fallbackService string) (string, string, error) {
+	spec = strings.TrimSpace(spec)
+	if spec == "" {
+		return "", "", fmt.Errorf("invalid compose service entry: empty compose spec")
+	}
+
+	lowerSpec := strings.ToLower(spec)
+	switch {
+	case strings.HasSuffix(lowerSpec, ".yml"):
+		return spec, fallbackService, nil
+	case strings.HasSuffix(lowerSpec, ".yaml"):
+		return spec, fallbackService, nil
+	}
+
+	for _, marker := range []string{".yaml:", ".yml:"} {
+		idx := strings.LastIndex(lowerSpec, marker)
+		if idx < 0 {
+			continue
+		}
+
+		file := strings.TrimSpace(spec[:idx+len(marker)-1])
+		service := normalizeLookupName(spec[idx+len(marker):])
+		if file == "" || service == "" {
+			break
+		}
+		return file, service, nil
+	}
+
+	return "", "", fmt.Errorf("invalid compose service entry: %q", spec)
 }
 
 func canonicalServiceName(service string) string {
@@ -190,6 +421,12 @@ func displayServiceName(service string) string {
 		return alias
 	}
 	return service
+}
+
+func normalizeLookupName(service string) string {
+	service = strings.ToLower(strings.TrimSpace(service))
+	service = strings.TrimSuffix(service, ".service")
+	return displayServiceName(service)
 }
 
 func parseSystemctlShow(output string) Info {
@@ -215,6 +452,73 @@ func parseSystemctlShow(output string) Info {
 	return info
 }
 
+func parseComposePS(output []byte) (composePSRecord, error) {
+	text := strings.TrimSpace(string(output))
+	if text == "" {
+		return composePSRecord{}, fmt.Errorf("compose service not found")
+	}
+
+	if strings.HasPrefix(text, "[") {
+		var records []composePSRecord
+		if err := json.Unmarshal([]byte(text), &records); err != nil {
+			return composePSRecord{}, err
+		}
+		if len(records) == 0 {
+			return composePSRecord{}, fmt.Errorf("compose service not found")
+		}
+		return records[0], nil
+	}
+
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		var record composePSRecord
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			return composePSRecord{}, err
+		}
+		return record, nil
+	}
+
+	return composePSRecord{}, fmt.Errorf("compose service not found")
+}
+
+func composeActiveState(state string) string {
+	switch strings.ToLower(strings.TrimSpace(state)) {
+	case "running":
+		return "active"
+	case "created", "dead", "exited", "paused", "removing", "restarting":
+		return "inactive"
+	default:
+		return strings.ToLower(strings.TrimSpace(state))
+	}
+}
+
+func composeSubState(record composePSRecord) string {
+	if health := strings.ToLower(strings.TrimSpace(record.Health)); health != "" {
+		return health
+	}
+	if status := strings.TrimSpace(record.Status); status != "" {
+		return status
+	}
+	return strings.ToLower(strings.TrimSpace(record.State))
+}
+
+func composeDescription(target serviceTarget, record composePSRecord) string {
+	container := strings.TrimSpace(record.Name)
+	image := strings.TrimSpace(record.Image)
+	switch {
+	case container != "" && image != "":
+		return fmt.Sprintf("docker compose service %s (%s, %s)", target.ComposeService, container, image)
+	case container != "":
+		return fmt.Sprintf("docker compose service %s (%s)", target.ComposeService, container)
+	default:
+		return "docker compose service " + target.ComposeService
+	}
+}
+
 func ensureLinux() error {
 	if runtime.GOOS != "linux" {
 		return fmt.Errorf("%w: systemd management is supported on linux only", skills.ErrUnavailable)
@@ -224,6 +528,29 @@ func ensureLinux() error {
 
 func runCombinedOutput(ctx context.Context, name string, args ...string) ([]byte, error) {
 	return execCommandContext(ctx, name, args...).CombinedOutput()
+}
+
+func runOutput(ctx context.Context, name string, args ...string) ([]byte, []byte, error) {
+	command := execCommandContext(ctx, name, args...)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+
+	err := command.Run()
+	return stdout.Bytes(), stderr.Bytes(), err
+}
+
+func unavailableError(stdout []byte, stderr []byte, err error) error {
+	message := strings.TrimSpace(string(stderr))
+	if message == "" {
+		message = strings.TrimSpace(string(stdout))
+	}
+	if message == "" && err != nil {
+		message = err.Error()
+	}
+	return fmt.Errorf("%w: %s", skills.ErrUnavailable, message)
 }
 
 func shouldRetryWithSudo(output []byte) bool {

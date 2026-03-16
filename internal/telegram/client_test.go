@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -177,6 +178,48 @@ func TestBotWebhookReceivesMessages(t *testing.T) {
 	err = <-errCh
 	if err != nil && err != context.Canceled {
 		t.Fatalf("Poll returned error: %v", err)
+	}
+}
+
+func TestBotSendTextSplitsLongMessages(t *testing.T) {
+	t.Parallel()
+
+	sentTexts := make([]string, 0, 2)
+	bot := NewBot(Options{
+		Token:       "TOKEN",
+		BaseURL:     "https://telegram.invalid",
+		Mode:        "polling",
+		PollTimeout: time.Second,
+	})
+	bot.client = &http.Client{
+		Timeout: time.Second,
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			switch r.URL.Path {
+			case "/botTOKEN/sendMessage":
+				var payload map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					t.Fatalf("decode sendMessage payload: %v", err)
+				}
+				text, _ := payload["text"].(string)
+				sentTexts = append(sentTexts, text)
+				return jsonResponse(map[string]any{"ok": true, "result": map[string]any{}}), nil
+			default:
+				t.Fatalf("unexpected path: %s", r.URL.Path)
+				return nil, nil
+			}
+		}),
+	}
+
+	longText := strings.Repeat("a", maxTelegramMessageRunes+100)
+	if err := bot.SendText(context.Background(), 200, longText); err != nil {
+		t.Fatalf("SendText returned error: %v", err)
+	}
+
+	if len(sentTexts) != 2 {
+		t.Fatalf("expected 2 sendMessage calls, got %d", len(sentTexts))
+	}
+	if !slices.Equal(sentTexts, splitTelegramMessage(longText)) {
+		t.Fatalf("unexpected chunks: %#v", sentTexts)
 	}
 }
 

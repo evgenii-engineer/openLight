@@ -63,7 +63,7 @@ func run() error {
 		}
 	}
 
-	registry, err := buildRegistry(cfg, repository, logger, llmProvider)
+	registry, allowedServiceNames, err := buildRegistry(cfg, repository, logger, llmProvider)
 	if err != nil {
 		return err
 	}
@@ -71,7 +71,7 @@ func run() error {
 	var classifier router.Classifier
 	if llmProvider != nil {
 		classifier = routerllm.NewClassifier(llmProvider, registry, routerllm.Options{
-			AllowedServices:          cfg.Services.Allowed,
+			AllowedServices:          allowedServiceNames,
 			AllowedWorkbenchRuntimes: cfg.Workbench.AllowedRuntimes,
 			ExecuteThreshold:         cfg.LLM.ExecuteThreshold,
 			ClarifyThreshold:         cfg.LLM.ClarifyThreshold,
@@ -117,20 +117,27 @@ func isExpectedShutdown(err error) bool {
 	return err == nil || errors.Is(err, context.Canceled)
 }
 
-func buildRegistry(cfg config.Config, repository storage.Repository, logger *slog.Logger, llmProvider basellm.Provider) (*skills.Registry, error) {
+func buildRegistry(cfg config.Config, repository storage.Repository, logger *slog.Logger, llmProvider basellm.Provider) (*skills.Registry, []string, error) {
 	registry := skills.NewRegistry()
 
 	systemProvider := systemskills.NewLocalProvider()
-	serviceManager := serviceskills.NewSystemdManager(cfg.Services.Allowed, logger.With("component", "systemd"))
+	serviceManager, err := serviceskills.NewManager(cfg.Services.Allowed, logger.With("component", "services"))
+	if err != nil {
+		return nil, nil, err
+	}
+	allowedServiceNames, err := serviceskills.AllowedServiceNames(cfg.Services.Allowed)
+	if err != nil {
+		return nil, nil, err
+	}
 	fileManager, err := fileskills.NewLocalManager(cfg.Files.Allowed, cfg.Files.MaxReadBytes, cfg.Files.ListLimit)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	modules := []skills.Module{
 		systemskills.NewModule(systemProvider),
 		fileskills.NewModule(fileManager),
-		serviceskills.NewModule(serviceManager, cfg.Services.LogLines),
+		serviceskills.NewModule(serviceManager, cfg.Services.LogLines, cfg.Services.MaxLogChars),
 		notes.NewModule(repository, cfg.Notes.ListLimit),
 	}
 	if cfg.Workbench.Enabled {
@@ -141,7 +148,7 @@ func buildRegistry(cfg config.Config, repository storage.Repository, logger *slo
 			cfg.Workbench.MaxOutputBytes,
 		)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		modules = append(modules, workbenchskills.NewModule(workbenchManager))
 	}
@@ -155,10 +162,10 @@ func buildRegistry(cfg config.Config, repository storage.Repository, logger *slo
 	modules = append(modules, skills.NewCoreModule())
 
 	if err := skills.RegisterModules(registry, modules...); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	return registry, nil
+	return registry, allowedServiceNames, nil
 }
 
 func buildLLMProvider(cfg config.Config, logger *slog.Logger) (basellm.Provider, error) {

@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 type IncomingMessage struct {
@@ -46,6 +47,8 @@ type WebhookOptions struct {
 	SecretToken        string
 	DropPendingUpdates bool
 }
+
+const maxTelegramMessageRunes = 3500
 
 func NewBot(options Options) *Bot {
 	return &Bot{
@@ -160,12 +163,14 @@ func (b *Bot) serveWebhook(ctx context.Context, handler func(context.Context, In
 }
 
 func (b *Bot) SendText(ctx context.Context, chatID int64, text string) error {
-	err := b.call(ctx, "/sendMessage", map[string]any{
-		"chat_id": chatID,
-		"text":    text,
-	}, nil)
-	if err != nil {
-		return fmt.Errorf("send telegram message: %w", err)
+	for _, chunk := range splitTelegramMessage(text) {
+		err := b.call(ctx, "/sendMessage", map[string]any{
+			"chat_id": chatID,
+			"text":    chunk,
+		}, nil)
+		if err != nil {
+			return fmt.Errorf("send telegram message: %w", err)
+		}
 	}
 	return nil
 }
@@ -337,4 +342,48 @@ func webhookPath(rawURL string) (string, error) {
 		return "", fmt.Errorf("telegram webhook url must include a path")
 	}
 	return parsed.EscapedPath(), nil
+}
+
+func splitTelegramMessage(text string) []string {
+	if text == "" {
+		return []string{""}
+	}
+	if utf8.RuneCountInString(text) <= maxTelegramMessageRunes {
+		return []string{text}
+	}
+
+	runes := []rune(text)
+	chunks := make([]string, 0, len(runes)/maxTelegramMessageRunes+1)
+	start := 0
+	for start < len(runes) {
+		end := start + maxTelegramMessageRunes
+		if end >= len(runes) {
+			chunks = append(chunks, string(runes[start:]))
+			break
+		}
+
+		split := preferredSplitIndex(runes, start, end)
+		chunk := strings.TrimRight(string(runes[start:split]), "\n")
+		if chunk == "" {
+			chunk = string(runes[start:split])
+		}
+		chunks = append(chunks, chunk)
+
+		start = split
+		for start < len(runes) && runes[start] == '\n' {
+			start++
+		}
+	}
+
+	return chunks
+}
+
+func preferredSplitIndex(runes []rune, start, end int) int {
+	floor := start + maxTelegramMessageRunes/2
+	for idx := end; idx > floor; idx-- {
+		if runes[idx-1] == '\n' {
+			return idx
+		}
+	}
+	return end
 }

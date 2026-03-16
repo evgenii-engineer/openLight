@@ -45,6 +45,7 @@ workbench:
 services:
   allowed: ["tailscale", "docker", "tailscale"]
   log_lines: 42
+  max_log_chars: 1234
 
 llm:
   enabled: true
@@ -118,6 +119,9 @@ log:
 	if got := cfg.Services.Allowed; len(got) != 2 || got[0] != "tailscale" || got[1] != "docker" {
 		t.Fatalf("unexpected allowed services: %#v", got)
 	}
+	if cfg.Services.LogLines != 42 || cfg.Services.MaxLogChars != 1234 {
+		t.Fatalf("unexpected services config: %#v", cfg.Services)
+	}
 	if !cfg.LLM.Enabled || cfg.LLM.Provider != "ollama" || cfg.LLM.Model != "qwen2.5:0.5b" {
 		t.Fatalf("unexpected llm config: %#v", cfg.LLM)
 	}
@@ -185,6 +189,9 @@ storage:
 	if cfg.Services.LogLines != 100 {
 		t.Fatalf("unexpected service log lines: %d", cfg.Services.LogLines)
 	}
+	if cfg.Services.MaxLogChars != 3000 {
+		t.Fatalf("unexpected service max log chars: %d", cfg.Services.MaxLogChars)
+	}
 	if cfg.Files.MaxReadBytes != 4096 || cfg.Files.ListLimit != 40 {
 		t.Fatalf("unexpected files defaults: %#v", cfg.Files)
 	}
@@ -242,6 +249,35 @@ llm:
 	}
 	if cfg.LLM.Endpoint != defaultOpenAIAPIBaseURL {
 		t.Fatalf("unexpected llm endpoint default: %q", cfg.LLM.Endpoint)
+	}
+}
+
+func TestLoadPreservesComposeServicePath(t *testing.T) {
+	clearConfigEnv(t)
+
+	configPath := filepath.Join(t.TempDir(), "agent.yaml")
+	writeConfig(t, configPath, `
+telegram:
+  bot_token: "token"
+
+auth:
+  allowed_user_ids: [1]
+
+storage:
+  sqlite_path: "./agent.db"
+
+services:
+  allowed:
+    - "synapse=compose:/home/damk/Matrix/docker-compose.yml"
+`)
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+
+	if got := cfg.Services.Allowed; len(got) != 1 || got[0] != "synapse=compose:/home/damk/Matrix/docker-compose.yml" {
+		t.Fatalf("unexpected allowed services: %#v", got)
 	}
 }
 
@@ -336,6 +372,7 @@ func clearConfigEnv(t *testing.T) {
 		"TELEGRAM_WEBHOOK_DROP_PENDING_UPDATES",
 		"TELEGRAM_API_BASE_URL",
 		"SERVICE_LOG_LINES",
+		"SERVICE_MAX_LOG_CHARS",
 		"NOTES_LIST_LIMIT",
 		"CHAT_HISTORY_LIMIT",
 		"CHAT_HISTORY_CHARS",
