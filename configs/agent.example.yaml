@@ -93,6 +93,41 @@ accounts:
     #     - list
     #     - meet.jitsi
     #     - "{pattern}"
+    # synapse:
+    #   service: "synapse"
+    #   vars:
+    #     server_name: "matrix.example.com"
+    #     admin_url: "http://127.0.0.1:8008"
+    #   vars_env:
+    #     admin_token: "SYNAPSE_ADMIN_TOKEN"
+    #   add_command:
+    #     - sh
+    #     - -lc
+    #     - |
+    #       curl -fsS \
+    #         -X PUT \
+    #         -H "Authorization: Bearer {admin_token}" \
+    #         -H "Content-Type: application/json" \
+    #         "{admin_url}/_synapse/admin/v2/users/@{username}:{server_name}" \
+    #         --data '{"password":"{password}","admin":false,"deactivated":false}'
+    #   delete_command:
+    #     - sh
+    #     - -lc
+    #     - |
+    #       curl -fsS \
+    #         -X POST \
+    #         -H "Authorization: Bearer {admin_token}" \
+    #         -H "Content-Type: application/json" \
+    #         "{admin_url}/_synapse/admin/v1/deactivate/@{username}:{server_name}" \
+    #         --data '{"erase":false}'
+    #   list_command:
+    #     - sh
+    #     - -lc
+    #     - |
+    #       curl -fsS \
+    #         -H "Authorization: Bearer {admin_token}" \
+    #         "{admin_url}/_synapse/admin/v2/users?from=0&limit=100&guests=false" \
+    #       | python3 -c 'import json,sys; pattern="{pattern}".lower(); users=json.load(sys.stdin).get("users", []); names=[u.get("name","") for u in users]; print("\n".join(name for name in names if not pattern or pattern in name.lower()))'
 
 llm:
   enabled: false

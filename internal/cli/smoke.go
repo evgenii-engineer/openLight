@@ -115,9 +115,11 @@ func (r SmokeReport) RenderTable() string {
 
 func RunSmoke(ctx context.Context, cfg config.Config, runtime app.Runtime, userID, chatID int64, options SmokeOptions) (SmokeReport, error) {
 	harness := NewHarness(cfg, runtime, userID, chatID)
+	serviceNames := allAllowedServices(cfg)
+	accountProviders := allAccountProviders(cfg)
 	state := smokeState{
-		serviceName:     firstAllowedService(cfg),
-		accountProvider: firstAccountProvider(cfg),
+		serviceName:     firstString(serviceNames),
+		accountProvider: firstString(accountProviders),
 		accountUsername: fmt.Sprintf("smoke_%d", time.Now().UTC().Unix()),
 		accountPassword: fmt.Sprintf("smoke-pass-%d", time.Now().UTC().Unix()%100000),
 		fileRoot:        firstString(cfg.Files.Allowed),
@@ -184,15 +186,19 @@ func RunSmoke(ctx context.Context, cfg config.Config, runtime app.Runtime, userI
 	addPassFail("system.ip", "ip", expectContains("IP"))
 	addPassFail("system.temperature", "temperature", expectContains("Temperature"))
 
-	if state.serviceName == "" {
+	if len(serviceNames) == 0 {
 		addSkip("services.list", "services", "no allowed services")
 		addSkip("services.status", "", "no allowed services")
 		addSkip("services.logs", "", "no allowed services")
 		addSkip("services.restart", "", "no allowed services")
 	} else {
-		addPassFail("services.list", "services", expectContains(state.serviceName))
+		addPassFail("services.list", "services", expectContainsAll(serviceNames...))
 		addPassFail("services.status", "service "+state.serviceName, expectContains("Service:"))
 		addPassFail("services.logs", "logs "+state.serviceName, expectNonEmpty())
+		for _, serviceName := range serviceNames[1:] {
+			addPassFail("services.status."+serviceName, "service "+serviceName, expectContains("Service:"))
+			addPassFail("services.logs."+serviceName, "logs "+serviceName, expectNonEmpty())
+		}
 		if options.IncludeRestart {
 			addPassFail("services.restart", "restart "+state.serviceName, expectContains("Service restarted"))
 		} else {
@@ -258,18 +264,56 @@ func RunSmoke(ctx context.Context, cfg config.Config, runtime app.Runtime, userI
 		addSkip("workbench.clean", "workspace_clean", "workbench disabled")
 	}
 
-	if state.accountProvider == "" {
+	if len(accountProviders) == 0 {
 		addSkip("accounts.providers", "users", "no account providers configured")
 		addSkip("accounts.add", "", "no account providers configured")
 		addSkip("accounts.list", "", "no account providers configured")
 		addSkip("accounts.delete", "", "no account providers configured")
 		addSkip("accounts.list_after_delete", "", "no account providers configured")
 	} else {
-		addPassFail("accounts.providers", "users", expectContains(state.accountProvider))
-		addPassFail("accounts.add", fmt.Sprintf("user add %s %s %s", state.accountProvider, state.accountUsername, state.accountPassword), expectContains(state.accountUsername))
-		addPassFail("accounts.list", fmt.Sprintf("user list %s %s", state.accountProvider, state.accountUsername), expectContains(state.accountUsername))
-		addPassFail("accounts.delete", fmt.Sprintf("user delete %s %s", state.accountProvider, state.accountUsername), expectContains(state.accountUsername))
-		addPassFail("accounts.list_after_delete", fmt.Sprintf("user list %s %s", state.accountProvider, state.accountUsername), expectNotContains(state.accountUsername))
+		addPassFail("accounts.providers", "users", expectContainsAll(accountProviders...))
+		for idx, provider := range accountProviders {
+			providerCfg := cfg.Accounts.Providers[provider]
+			username := smokeAccountUsername(state.accountUsername, provider)
+			addCheck := "accounts.add"
+			listCheck := "accounts.list"
+			deleteCheck := "accounts.delete"
+			listAfterDeleteCheck := "accounts.list_after_delete"
+			if idx > 0 {
+				addCheck += "." + provider
+				listCheck += "." + provider
+				deleteCheck += "." + provider
+				listAfterDeleteCheck += "." + provider
+			}
+
+			addCommand := fmt.Sprintf("user add %s %s %s", provider, username, state.accountPassword)
+			listCommand := fmt.Sprintf("user list %s %s", provider, username)
+			deleteCommand := fmt.Sprintf("user delete %s %s", provider, username)
+
+			if len(providerCfg.AddCommand) == 0 {
+				addSkip(addCheck, addCommand, "provider add_command is not configured")
+			} else {
+				addPassFail(addCheck, addCommand, expectContains(username))
+			}
+
+			if len(providerCfg.ListCommand) == 0 {
+				addSkip(listCheck, listCommand, "provider list_command is not configured")
+			} else {
+				addPassFail(listCheck, listCommand, expectContains(username))
+			}
+
+			if len(providerCfg.DeleteCommand) == 0 {
+				addSkip(deleteCheck, deleteCommand, "provider delete_command is not configured")
+			} else {
+				addPassFail(deleteCheck, deleteCommand, expectContains(username))
+			}
+
+			if len(providerCfg.ListCommand) == 0 {
+				addSkip(listAfterDeleteCheck, listCommand, "provider list_command is not configured")
+			} else {
+				addPassFail(listAfterDeleteCheck, listCommand, expectNotContains(username))
+			}
+		}
 	}
 
 	if cfg.LLM.Enabled {
@@ -349,6 +393,14 @@ func firstAllowedService(cfg config.Config) string {
 	return names[0]
 }
 
+func allAllowedServices(cfg config.Config) []string {
+	names, err := serviceskills.AllowedServiceNames(cfg.Services.Allowed)
+	if err != nil {
+		return nil
+	}
+	return names
+}
+
 func firstAccountProvider(cfg config.Config) string {
 	if len(cfg.Accounts.Providers) == 0 {
 		return ""
@@ -361,11 +413,33 @@ func firstAccountProvider(cfg config.Config) string {
 	return names[0]
 }
 
+func allAccountProviders(cfg config.Config) []string {
+	if len(cfg.Accounts.Providers) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(cfg.Accounts.Providers))
+	for name := range cfg.Accounts.Providers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
 func firstString(values []string) string {
 	if len(values) == 0 {
 		return ""
 	}
 	return strings.TrimSpace(values[0])
+}
+
+func smokeAccountUsername(base, provider string) string {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	provider = strings.NewReplacer("-", "_", ".", "_", " ", "_").Replace(provider)
+	provider = strings.Trim(provider, "_")
+	if provider == "" {
+		return base
+	}
+	return base + "_" + provider
 }
 
 func addRoutingCheck(report *SmokeReport, runtime app.Runtime, ctx context.Context, check string, validate func(router.Decision) error, prompts ...string) {
@@ -449,6 +523,20 @@ func expectContains(fragment string) func(string) error {
 	return func(response string) error {
 		if !strings.Contains(response, fragment) {
 			return fmt.Errorf("expected response to contain %q, got %q", fragment, summarizeSmokeText(response))
+		}
+		return nil
+	}
+}
+
+func expectContainsAll(fragments ...string) func(string) error {
+	return func(response string) error {
+		for _, fragment := range fragments {
+			if strings.TrimSpace(fragment) == "" {
+				continue
+			}
+			if !strings.Contains(response, fragment) {
+				return fmt.Errorf("expected response to contain %q, got %q", fragment, summarizeSmokeText(response))
+			}
 		}
 		return nil
 	}

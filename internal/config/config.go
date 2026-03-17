@@ -77,10 +77,12 @@ type AccountsConfig struct {
 }
 
 type AccountProviderConfig struct {
-	Service       string   `yaml:"service"`
-	AddCommand    []string `yaml:"add_command"`
-	DeleteCommand []string `yaml:"delete_command"`
-	ListCommand   []string `yaml:"list_command"`
+	Service       string            `yaml:"service"`
+	Vars          map[string]string `yaml:"vars"`
+	VarsEnv       map[string]string `yaml:"vars_env"`
+	AddCommand    []string          `yaml:"add_command"`
+	DeleteCommand []string          `yaml:"delete_command"`
+	ListCommand   []string          `yaml:"list_command"`
 }
 
 type FilesConfig struct {
@@ -281,6 +283,16 @@ func (c Config) Validate() error {
 		}
 		if strings.TrimSpace(provider.Service) == "" {
 			return fmt.Errorf("accounts.providers.%s.service is required", name)
+		}
+		for key, value := range provider.Vars {
+			if strings.TrimSpace(key) == "" || strings.TrimSpace(value) == "" {
+				return fmt.Errorf("accounts.providers.%s.vars must not contain empty keys or values", name)
+			}
+		}
+		for key, value := range provider.VarsEnv {
+			if strings.TrimSpace(key) == "" || strings.TrimSpace(value) == "" {
+				return fmt.Errorf("accounts.providers.%s.vars_env must not contain empty keys or values", name)
+			}
 		}
 		if len(provider.AddCommand) == 0 && len(provider.DeleteCommand) == 0 && len(provider.ListCommand) == 0 {
 			return fmt.Errorf("accounts.providers.%s must set add_command, delete_command, or list_command", name)
@@ -588,6 +600,8 @@ func normalizeAccountProviders(values map[string]AccountProviderConfig) map[stri
 		}
 
 		provider.Service = strings.ToLower(strings.TrimSpace(provider.Service))
+		provider.Vars = normalizeCommandVariables(provider.Vars)
+		provider.VarsEnv = normalizeCommandVariables(provider.VarsEnv)
 		provider.AddCommand = normalizeCommandTemplate(provider.AddCommand)
 		provider.DeleteCommand = normalizeCommandTemplate(provider.DeleteCommand)
 		provider.ListCommand = normalizeCommandTemplate(provider.ListCommand)
@@ -604,6 +618,26 @@ func normalizeCommandTemplate(values []string) []string {
 		if trimmed != "" {
 			result = append(result, trimmed)
 		}
+	}
+	return result
+}
+
+func normalizeCommandVariables(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+
+	result := make(map[string]string, len(values))
+	for key, value := range values {
+		normalizedKey := strings.TrimSpace(key)
+		normalizedValue := strings.TrimSpace(value)
+		if normalizedKey == "" || normalizedValue == "" {
+			continue
+		}
+		result[normalizedKey] = normalizedValue
+	}
+	if len(result) == 0 {
+		return nil
 	}
 	return result
 }

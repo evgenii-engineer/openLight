@@ -3,6 +3,7 @@ package accounts
 import (
 	"context"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
@@ -97,11 +98,14 @@ func (m *AccountManager) ListUsers(ctx context.Context, provider, pattern string
 		return UserListResult{}, fmt.Errorf("%w: listing users is not configured for %s", skills.ErrAccessDenied, providerName)
 	}
 
-	command := renderCommand(cfg.ListCommand, map[string]string{
+	command, err := resolveCommandTemplate(providerName, cfg, cfg.ListCommand, map[string]string{
 		"provider": providerName,
 		"service":  cfg.Service,
 		"pattern":  pattern,
 	})
+	if err != nil {
+		return UserListResult{}, err
+	}
 	output, err := m.services.Exec(ctx, cfg.Service, command...)
 	if err != nil {
 		return UserListResult{}, err
@@ -130,12 +134,15 @@ func (m *AccountManager) AddUser(ctx context.Context, provider, username, passwo
 		return fmt.Errorf("%w: adding users is not configured for %s", skills.ErrAccessDenied, providerName)
 	}
 
-	command := renderCommand(cfg.AddCommand, map[string]string{
+	command, err := resolveCommandTemplate(providerName, cfg, cfg.AddCommand, map[string]string{
 		"provider": providerName,
 		"service":  cfg.Service,
 		"username": username,
 		"password": password,
 	})
+	if err != nil {
+		return err
+	}
 	_, err = m.services.Exec(ctx, cfg.Service, command...)
 	return err
 }
@@ -153,11 +160,14 @@ func (m *AccountManager) DeleteUser(ctx context.Context, provider, username stri
 		return fmt.Errorf("%w: deleting users is not configured for %s", skills.ErrAccessDenied, providerName)
 	}
 
-	command := renderCommand(cfg.DeleteCommand, map[string]string{
+	command, err := resolveCommandTemplate(providerName, cfg, cfg.DeleteCommand, map[string]string{
 		"provider": providerName,
 		"service":  cfg.Service,
 		"username": username,
 	})
+	if err != nil {
+		return err
+	}
 	_, err = m.services.Exec(ctx, cfg.Service, command...)
 	return err
 }
@@ -224,4 +234,22 @@ func renderCommand(template []string, values map[string]string) []string {
 		}
 	}
 	return result
+}
+
+func resolveCommandTemplate(providerName string, cfg config.AccountProviderConfig, template []string, baseValues map[string]string) ([]string, error) {
+	values := make(map[string]string, len(cfg.Vars)+len(cfg.VarsEnv)+len(baseValues))
+	for key, value := range cfg.Vars {
+		values[key] = value
+	}
+	for key, envName := range cfg.VarsEnv {
+		resolved := strings.TrimSpace(os.Getenv(envName))
+		if resolved == "" {
+			return nil, fmt.Errorf("%w: environment variable %s is required for account provider %s", skills.ErrUnavailable, envName, providerName)
+		}
+		values[key] = resolved
+	}
+	for key, value := range baseValues {
+		values[key] = value
+	}
+	return renderCommand(template, values), nil
 }

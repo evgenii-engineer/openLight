@@ -276,49 +276,63 @@ Use `-smoke-routing`, `-smoke-chat`, `-smoke-restart`, or `-smoke-all` when you 
 <details>
 <summary>Latest successful <code>-smoke-all</code> run on Raspberry Pi</summary>
 
-This is a real end-to-end run against the current Raspberry Pi config, including remote Jitsi services on the VPS.
+This is a real end-to-end run against the current Raspberry Pi config, including local Synapse on the Pi and remote Jitsi services on the VPS.
 
 ```text
-| Check                      | Command                                                                                       | Status | Duration | Summary                                                                                                 |
-|----------------------------|-----------------------------------------------------------------------------------------------|--------|----------|---------------------------------------------------------------------------------------------------------|
-| core.start                 | start                                                                                         | PASS   | 4ms      | openLight is ready. | You can write normally and I will answer through the local LLM when chat mode ... |
-| core.ping                  | ping                                                                                          | PASS   | 4ms      | pong                                                                                                    |
-| core.skills                | skills                                                                                        | PASS   | 4ms      | Available skill groups: | - Chat: 1 skill(s). Use skills chat | - Notes: 3 skill(s). Use skills note... |
-| core.help                  | help ping                                                                                     | PASS   | 4ms      | ping: Quick connectivity check. | Usage: ping | Aliases: healthcheck                                    |
-| system.status              | status                                                                                        | PASS   | 155ms    | Hostname: raspberry | CPU: 0.0% | Memory: 1.1 GiB used / 7.9 GiB total | Disk: 863.4 GiB free / 916.... |
-| system.cpu                 | cpu                                                                                           | PASS   | 158ms    | CPU usage: 0.0%                                                                                         |
-| system.memory              | memory                                                                                        | PASS   | 4ms      | Memory usage: 1.1 GiB used / 7.9 GiB total (6.8 GiB free)                                               |
-| system.disk                | disk                                                                                          | PASS   | 4ms      | Disk usage: 53.0 GiB used / 916.3 GiB total (863.4 GiB free)                                            |
-| system.uptime              | uptime                                                                                        | PASS   | 4ms      | Uptime: 14h 16m 10s                                                                                     |
-| system.hostname            | hostname                                                                                      | PASS   | 4ms      | Hostname: raspberry                                                                                     |
-| system.ip                  | ip                                                                                            | PASS   | 4ms      | IP addresses: 192.168.1.82, 100.67.130.106, 172.17.0.1, 172.18.0.1, 172.19.0.1                          |
-| system.temperature         | temperature                                                                                   | PASS   | 4ms      | Temperature: 51.8C                                                                                      |
-| services.list              | services                                                                                      | PASS   | 4.088s   | Allowed services: | - jitsi-jicofo@vps: active | - jitsi-jvb@vps: active | - jitsi-prosody@vps: acti... |
-| services.status            | service jitsi-jicofo                                                                          | PASS   | 849ms    | Service: jitsi-jicofo | Host: vps | Load: docker | Active: active | Sub: running | Description: dock... |
-| services.logs              | logs jitsi-jicofo                                                                             | PASS   | 816ms    | Logs for jitsi-jicofo: | Jicofo 2026-03-17 13:13:10.273 WARNING: [1] [xmpp_connection=client] XmppPr... |
-| services.restart           | restart jitsi-jicofo                                                                          | PASS   | 7.088s   | Service restarted: jitsi-jicofo                                                                         |
-| notes.add                  | note openlight-smoke-note-smoke-1773753328                                                    | PASS   | 5ms      | Saved note #9                                                                                           |
-| notes.list                 | notes                                                                                         | PASS   | 4ms      | Notes: | - #9 openlight-smoke-note-smoke-1773753328 | - #5 купить кроссовки              |
-| notes.delete               | note_delete 9                                                                                 | PASS   | 5ms      | Deleted note #9                                                                                         |
-| files.list                 | files /tmp/openlight                                                                          | PASS   | 4ms      | Directory is empty: /tmp/openlight                                                                      |
-| files.write                | write /tmp/openlight/openlight-smoke-1773753328369200553.txt :: smoke-alpha                   | PASS   | 4ms      | Created file: /tmp/openlight/openlight-smoke-1773753328369200553.txt (11 bytes)                         |
-| files.read                 | read /tmp/openlight/openlight-smoke-1773753328369200553.txt                                   | PASS   | 4ms      | Contents of /tmp/openlight/openlight-smoke-1773753328369200553.txt: | smoke-alpha                       |
-| files.replace              | replace smoke-alpha with smoke-beta in /tmp/openlight/openlight-smoke-1773753328369200553.txt | PASS   | 4ms      | Replaced 1 occurrence(s) in /tmp/openlight/openlight-smoke-1773753328369200553.txt                      |
-| files.read_after_replace   | read /tmp/openlight/openlight-smoke-1773753328369200553.txt                                   | PASS   | 4ms      | Contents of /tmp/openlight/openlight-smoke-1773753328369200553.txt: | smoke-beta                        |
-| workbench.exec_code        | exec_code sh :: printf 'smoke-workbench-ok\n'                                                 | PASS   | 5ms      | Temporary code: /tmp/openlight/run-3385100359.sh | Runtime: sh | Output: | smoke-workbench-ok           |
-| workbench.exec_file        | run /usr/bin/uptime                                                                           | PASS   | 5ms      | Allowed file: /usr/bin/uptime | Runtime: file | Output: |  13:15:41 up 14:16,  4 users,  load averag... |
-| workbench.clean            | workspace_clean                                                                               | PASS   | 4ms      | Workspace cleaned: /tmp/openlight (2 item(s) removed)                                                   |
-| accounts.providers         | users                                                                                         | PASS   | 4ms      | Configured account providers: | - jitsi: add, delete, list via jitsi-prosody                            |
-| accounts.add               | user add jitsi smoke_1773753328 smoke-pass-53328                                              | PASS   | 1.109s   | User added: smoke_1773753328 (jitsi)                                                                    |
-| accounts.list              | user list jitsi smoke_1773753328                                                              | PASS   | 1.055s   | Users (jitsi): | smoke_1773753328@meet.jitsi | OK: Showing 1 of 3 users                                 |
-| accounts.delete            | user delete jitsi smoke_1773753328                                                            | PASS   | 1.161s   | User deleted: smoke_1773753328 (jitsi)                                                                  |
-| accounts.list_after_delete | user list jitsi smoke_1773753328                                                              | PASS   | 977ms    | Users (jitsi): | OK: Showing 0 of 2 users                                                               |
-| llm.route_status           | Could you give me a quick health snapshot of this host?                                       | PASS   | 3.249s   | mode=llm | skill=status | confidence=0.95                                                               |
-| llm.route_service_status   | I need to know if service called jitsi-jicofo is up.                                          | PASS   | 3.675s   | mode=llm | skill=service_status | confidence=0.95 | args=service=jitsi-jicofo                           |
-| chat.chat                  | chat reply with exactly SMOKE_CHAT_OK                                                         | PASS   | 861ms    | SMOKE_CHAT_OK                                                                                           |
+| Check                              | Command                                                                                       | Status | Duration | Summary                                                                                                 |
+|------------------------------------|-----------------------------------------------------------------------------------------------|--------|----------|---------------------------------------------------------------------------------------------------------|
+| core.start                         | start                                                                                         | PASS   | 9ms      | openLight is ready. | You can write normally and I will answer through the local LLM when chat mode ... |
+| core.ping                          | ping                                                                                          | PASS   | 5ms      | pong                                                                                                    |
+| core.skills                        | skills                                                                                        | PASS   | 8ms      | Available skill groups: | - Chat: 1 skill(s). Use skills chat | - Notes: 3 skill(s). Use skills note... |
+| core.help                          | help ping                                                                                     | PASS   | 5ms      | ping: Quick connectivity check. | Usage: ping | Aliases: healthcheck                                    |
+| system.status                      | status                                                                                        | PASS   | 156ms    | Hostname: raspberry | CPU: 57.6% | Memory: 1.3 GiB used / 7.9 GiB total | Disk: 863.4 GiB free / 916... |
+| system.cpu                         | cpu                                                                                           | PASS   | 163ms    | CPU usage: 35.6%                                                                                        |
+| system.memory                      | memory                                                                                        | PASS   | 6ms      | Memory usage: 1.3 GiB used / 7.9 GiB total (6.6 GiB free)                                               |
+| system.disk                        | disk                                                                                          | PASS   | 4ms      | Disk usage: 53.0 GiB used / 916.3 GiB total (863.4 GiB free)                                            |
+| system.uptime                      | uptime                                                                                        | PASS   | 5ms      | Uptime: 23h 11m 11s                                                                                     |
+| system.hostname                    | hostname                                                                                      | PASS   | 5ms      | Hostname: raspberry                                                                                     |
+| system.ip                          | ip                                                                                            | PASS   | 5ms      | IP addresses: 192.168.1.82, 100.67.130.106, 172.17.0.1, 172.18.0.1, 172.19.0.1                          |
+| system.temperature                 | temperature                                                                                   | PASS   | 7ms      | Temperature: 55.6C                                                                                      |
+| services.list                      | services                                                                                      | PASS   | 4.713s   | Allowed services: | - jitsi-jicofo@vps: active | - jitsi-jvb@vps: active | - jitsi-prosody@vps: acti... |
+| services.status                    | service jitsi-jicofo                                                                          | PASS   | 911ms    | Service: jitsi-jicofo | Host: vps | Load: docker | Active: active | Sub: running | Description: dock... |
+| services.logs                      | logs jitsi-jicofo                                                                             | PASS   | 908ms    | Logs for jitsi-jicofo: | Jicofo 2026-03-17 17:17:45.385 INFO: [108] ConferenceIqHandler.handleConfer... |
+| services.status.jitsi-jvb          | service jitsi-jvb                                                                             | PASS   | 978ms    | Service: jitsi-jvb | Host: vps | Load: docker | Active: active | Sub: running | Description: docker ... |
+| services.logs.jitsi-jvb            | logs jitsi-jvb                                                                                | PASS   | 1.045s   | Logs for jitsi-jvb: | JVB 2026-03-17 15:46:24.163 INFO: [227] [confId=7f87fde5f7e8108d conf_name=any... |
+| services.status.jitsi-prosody      | service jitsi-prosody                                                                         | PASS   | 1.059s   | Service: jitsi-prosody | Host: vps | Load: docker | Active: active | Sub: running | Description: doc... |
+| services.logs.jitsi-prosody        | logs jitsi-prosody                                                                            | PASS   | 960ms    | Logs for jitsi-prosody: | 2026-03-17 15:23:24 c2s5da05453e960                                  info      ... |
+| services.status.jitsi-web          | service jitsi-web                                                                             | PASS   | 959ms    | Service: jitsi-web | Host: vps | Load: docker | Active: active | Sub: running | Description: docker ... |
+| services.logs.jitsi-web            | logs jitsi-web                                                                                | PASS   | 890ms    | Logs for jitsi-web: | 172.18.0.1 - - [17/Mar/2026:20:16:17 +0000] "GET /robots.txt HTTP/1.1" 200 36 ... |
+| services.status.synapse            | service synapse                                                                               | PASS   | 89ms     | Service: synapse | Load: compose | Active: active | Sub: healthy | Description: docker compose servi... |
+| services.logs.synapse              | logs synapse                                                                                  | PASS   | 80ms     | Logs for synapse: | matrix-synapse  | 2026-03-17 22:08:10,907 - synapse.storage.databases.main.event... |
+| services.status.tailscale          | service tailscale                                                                             | PASS   | 13ms     | Service: tailscale | Load: loaded | Active: active | Sub: running | Description: Tailscale node agen... |
+| services.logs.tailscale            | logs tailscale                                                                                | PASS   | 10ms     | Logs for tailscale: | magicsock: disco: node [WdeMK] d:aba70e9802c7843f now using [2a00:dd80:3a::336... |
+| services.restart                   | restart jitsi-jicofo                                                                          | PASS   | 7.567s   | Service restarted: jitsi-jicofo                                                                         |
+| notes.add                          | note openlight-smoke-note-smoke-1773785428                                                    | PASS   | 6ms      | Saved note #10                                                                                          |
+| notes.list                         | notes                                                                                         | PASS   | 4ms      | Notes: | - #10 openlight-smoke-note-smoke-1773785428 | - #5 купить кроссовки             |
+| notes.delete                       | note_delete 10                                                                                | PASS   | 5ms      | Deleted note #10                                                                                        |
+| files.list                         | files /tmp/openlight                                                                          | PASS   | 4ms      | Directory is empty: /tmp/openlight                                                                      |
+| files.write                        | write /tmp/openlight/openlight-smoke-1773785428720787990.txt :: smoke-alpha                   | PASS   | 4ms      | Created file: /tmp/openlight/openlight-smoke-1773785428720787990.txt (11 bytes)                         |
+| files.read                         | read /tmp/openlight/openlight-smoke-1773785428720787990.txt                                   | PASS   | 4ms      | Contents of /tmp/openlight/openlight-smoke-1773785428720787990.txt: | smoke-alpha                       |
+| files.replace                      | replace smoke-alpha with smoke-beta in /tmp/openlight/openlight-smoke-1773785428720787990.txt | PASS   | 4ms      | Replaced 1 occurrence(s) in /tmp/openlight/openlight-smoke-1773785428720787990.txt                      |
+| files.read_after_replace           | read /tmp/openlight/openlight-smoke-1773785428720787990.txt                                   | PASS   | 6ms      | Contents of /tmp/openlight/openlight-smoke-1773785428720787990.txt: | smoke-beta                        |
+| workbench.exec_code                | exec_code sh :: printf 'smoke-workbench-ok\n'                                                 | PASS   | 5ms      | Temporary code: /tmp/openlight/run-2769327474.sh | Runtime: sh | Output: | smoke-workbench-ok           |
+| workbench.exec_file                | run /usr/bin/uptime                                                                           | PASS   | 5ms      | Allowed file: /usr/bin/uptime | Runtime: file | Output: |  22:10:49 up 23:11,  4 users,  load averag... |
+| workbench.clean                    | workspace_clean                                                                               | PASS   | 4ms      | Workspace cleaned: /tmp/openlight (2 item(s) removed)                                                   |
+| accounts.providers                 | users                                                                                         | PASS   | 4ms      | Configured account providers: | - jitsi: add, delete, list via jitsi-prosody | - synapse: add, delet... |
+| accounts.add                       | user add jitsi smoke_1773785428_jitsi smoke-pass-85428                                        | PASS   | 1.136s   | User added: smoke_1773785428_jitsi (jitsi)                                                              |
+| accounts.list                      | user list jitsi smoke_1773785428_jitsi                                                        | PASS   | 1.171s   | Users (jitsi): | smoke_1773785428_jitsi@meet.jitsi | OK: Showing 1 of 5 users                           |
+| accounts.delete                    | user delete jitsi smoke_1773785428_jitsi                                                      | PASS   | 1.158s   | User deleted: smoke_1773785428_jitsi (jitsi)                                                            |
+| accounts.list_after_delete         | user list jitsi smoke_1773785428_jitsi                                                        | PASS   | 1.108s   | Users (jitsi): | OK: Showing 0 of 4 users                                                               |
+| accounts.add.synapse               | user add synapse smoke_1773785428_synapse smoke-pass-85428                                    | PASS   | 576ms    | User added: smoke_1773785428_synapse (synapse)                                                          |
+| accounts.list.synapse              | user list synapse smoke_1773785428_synapse                                                    | PASS   | 273ms    | Users (synapse): | time="2026-03-17T22:10:54Z" level=warning msg="/home/damk/matrix/docker-compose.y... |
+| accounts.delete.synapse            | user delete synapse smoke_1773785428_synapse                                                  | PASS   | 313ms    | User deleted: smoke_1773785428_synapse (synapse)                                                        |
+| accounts.list_after_delete.synapse | user list synapse smoke_1773785428_synapse                                                    | PASS   | 278ms    | Users (synapse): | time="2026-03-17T22:10:55Z" level=warning msg="/home/damk/matrix/docker-compose.y... |
+| llm.route_status                   | Could you give me a quick health snapshot of this host?                                       | PASS   | 4.45s    | mode=llm | skill=status | confidence=0.95                                                               |
+| llm.route_service_status           | I need to know if service called jitsi-jicofo is up.                                          | PASS   | 3.244s   | mode=llm | skill=service_status | confidence=0.95 | args=service=jitsi-jicofo                           |
+| chat.chat                          | chat reply with exactly SMOKE_CHAT_OK                                                         | PASS   | 907ms    | SMOKE_CHAT_OK                                                                                           |
 
-Result: PASS | pass=35 fail=0 skip=0 | total=25.343s
-Totals: 35/35 completed without failure
+Result: PASS | pass=49 fail=0 skip=0 | total=35.251s
+Totals: 49/49 completed without failure
 ```
 
 Be careful with `-smoke-all`: it can restart a real allowed service and create temporary real resources before cleaning them up.
@@ -484,8 +498,53 @@ accounts:
 
 Configure `accounts.providers` first.
 Each provider points at one already-allowed service and renders a command template with placeholders such as `{username}`, `{password}`, and `{pattern}`.
+Providers can also define static `vars` and env-backed `vars_env` placeholders for things like domains, local admin URLs, or API tokens.
 For Jitsi Prosody inside Docker, the provider can target the `jitsi-prosody` container service and call `prosodyctl register`, `prosodyctl unregister`, or `prosodyctl shell user list`.
 Passwords from `user_add` are redacted from stored chat history, skill-call records, and debug logs.
+
+Matrix Synapse can use the same provider model through the Synapse Admin API:
+
+```yaml
+accounts:
+  providers:
+    synapse:
+      service: "synapse"
+      vars:
+        server_name: "matrix.example.com"
+        admin_url: "http://127.0.0.1:8008"
+      vars_env:
+        admin_token: "SYNAPSE_ADMIN_TOKEN"
+      add_command:
+        - sh
+        - -lc
+        - |
+          curl -fsS \
+            -X PUT \
+            -H "Authorization: Bearer {admin_token}" \
+            -H "Content-Type: application/json" \
+            "{admin_url}/_synapse/admin/v2/users/@{username}:{server_name}" \
+            --data '{"password":"{password}","admin":false,"deactivated":false}'
+      delete_command:
+        - sh
+        - -lc
+        - |
+          curl -fsS \
+            -X POST \
+            -H "Authorization: Bearer {admin_token}" \
+            -H "Content-Type: application/json" \
+            "{admin_url}/_synapse/admin/v1/deactivate/@{username}:{server_name}" \
+            --data '{"erase":false}'
+      list_command:
+        - sh
+        - -lc
+        - |
+          curl -fsS \
+            -H "Authorization: Bearer {admin_token}" \
+            "{admin_url}/_synapse/admin/v2/users?from=0&limit=100&guests=false" \
+          | python3 -c 'import json,sys; pattern="{pattern}".lower(); users=json.load(sys.stdin).get("users", []); names=[u.get("name","") for u in users]; print("\n".join(name for name in names if not pattern or pattern in name.lower()))'
+```
+
+For Synapse, `user_delete` maps naturally to account deactivation rather than a hard database delete.
 
 | Skill | What it does | Command shape | Example |
 | --- | --- | --- | --- |

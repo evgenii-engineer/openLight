@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"openlight/internal/config"
 	"strings"
 	"testing"
 	"time"
@@ -51,5 +52,32 @@ func TestPreferredRuntime(t *testing.T) {
 	}
 	if got := preferredRuntime([]string{"node"}); got != "node" {
 		t.Fatalf("expected node fallback, got %q", got)
+	}
+}
+
+func TestAllAccountProvidersSorted(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Config{
+		Accounts: config.AccountsConfig{
+			Providers: map[string]config.AccountProviderConfig{
+				"synapse": {},
+				"jitsi":   {},
+			},
+		},
+	}
+
+	got := allAccountProviders(cfg)
+	want := []string{"jitsi", "synapse"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("unexpected providers: %#v", got)
+	}
+}
+
+func TestSmokeAccountUsername(t *testing.T) {
+	t.Parallel()
+
+	if got := smokeAccountUsername("smoke_123", "matrix-admin"); got != "smoke_123_matrix_admin" {
+		t.Fatalf("unexpected scoped username: %q", got)
 	}
 }

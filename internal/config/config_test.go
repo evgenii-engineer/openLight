@@ -348,6 +348,10 @@ accounts:
   providers:
     JITSI:
       service: "JITSI-PROSODY"
+      vars:
+        server_name: " meet.jitsi "
+      vars_env:
+        admin_token: " OPENLIGHT_ADMIN_TOKEN "
       add_command: [" prosodyctl ", " register ", " {username} ", "meet.jitsi", " {password} "]
       delete_command: [" prosodyctl ", " unregister ", " {username} ", " meet.jitsi "]
       list_command: [" prosodyctl ", " shell ", " user ", " list ", " meet.jitsi ", " {pattern} "]
@@ -364,6 +368,12 @@ accounts:
 	}
 	if provider.Service != "jitsi-prosody" {
 		t.Fatalf("unexpected normalized provider service: %q", provider.Service)
+	}
+	if provider.Vars["server_name"] != "meet.jitsi" {
+		t.Fatalf("unexpected normalized provider vars: %#v", provider.Vars)
+	}
+	if provider.VarsEnv["admin_token"] != "OPENLIGHT_ADMIN_TOKEN" {
+		t.Fatalf("unexpected normalized provider vars_env: %#v", provider.VarsEnv)
 	}
 	if got := provider.AddCommand; len(got) != 5 || got[0] != "prosodyctl" || got[1] != "register" || got[2] != "{username}" || got[3] != "meet.jitsi" || got[4] != "{password}" {
 		t.Fatalf("unexpected add command: %#v", got)

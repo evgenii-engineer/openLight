@@ -126,6 +126,68 @@ func TestAccountManagerListUsersUsesPatternFallbackForSingleProvider(t *testing.
 	}
 }
 
+func TestAccountManagerResolvesProviderVarsAndEnv(t *testing.T) {
+	t.Setenv("SYNAPSE_ADMIN_TOKEN", "admin-token-123")
+
+	services := &stubServicesManager{}
+	manager, err := NewManager(map[string]config.AccountProviderConfig{
+		"synapse": {
+			Service: "synapse",
+			Vars: map[string]string{
+				"server_name": "matrix.example.com",
+				"admin_url":   "http://127.0.0.1:8008",
+			},
+			VarsEnv: map[string]string{
+				"admin_token": "SYNAPSE_ADMIN_TOKEN",
+			},
+			AddCommand: []string{
+				"sh",
+				"-lc",
+				`curl -fsS -X PUT -H "Authorization: Bearer {admin_token}" "{admin_url}/_synapse/admin/v2/users/@{username}:{server_name}" --data '{"password":"{password}"}'`,
+			},
+		},
+	}, services)
+	if err != nil {
+		t.Fatalf("NewManager returned error: %v", err)
+	}
+
+	if err := manager.AddUser(context.Background(), "synapse", "anya", "123456"); err != nil {
+		t.Fatalf("AddUser returned error: %v", err)
+	}
+
+	wantArgs := []string{
+		"sh",
+		"-lc",
+		`curl -fsS -X PUT -H "Authorization: Bearer admin-token-123" "http://127.0.0.1:8008/_synapse/admin/v2/users/@anya:matrix.example.com" --data '{"password":"123456"}'`,
+	}
+	if !reflect.DeepEqual(services.lastArgs, wantArgs) {
+		t.Fatalf("unexpected exec args: %#v", services.lastArgs)
+	}
+}
+
+func TestAccountManagerRejectsMissingProviderEnv(t *testing.T) {
+	t.Parallel()
+
+	services := &stubServicesManager{}
+	manager, err := NewManager(map[string]config.AccountProviderConfig{
+		"synapse": {
+			Service: "synapse",
+			VarsEnv: map[string]string{
+				"admin_token": "SYNAPSE_ADMIN_TOKEN",
+			},
+			ListCommand: []string{"echo", "{admin_token}"},
+		},
+	}, services)
+	if err != nil {
+		t.Fatalf("NewManager returned error: %v", err)
+	}
+
+	_, err = manager.ListUsers(context.Background(), "synapse", "")
+	if !errors.Is(err, skills.ErrUnavailable) {
+		t.Fatalf("expected unavailable error, got %v", err)
+	}
+}
+
 func TestAccountManagerRequiresProviderWhenMultipleConfigured(t *testing.T) {
 	t.Parallel()
 
