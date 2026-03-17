@@ -40,17 +40,23 @@ var (
 		Description: "Inspect whitelisted services, view logs, and restart them.",
 		Order:       4,
 	}
+	GroupAccounts = Group{
+		Key:         "accounts",
+		Title:       "Accounts",
+		Description: "Manage configured application users through explicit account providers.",
+		Order:       5,
+	}
 	GroupSystem = Group{
 		Key:         "system",
 		Title:       "System",
 		Description: "Overall host status plus cpu, memory, disk, uptime, hostname, ip, and temperature.",
-		Order:       5,
+		Order:       6,
 	}
 	GroupCore = Group{
 		Key:         "core",
 		Title:       "Core",
 		Description: "Help, discovery, and core bot commands.",
-		Order:       6,
+		Order:       7,
 	}
 	GroupOther = Group{
 		Key:         "other",

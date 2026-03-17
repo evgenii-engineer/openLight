@@ -2,6 +2,9 @@ BIN_NAME ?= openlight-agent
 BUILD_DIR ?= build/linux-arm64
 OUTPUT ?= $(BUILD_DIR)/$(BIN_NAME)
 PKG ?= ./cmd/agent
+CLI_BIN_NAME ?= openlight-cli
+CLI_OUTPUT ?= $(BUILD_DIR)/$(CLI_BIN_NAME)
+CLI_PKG ?= ./cmd/cli
 
 -include Makefile.local
 
@@ -13,7 +16,7 @@ GOOS ?= linux
 GOARCH ?= arm64
 CGO_ENABLED ?= 0
 
-.PHONY: build build-rpi init-rpi-config deploy-rpi-config deploy-rpi deploy-rpi-service deploy-rpi-all test test-e2e-ollama clean ollama-up ollama-pull ollama-down
+.PHONY: build build-rpi build-cli build-rpi-cli init-rpi-config deploy-rpi-config deploy-rpi deploy-rpi-cli deploy-rpi-service deploy-rpi-all deploy-rpi-full deploy-and-smoke-rpi smoke-rpi-cli test test-e2e-ollama clean ollama-up ollama-pull ollama-down
 
 OLLAMA_COMPOSE_FILE ?= deployments/docker/ollama-compose.yaml
 OLLAMA_ENDPOINT ?= http://127.0.0.1:11434
@@ -25,11 +28,19 @@ build:
 
 build-rpi: build
 
+build-cli:
+	$(MAKE) build BIN_NAME=$(CLI_BIN_NAME) OUTPUT=$(CLI_OUTPUT) PKG=$(CLI_PKG)
+
+build-rpi-cli: build-cli
+
 init-rpi-config:
 	cp -n configs/agent.rpi.ollama.example.yaml configs/agent.rpi.yaml
 
 deploy-rpi:
 	PI_USER=$(PI_USER) PI_HOST=$(PI_HOST) PI_DEST_DIR=$(PI_DEST_DIR) BIN_NAME=$(BIN_NAME) ./scripts/deploy-rpi.sh
+
+deploy-rpi-cli:
+	PI_USER=$(PI_USER) PI_HOST=$(PI_HOST) PI_DEST_DIR=$(PI_DEST_DIR) BIN_NAME=$(CLI_BIN_NAME) PKG=$(CLI_PKG) ./scripts/deploy-rpi.sh
 
 deploy-rpi-service:
 	PI_USER=$(PI_USER) PI_HOST=$(PI_HOST) PI_DEST_DIR=$(PI_DEST_DIR) BIN_NAME=$(BIN_NAME) ./scripts/deploy-rpi-service.sh
@@ -38,6 +49,15 @@ deploy-rpi-config:
 	PI_USER=$(PI_USER) PI_HOST=$(PI_HOST) ./scripts/deploy-rpi-config.sh
 
 deploy-rpi-all: deploy-rpi-config deploy-rpi deploy-rpi-service
+
+deploy-rpi-full: deploy-rpi-all deploy-rpi-cli
+
+SMOKE_FLAGS ?= -smoke
+
+smoke-rpi-cli:
+	ssh $(PI_USER)@$(PI_HOST) '$(PI_DEST_DIR)/$(CLI_BIN_NAME) -config /etc/openlight/agent.yaml $(SMOKE_FLAGS)'
+
+deploy-and-smoke-rpi: deploy-rpi-all deploy-rpi-cli smoke-rpi-cli
 
 test:
 	GOCACHE=/tmp/go-build GOSUMDB=off go test ./...

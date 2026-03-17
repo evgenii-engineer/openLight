@@ -133,6 +133,7 @@ Relevant files:
 `openLight` is opinionated about what the bot is allowed to do:
 
 - file access is limited to `files.allowed`
+- remote access is limited to named SSH hosts in `access.hosts`
 - service actions are limited to `services.allowed`
 - workbench execution is limited to one workspace, allowlisted runtimes, and exact allowlisted files
 - the runtime does not expose unrestricted shell access

@@ -10,22 +10,12 @@ import (
 	"os/signal"
 	"syscall"
 
+	"openlight/internal/app"
 	"openlight/internal/auth"
 	"openlight/internal/config"
 	"openlight/internal/core"
-	basellm "openlight/internal/llm"
 	"openlight/internal/logging"
 	"openlight/internal/router"
-	routerllm "openlight/internal/router/llm"
-	"openlight/internal/skills"
-	chatskills "openlight/internal/skills/chat"
-	fileskills "openlight/internal/skills/files"
-	"openlight/internal/skills/notes"
-	serviceskills "openlight/internal/skills/services"
-	systemskills "openlight/internal/skills/system"
-	workbenchskills "openlight/internal/skills/workbench"
-	"openlight/internal/storage"
-	"openlight/internal/storage/sqlite"
 	"openlight/internal/telegram"
 )
 
@@ -49,36 +39,11 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	repository, err := sqlite.New(ctx, cfg.Storage.SQLitePath, logger.With("component", "sqlite"))
+	runtime, err := app.BuildRuntime(ctx, cfg, logger)
 	if err != nil {
 		return err
 	}
-	defer repository.Close()
-
-	var llmProvider basellm.Provider
-	if cfg.LLM.Enabled {
-		llmProvider, err = buildLLMProvider(cfg, logger)
-		if err != nil {
-			return err
-		}
-	}
-
-	registry, allowedServiceNames, err := buildRegistry(cfg, repository, logger, llmProvider)
-	if err != nil {
-		return err
-	}
-
-	var classifier router.Classifier
-	if llmProvider != nil {
-		classifier = routerllm.NewClassifier(llmProvider, registry, routerllm.Options{
-			AllowedServices:          allowedServiceNames,
-			AllowedWorkbenchRuntimes: cfg.Workbench.AllowedRuntimes,
-			ExecuteThreshold:         cfg.LLM.ExecuteThreshold,
-			ClarifyThreshold:         cfg.LLM.ClarifyThreshold,
-			InputChars:               cfg.LLM.DecisionInputChars,
-			NumPredict:               cfg.LLM.DecisionNumPredict,
-		}, logger.With("component", "router-llm"))
-	}
+	defer app.CloseRuntime(runtime)
 
 	bot := telegram.NewBot(telegram.Options{
 		Token:       cfg.Telegram.BotToken,
@@ -96,9 +61,9 @@ func run() error {
 	agent := core.NewAgent(
 		bot,
 		auth.New(cfg.Auth.AllowedUserIDs, cfg.Auth.AllowedChatIDs),
-		router.NewWithLogger(registry, classifier, logger.With("component", "router")),
-		registry,
-		repository,
+		router.NewWithLogger(runtime.Registry, runtime.Classifier, logger.With("component", "router")),
+		runtime.Registry,
+		runtime.Repository,
 		logger.With("component", "agent"),
 		cfg.Agent.RequestTimeout,
 	)
@@ -115,65 +80,4 @@ func run() error {
 
 func isExpectedShutdown(err error) bool {
 	return err == nil || errors.Is(err, context.Canceled)
-}
-
-func buildRegistry(cfg config.Config, repository storage.Repository, logger *slog.Logger, llmProvider basellm.Provider) (*skills.Registry, []string, error) {
-	registry := skills.NewRegistry()
-
-	systemProvider := systemskills.NewLocalProvider()
-	serviceManager, err := serviceskills.NewManager(cfg.Services.Allowed, logger.With("component", "services"))
-	if err != nil {
-		return nil, nil, err
-	}
-	allowedServiceNames, err := serviceskills.AllowedServiceNames(cfg.Services.Allowed)
-	if err != nil {
-		return nil, nil, err
-	}
-	fileManager, err := fileskills.NewLocalManager(cfg.Files.Allowed, cfg.Files.MaxReadBytes, cfg.Files.ListLimit)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	modules := []skills.Module{
-		systemskills.NewModule(systemProvider),
-		fileskills.NewModule(fileManager),
-		serviceskills.NewModule(serviceManager, cfg.Services.LogLines, cfg.Services.MaxLogChars),
-		notes.NewModule(repository, cfg.Notes.ListLimit),
-	}
-	if cfg.Workbench.Enabled {
-		workbenchManager, err := workbenchskills.NewLocalManager(
-			cfg.Workbench.WorkspaceDir,
-			cfg.Workbench.AllowedRuntimes,
-			cfg.Workbench.AllowedFiles,
-			cfg.Workbench.MaxOutputBytes,
-		)
-		if err != nil {
-			return nil, nil, err
-		}
-		modules = append(modules, workbenchskills.NewModule(workbenchManager))
-	}
-	if llmProvider != nil {
-		modules = append(modules, chatskills.NewModule(llmProvider, repository, chatskills.Options{
-			HistoryLimit:     cfg.Chat.HistoryLimit,
-			HistoryChars:     cfg.Chat.HistoryChars,
-			MaxResponseChars: cfg.Chat.MaxResponseChars,
-		}))
-	}
-	modules = append(modules, skills.NewCoreModule())
-
-	if err := skills.RegisterModules(registry, modules...); err != nil {
-		return nil, nil, err
-	}
-
-	return registry, allowedServiceNames, nil
-}
-
-func buildLLMProvider(cfg config.Config, logger *slog.Logger) (basellm.Provider, error) {
-	llmLogger := logger.With("component", "llm")
-	return basellm.BuildProvider(cfg.LLM.Provider, basellm.ProviderConfig{
-		Endpoint: cfg.LLM.Endpoint,
-		Model:    cfg.LLM.Model,
-		APIKey:   cfg.LLM.APIKey,
-		Timeout:  cfg.Agent.RequestTimeout,
-	}, llmLogger)
 }

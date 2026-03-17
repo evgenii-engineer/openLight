@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -18,6 +19,8 @@ type Config struct {
 	Telegram  TelegramConfig  `yaml:"telegram"`
 	Auth      AuthConfig      `yaml:"auth"`
 	Storage   StorageConfig   `yaml:"storage"`
+	Access    AccessConfig    `yaml:"access"`
+	Accounts  AccountsConfig  `yaml:"accounts"`
 	Files     FilesConfig     `yaml:"files"`
 	Workbench WorkbenchConfig `yaml:"workbench"`
 	Services  ServicesConfig  `yaml:"services"`
@@ -50,6 +53,34 @@ type AuthConfig struct {
 
 type StorageConfig struct {
 	SQLitePath string `yaml:"sqlite_path"`
+}
+
+type AccessConfig struct {
+	Hosts map[string]RemoteHostConfig `yaml:"hosts"`
+}
+
+type RemoteHostConfig struct {
+	Address                 string `yaml:"address"`
+	User                    string `yaml:"user"`
+	Password                string `yaml:"password"`
+	PasswordEnv             string `yaml:"password_env"`
+	PrivateKeyPath          string `yaml:"private_key_path"`
+	PrivateKeyPassphrase    string `yaml:"private_key_passphrase"`
+	PrivateKeyPassphraseEnv string `yaml:"private_key_passphrase_env"`
+	KnownHostsPath          string `yaml:"known_hosts_path"`
+	InsecureIgnoreHostKey   bool   `yaml:"insecure_ignore_host_key"`
+	Sudo                    bool   `yaml:"sudo"`
+}
+
+type AccountsConfig struct {
+	Providers map[string]AccountProviderConfig `yaml:"providers"`
+}
+
+type AccountProviderConfig struct {
+	Service       string   `yaml:"service"`
+	AddCommand    []string `yaml:"add_command"`
+	DeleteCommand []string `yaml:"delete_command"`
+	ListCommand   []string `yaml:"list_command"`
 }
 
 type FilesConfig struct {
@@ -224,6 +255,38 @@ func (c Config) Validate() error {
 		return errors.New("chat.max_response_chars must be greater than zero")
 	}
 
+	for name, host := range c.Access.Hosts {
+		if name == "" {
+			return errors.New("access.hosts keys must not be empty")
+		}
+		if strings.TrimSpace(host.Address) == "" {
+			return fmt.Errorf("access.hosts.%s.address is required", name)
+		}
+		if strings.TrimSpace(host.User) == "" {
+			return fmt.Errorf("access.hosts.%s.user is required", name)
+		}
+		if strings.TrimSpace(host.Password) == "" &&
+			strings.TrimSpace(host.PasswordEnv) == "" &&
+			strings.TrimSpace(host.PrivateKeyPath) == "" {
+			return fmt.Errorf("access.hosts.%s must set password, password_env, or private_key_path", name)
+		}
+		if !host.InsecureIgnoreHostKey && strings.TrimSpace(host.KnownHostsPath) == "" {
+			return fmt.Errorf("access.hosts.%s.known_hosts_path is required unless insecure_ignore_host_key is true", name)
+		}
+	}
+
+	for name, provider := range c.Accounts.Providers {
+		if name == "" {
+			return errors.New("accounts.providers keys must not be empty")
+		}
+		if strings.TrimSpace(provider.Service) == "" {
+			return fmt.Errorf("accounts.providers.%s.service is required", name)
+		}
+		if len(provider.AddCommand) == 0 && len(provider.DeleteCommand) == 0 && len(provider.ListCommand) == 0 {
+			return fmt.Errorf("accounts.providers.%s must set add_command, delete_command, or list_command", name)
+		}
+	}
+
 	return nil
 }
 
@@ -359,6 +422,8 @@ func normalize(cfg *Config) {
 	cfg.Telegram.Webhook.SecretToken = strings.TrimSpace(cfg.Telegram.Webhook.SecretToken)
 
 	cfg.Storage.SQLitePath = strings.TrimSpace(cfg.Storage.SQLitePath)
+	cfg.Access.Hosts = normalizeRemoteHosts(cfg.Access.Hosts)
+	cfg.Accounts.Providers = normalizeAccountProviders(cfg.Accounts.Providers)
 	cfg.Files.Allowed = normalizePaths(cfg.Files.Allowed)
 	cfg.Workbench.WorkspaceDir = strings.TrimSpace(cfg.Workbench.WorkspaceDir)
 	if cfg.Workbench.WorkspaceDir == "" {
@@ -406,54 +471,155 @@ func normalizeServiceSpecs(values []string) []string {
 	seen := make(map[string]struct{}, len(values))
 	result := make([]string, 0, len(values))
 	for _, value := range values {
+		normalized, ok := normalizeServiceSpec(value)
+		if !ok {
+			continue
+		}
+		if _, exists := seen[normalized]; exists {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		result = append(result, normalized)
+	}
+	return result
+}
+
+func normalizeServiceSpec(value string) (string, bool) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "", false
+	}
+
+	name, spec, hasAlias := strings.Cut(trimmed, "=")
+	if !hasAlias {
+		return strings.ToLower(trimmed), true
+	}
+
+	name = strings.ToLower(strings.TrimSpace(name))
+	spec = strings.TrimSpace(spec)
+	if name == "" || spec == "" {
+		return "", false
+	}
+
+	normalizedSpec, ok := normalizeServiceBackendSpec(spec)
+	if !ok {
+		return "", false
+	}
+
+	return name + "=" + normalizedSpec, true
+}
+
+func normalizeServiceBackendSpec(spec string) (string, bool) {
+	spec = strings.TrimSpace(spec)
+	if spec == "" {
+		return "", false
+	}
+
+	lowerSpec := strings.ToLower(spec)
+	if strings.HasPrefix(lowerSpec, "host:") {
+		rest := strings.TrimSpace(spec[len("host:"):])
+		idx := strings.Index(rest, ":")
+		if idx <= 0 || idx == len(rest)-1 {
+			return "", false
+		}
+
+		host := strings.ToLower(strings.TrimSpace(rest[:idx]))
+		innerSpec := strings.TrimSpace(rest[idx+1:])
+		if host == "" || innerSpec == "" {
+			return "", false
+		}
+
+		normalizedInner, ok := normalizeServiceBackendSpec(innerSpec)
+		if !ok {
+			return "", false
+		}
+		return "host:" + host + ":" + normalizedInner, true
+	}
+
+	switch {
+	case strings.HasPrefix(lowerSpec, "compose:"):
+		return "compose:" + strings.TrimSpace(spec[len("compose:"):]), true
+	case strings.HasPrefix(lowerSpec, "docker:"):
+		return "docker:" + strings.TrimSpace(spec[len("docker:"):]), true
+	case strings.HasPrefix(lowerSpec, "systemd:"):
+		return "systemd:" + strings.ToLower(strings.TrimSpace(spec[len("systemd:"):])), true
+	default:
+		return strings.ToLower(spec), true
+	}
+}
+
+func normalizeRemoteHosts(values map[string]RemoteHostConfig) map[string]RemoteHostConfig {
+	if len(values) == 0 {
+		return nil
+	}
+
+	result := make(map[string]RemoteHostConfig, len(values))
+	for name, host := range values {
+		normalizedName := strings.ToLower(strings.TrimSpace(name))
+		if normalizedName == "" {
+			continue
+		}
+
+		host.Address = normalizeSSHAddress(host.Address)
+		host.User = strings.TrimSpace(host.User)
+		host.Password = strings.TrimSpace(host.Password)
+		host.PasswordEnv = strings.TrimSpace(host.PasswordEnv)
+		host.PrivateKeyPath = strings.TrimSpace(host.PrivateKeyPath)
+		host.PrivateKeyPassphrase = strings.TrimSpace(host.PrivateKeyPassphrase)
+		host.PrivateKeyPassphraseEnv = strings.TrimSpace(host.PrivateKeyPassphraseEnv)
+		host.KnownHostsPath = strings.TrimSpace(host.KnownHostsPath)
+
+		result[normalizedName] = host
+	}
+
+	return result
+}
+
+func normalizeAccountProviders(values map[string]AccountProviderConfig) map[string]AccountProviderConfig {
+	if len(values) == 0 {
+		return nil
+	}
+
+	result := make(map[string]AccountProviderConfig, len(values))
+	for name, provider := range values {
+		normalizedName := strings.ToLower(strings.TrimSpace(name))
+		if normalizedName == "" {
+			continue
+		}
+
+		provider.Service = strings.ToLower(strings.TrimSpace(provider.Service))
+		provider.AddCommand = normalizeCommandTemplate(provider.AddCommand)
+		provider.DeleteCommand = normalizeCommandTemplate(provider.DeleteCommand)
+		provider.ListCommand = normalizeCommandTemplate(provider.ListCommand)
+
+		result[normalizedName] = provider
+	}
+	return result
+}
+
+func normalizeCommandTemplate(values []string) []string {
+	result := make([]string, 0, len(values))
+	for _, value := range values {
 		trimmed := strings.TrimSpace(value)
-		if trimmed == "" {
-			continue
-		}
-
-		name, spec, hasAlias := strings.Cut(trimmed, "=")
-		if !hasAlias {
-			normalized := strings.ToLower(trimmed)
-			if _, ok := seen[normalized]; ok {
-				continue
-			}
-			seen[normalized] = struct{}{}
-			result = append(result, normalized)
-			continue
-		}
-
-		name = strings.ToLower(strings.TrimSpace(name))
-		spec = strings.TrimSpace(spec)
-		if name == "" || spec == "" {
-			continue
-		}
-
-		lowerSpec := strings.ToLower(spec)
-		switch {
-		case strings.HasPrefix(lowerSpec, "compose:"):
-			normalized := name + "=compose:" + strings.TrimSpace(spec[len("compose:"):])
-			if _, ok := seen[normalized]; ok {
-				continue
-			}
-			seen[normalized] = struct{}{}
-			result = append(result, normalized)
-		case strings.HasPrefix(lowerSpec, "systemd:"):
-			normalized := name + "=systemd:" + strings.ToLower(strings.TrimSpace(spec[len("systemd:"):]))
-			if _, ok := seen[normalized]; ok {
-				continue
-			}
-			seen[normalized] = struct{}{}
-			result = append(result, normalized)
-		default:
-			normalized := name + "=" + strings.ToLower(spec)
-			if _, ok := seen[normalized]; ok {
-				continue
-			}
-			seen[normalized] = struct{}{}
-			result = append(result, normalized)
+		if trimmed != "" {
+			result = append(result, trimmed)
 		}
 	}
 	return result
+}
+
+func normalizeSSHAddress(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if _, _, err := net.SplitHostPort(value); err == nil {
+		return value
+	}
+	if strings.HasPrefix(value, "[") && strings.HasSuffix(value, "]") {
+		value = strings.TrimPrefix(strings.TrimSuffix(value, "]"), "[")
+	}
+	return net.JoinHostPort(value, "22")
 }
 
 func normalizePaths(values []string) []string {

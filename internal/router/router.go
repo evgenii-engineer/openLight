@@ -9,6 +9,7 @@ import (
 	"openlight/internal/router/rules"
 	"openlight/internal/router/semantic"
 	"openlight/internal/skills"
+	"openlight/internal/utils"
 )
 
 type Mode string
@@ -67,21 +68,22 @@ func (r *Router) Route(ctx context.Context, text string) (Decision, error) {
 		return Decision{Mode: ModeUnknown}, nil
 	}
 
-	normalized := semantic.Normalize(text)
+	sanitizedText := utils.RedactSensitiveText(text)
+	sanitizedNormalized := semantic.Normalize(sanitizedText)
 	r.logDebug(
 		"router pipeline started",
-		"text", shortTextForLog(text),
-		"normalized_text", shortTextForLog(normalized),
+		"text", shortTextForLog(sanitizedText),
+		"normalized_text", shortTextForLog(sanitizedNormalized),
 		"classifier_enabled", r.classifier != nil,
 	)
 
 	if decision, ok := routeSlash(text); ok {
-		r.logDebug("router matched slash command", "skill", decision.SkillName, "args", decision.Args)
+		r.logDebug("router matched slash command", "skill", decision.SkillName, "args", utils.RedactSensitiveArgs(decision.Args))
 		return decision, nil
 	}
 
 	if decision, ok := routeExplicit(text); ok {
-		r.logDebug("router matched explicit command", "skill", decision.SkillName, "args", decision.Args)
+		r.logDebug("router matched explicit command", "skill", decision.SkillName, "args", utils.RedactSensitiveArgs(decision.Args))
 		return decision, nil
 	}
 
@@ -95,7 +97,7 @@ func (r *Router) Route(ctx context.Context, text string) (Decision, error) {
 	}
 
 	if match, ok := rules.Parse(text); ok {
-		r.logDebug("router matched semantic rule", "skill", match.SkillName, "args", match.Args, "normalized_text", shortTextForLog(normalized))
+		r.logDebug("router matched semantic rule", "skill", match.SkillName, "args", utils.RedactSensitiveArgs(match.Args), "normalized_text", shortTextForLog(sanitizedNormalized))
 		return Decision{
 			Mode:      ModeRule,
 			SkillName: match.SkillName,
@@ -104,7 +106,7 @@ func (r *Router) Route(ctx context.Context, text string) (Decision, error) {
 	}
 
 	if r.classifier != nil {
-		r.logDebug("router invoking llm classifier", "normalized_text", shortTextForLog(normalized))
+		r.logDebug("router invoking llm classifier", "normalized_text", shortTextForLog(sanitizedNormalized))
 		decision, ok, err := r.classifier.Classify(ctx, text)
 		if err != nil {
 			return Decision{}, err
@@ -116,7 +118,7 @@ func (r *Router) Route(ctx context.Context, text string) (Decision, error) {
 		r.logDebug("router classifier produced no executable match")
 	}
 
-	r.logDebug("router finished with no match", "normalized_text", shortTextForLog(normalized))
+	r.logDebug("router finished with no match", "normalized_text", shortTextForLog(sanitizedNormalized))
 	return Decision{Mode: ModeUnknown}, nil
 }
 
@@ -212,6 +214,14 @@ func routeCommand(command, argsText string, mode Mode) (Decision, bool) {
 		return Decision{Mode: mode, SkillName: "service_restart", Args: map[string]string{"service": argsText}}, true
 	case "logs", "log", "service logs":
 		return Decision{Mode: mode, SkillName: "service_logs", Args: map[string]string{"service": argsText}}, true
+	case "users", "accounts", "user providers", "account providers":
+		return routeNoArgCommand(mode, "user_providers", argsText)
+	case "user list", "list users":
+		return Decision{Mode: mode, SkillName: "user_list", Args: parseUserListArgs(argsText)}, true
+	case "user add", "add user", "register user":
+		return Decision{Mode: mode, SkillName: "user_add", Args: parseUserAddArgs(argsText)}, true
+	case "user delete", "delete user", "remove user", "unregister user":
+		return Decision{Mode: mode, SkillName: "user_delete", Args: parseUserDeleteArgs(argsText)}, true
 	case "note delete", "delete note", "remove note", "note remove", "note_delete":
 		return Decision{Mode: mode, SkillName: "note_delete", Args: map[string]string{"id": argsText}}, true
 	case "note", "note add", "add note", "remember":
@@ -440,6 +450,72 @@ func parseExecFileArgs(argsText string) (map[string]string, bool) {
 		return nil, false
 	}
 	return map[string]string{"path": path}, true
+}
+
+func parseUserAddArgs(argsText string) map[string]string {
+	argsText = strings.TrimSpace(argsText)
+	if argsText == "" {
+		return map[string]string{}
+	}
+
+	fields := strings.Fields(argsText)
+	switch len(fields) {
+	case 0:
+		return map[string]string{}
+	case 1:
+		return map[string]string{"username": fields[0]}
+	case 2:
+		return map[string]string{
+			"username": fields[0],
+			"password": fields[1],
+		}
+	default:
+		return map[string]string{
+			"provider": fields[0],
+			"username": fields[1],
+			"password": strings.TrimSpace(strings.Join(fields[2:], " ")),
+		}
+	}
+}
+
+func parseUserDeleteArgs(argsText string) map[string]string {
+	argsText = strings.TrimSpace(argsText)
+	if argsText == "" {
+		return map[string]string{}
+	}
+
+	fields := strings.Fields(argsText)
+	switch len(fields) {
+	case 0:
+		return map[string]string{}
+	case 1:
+		return map[string]string{"username": fields[0]}
+	default:
+		return map[string]string{
+			"provider": fields[0],
+			"username": strings.TrimSpace(strings.Join(fields[1:], " ")),
+		}
+	}
+}
+
+func parseUserListArgs(argsText string) map[string]string {
+	argsText = strings.TrimSpace(argsText)
+	if argsText == "" {
+		return map[string]string{}
+	}
+
+	fields := strings.Fields(argsText)
+	switch len(fields) {
+	case 0:
+		return map[string]string{}
+	case 1:
+		return map[string]string{"provider": fields[0]}
+	default:
+		return map[string]string{
+			"provider": fields[0],
+			"pattern":  strings.TrimSpace(strings.Join(fields[1:], " ")),
+		}
+	}
 }
 
 func trimSingleLeadingSpace(value string) string {

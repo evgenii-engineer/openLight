@@ -243,6 +243,14 @@ func skillOrder(name string) int {
 		return 32
 	case "service_logs":
 		return 33
+	case "user_providers":
+		return 34
+	case "user_list":
+		return 35
+	case "user_add":
+		return 36
+	case "user_delete":
+		return 37
 	case "status":
 		return 40
 	case "cpu":

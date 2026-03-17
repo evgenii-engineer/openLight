@@ -3,6 +3,7 @@ module openlight
 go 1.25.0
 
 require (
+	golang.org/x/crypto v0.0.0-20200622213623-75b288015ac9
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.22.1
 )

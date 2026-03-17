@@ -28,6 +28,10 @@ func (s stubManager) Logs(context.Context, string, int) (string, error) {
 	return s.logs, nil
 }
 
+func (s stubManager) Exec(context.Context, string, ...string) (string, error) {
+	return "", nil
+}
+
 func TestRestartSkillRequiresService(t *testing.T) {
 	t.Parallel()
 
@@ -102,6 +106,29 @@ func TestStatusSkillUsesSingleWhitelistedServiceWhenArgumentMissing(t *testing.T
 	}
 }
 
+func TestStatusSkillIncludesRemoteHost(t *testing.T) {
+	t.Parallel()
+
+	result, err := NewStatusSkill(stubManager{
+		status: Info{
+			Name:        "jitsi-web",
+			Host:        "vps",
+			LoadState:   "compose",
+			ActiveState: "active",
+			SubState:    "running",
+			Description: "docker compose service web",
+		},
+	}).Execute(context.Background(), skills.Input{Args: map[string]string{"service": "jitsi-web"}})
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+
+	want := "Service: jitsi-web\nHost: vps\nLoad: compose\nActive: active\nSub: running\nDescription: docker compose service web"
+	if result.Text != want {
+		t.Fatalf("unexpected response: %q", result.Text)
+	}
+}
+
 func TestListSkillUsesFriendlyServiceName(t *testing.T) {
 	t.Parallel()
 
@@ -116,6 +143,25 @@ func TestListSkillUsesFriendlyServiceName(t *testing.T) {
 	}
 
 	if want := "Allowed services:\n- tailscale: active"; result.Text != want {
+		t.Fatalf("unexpected response: %q", result.Text)
+	}
+}
+
+func TestListSkillIncludesRemoteHost(t *testing.T) {
+	t.Parallel()
+
+	result, err := NewListSkill(stubManager{
+		status: Info{
+			Name:        "jitsi-web",
+			Host:        "vps",
+			ActiveState: "active",
+		},
+	}).Execute(context.Background(), skills.Input{})
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+
+	if want := "Allowed services:\n- jitsi-web@vps: active"; result.Text != want {
 		t.Fatalf("unexpected response: %q", result.Text)
 	}
 }
@@ -159,7 +205,7 @@ func TestLogsSkillTruncatesLongOutput(t *testing.T) {
 func TestSystemdManagerRejectsNonWhitelistedService(t *testing.T) {
 	t.Parallel()
 
-	manager, err := NewManager([]string{"tailscale"}, nil)
+	manager, err := NewManager([]string{"tailscale"}, nil, nil)
 	if err != nil {
 		t.Fatalf("NewManager returned error: %v", err)
 	}
@@ -172,7 +218,7 @@ func TestSystemdManagerRejectsNonWhitelistedService(t *testing.T) {
 func TestSystemdManagerNormalizesTailscaleAlias(t *testing.T) {
 	t.Parallel()
 
-	manager, err := NewManager([]string{"tailscale"}, nil)
+	manager, err := NewManager([]string{"tailscale"}, nil, nil)
 	if err != nil {
 		t.Fatalf("NewManager returned error: %v", err)
 	}
@@ -193,7 +239,7 @@ func TestSystemdManagerNormalizesTailscaleAlias(t *testing.T) {
 func TestSystemdManagerNormalizesGenericService(t *testing.T) {
 	t.Parallel()
 
-	manager, err := NewManager([]string{"matrix"}, nil)
+	manager, err := NewManager([]string{"matrix"}, nil, nil)
 	if err != nil {
 		t.Fatalf("NewManager returned error: %v", err)
 	}
@@ -214,7 +260,7 @@ func TestSystemdManagerNormalizesGenericService(t *testing.T) {
 func TestSystemdManagerNormalizesComposeService(t *testing.T) {
 	t.Parallel()
 
-	manager, err := NewManager([]string{"synapse=compose:/home/damk/matrix/docker-compose.yml"}, nil)
+	manager, err := NewManager([]string{"synapse=compose:/home/damk/matrix/docker-compose.yml"}, nil, nil)
 	if err != nil {
 		t.Fatalf("NewManager returned error: %v", err)
 	}
@@ -232,19 +278,50 @@ func TestSystemdManagerNormalizesComposeService(t *testing.T) {
 	}
 }
 
+func TestSystemdManagerNormalizesDockerContainer(t *testing.T) {
+	t.Parallel()
+
+	manager, err := NewManager([]string{"jitsi-web=docker:docker-jitsi-meet_web_1"}, nil, nil)
+	if err != nil {
+		t.Fatalf("NewManager returned error: %v", err)
+	}
+	systemdManager, ok := manager.(*SystemdManager)
+	if !ok {
+		t.Fatal("expected concrete SystemdManager")
+	}
+
+	service, err := systemdManager.normalizeService("jitsi-web")
+	if err != nil {
+		t.Fatalf("normalizeService returned error: %v", err)
+	}
+	if service != "docker-jitsi-meet_web_1" {
+		t.Fatalf("unexpected normalized docker service: %q", service)
+	}
+}
+
 func TestAllowedServiceNamesUsesFriendlyComposeAlias(t *testing.T) {
 	t.Parallel()
 
 	names, err := AllowedServiceNames([]string{
 		"tailscale",
 		"synapse=compose:/home/damk/matrix/docker-compose.yml",
+		"jitsi-web=docker:docker-jitsi-meet_web_1",
 	})
 	if err != nil {
 		t.Fatalf("AllowedServiceNames returned error: %v", err)
 	}
 
-	if len(names) != 2 || names[0] != "synapse" || names[1] != "tailscale" {
+	if len(names) != 3 || names[0] != "jitsi-web" || names[1] != "synapse" || names[2] != "tailscale" {
 		t.Fatalf("unexpected allowed service names: %#v", names)
+	}
+}
+
+func TestNewManagerRejectsUnknownRemoteHost(t *testing.T) {
+	t.Parallel()
+
+	_, err := NewManager([]string{"jitsi-web=host:vps:compose:/opt/jitsi/docker-compose.yml:web"}, nil, nil)
+	if err == nil {
+		t.Fatal("expected unknown remote host to be rejected")
 	}
 }
 

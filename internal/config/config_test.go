@@ -281,6 +281,129 @@ services:
 	}
 }
 
+func TestLoadNormalizesRemoteHosts(t *testing.T) {
+	clearConfigEnv(t)
+
+	configPath := filepath.Join(t.TempDir(), "agent.yaml")
+	writeConfig(t, configPath, `
+telegram:
+  bot_token: "token"
+
+auth:
+  allowed_user_ids: [1]
+
+storage:
+  sqlite_path: "./agent.db"
+
+access:
+  hosts:
+    VPS:
+      address: "203.0.113.10"
+      user: "root"
+      password_env: "OPENLIGHT_VPS_PASSWORD"
+      known_hosts_path: "/home/pi/.ssh/known_hosts"
+      sudo: true
+
+services:
+  allowed:
+    - "jitsi-web=host:VPS:compose:/opt/Jitsi/docker-compose.yml:web"
+    - "jitsi-jvb=host:VPS:docker:docker-jitsi-meet_jvb_1"
+`)
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+
+	host, ok := cfg.Access.Hosts["vps"]
+	if !ok {
+		t.Fatalf("expected normalized host key, got %#v", cfg.Access.Hosts)
+	}
+	if host.Address != "203.0.113.10:22" {
+		t.Fatalf("unexpected normalized host address: %q", host.Address)
+	}
+	if host.User != "root" || host.PasswordEnv != "OPENLIGHT_VPS_PASSWORD" || host.KnownHostsPath != "/home/pi/.ssh/known_hosts" || !host.Sudo {
+		t.Fatalf("unexpected remote host config: %#v", host)
+	}
+	if got := cfg.Services.Allowed; len(got) != 2 || got[0] != "jitsi-web=host:vps:compose:/opt/Jitsi/docker-compose.yml:web" || got[1] != "jitsi-jvb=host:vps:docker:docker-jitsi-meet_jvb_1" {
+		t.Fatalf("unexpected remote services config: %#v", got)
+	}
+}
+
+func TestLoadNormalizesAccountProviders(t *testing.T) {
+	clearConfigEnv(t)
+
+	configPath := filepath.Join(t.TempDir(), "agent.yaml")
+	writeConfig(t, configPath, `
+telegram:
+  bot_token: "token"
+
+auth:
+  allowed_user_ids: [1]
+
+storage:
+  sqlite_path: "./agent.db"
+
+accounts:
+  providers:
+    JITSI:
+      service: "JITSI-PROSODY"
+      add_command: [" prosodyctl ", " register ", " {username} ", "meet.jitsi", " {password} "]
+      delete_command: [" prosodyctl ", " unregister ", " {username} ", " meet.jitsi "]
+      list_command: [" prosodyctl ", " shell ", " user ", " list ", " meet.jitsi ", " {pattern} "]
+`)
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+
+	provider, ok := cfg.Accounts.Providers["jitsi"]
+	if !ok {
+		t.Fatalf("expected normalized provider key, got %#v", cfg.Accounts.Providers)
+	}
+	if provider.Service != "jitsi-prosody" {
+		t.Fatalf("unexpected normalized provider service: %q", provider.Service)
+	}
+	if got := provider.AddCommand; len(got) != 5 || got[0] != "prosodyctl" || got[1] != "register" || got[2] != "{username}" || got[3] != "meet.jitsi" || got[4] != "{password}" {
+		t.Fatalf("unexpected add command: %#v", got)
+	}
+	if got := provider.DeleteCommand; len(got) != 4 || got[0] != "prosodyctl" || got[1] != "unregister" || got[2] != "{username}" || got[3] != "meet.jitsi" {
+		t.Fatalf("unexpected delete command: %#v", got)
+	}
+	if got := provider.ListCommand; len(got) != 6 || got[0] != "prosodyctl" || got[1] != "shell" || got[2] != "user" || got[3] != "list" || got[4] != "meet.jitsi" || got[5] != "{pattern}" {
+		t.Fatalf("unexpected list command: %#v", got)
+	}
+}
+
+func TestLoadRejectsRemoteHostWithoutHostKeyPolicy(t *testing.T) {
+	clearConfigEnv(t)
+
+	configPath := filepath.Join(t.TempDir(), "agent.yaml")
+	writeConfig(t, configPath, `
+telegram:
+  bot_token: "token"
+
+auth:
+  allowed_user_ids: [1]
+
+storage:
+  sqlite_path: "./agent.db"
+
+access:
+  hosts:
+    vps:
+      address: "203.0.113.10"
+      user: "root"
+      password: "secret"
+`)
+
+	_, err := Load(configPath)
+	if err == nil {
+		t.Fatal("expected invalid remote host config to fail")
+	}
+}
+
 func TestLoadAllowsCustomLLMProviderNames(t *testing.T) {
 	clearConfigEnv(t)
 

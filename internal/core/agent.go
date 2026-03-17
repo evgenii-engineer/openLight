@@ -18,6 +18,7 @@ import (
 	"openlight/internal/skills"
 	"openlight/internal/storage"
 	"openlight/internal/telegram"
+	"openlight/internal/utils"
 )
 
 type Transport interface {
@@ -72,11 +73,13 @@ func (a *Agent) HandleMessage(ctx context.Context, message telegram.IncomingMess
 		return nil
 	}
 
+	sanitizedMessageText := utils.RedactSensitiveText(message.Text)
+
 	a.saveMessage(ctx, models.Message{
 		TelegramUserID: message.UserID,
 		TelegramChatID: message.ChatID,
 		Role:           models.RoleUser,
-		Text:           message.Text,
+		Text:           sanitizedMessageText,
 	})
 
 	if err := a.authorizer.Error(message.UserID, message.ChatID); err != nil {
@@ -96,10 +99,10 @@ func (a *Agent) HandleMessage(ctx context.Context, message telegram.IncomingMess
 		clarifiedText := composeClarifiedText(pending, message.Text)
 		a.logDebug(
 			"routing with pending clarification context",
-			"message_text", shortTextForLog(message.Text),
+			"message_text", shortTextForLog(sanitizedMessageText),
 			"pending_source_text", shortTextForLog(pending.SourceText),
 			"pending_question", pending.Question,
-			"clarified_text", shortTextForLog(clarifiedText),
+			"clarified_text", shortTextForLog(utils.RedactSensitiveText(clarifiedText)),
 		)
 
 		clarifiedDecision, clarifiedErr := a.router.Route(ctx, clarifiedText)
@@ -121,10 +124,10 @@ func (a *Agent) HandleMessage(ctx context.Context, message telegram.IncomingMess
 		a.savePendingClarification(ctx, message.ChatID, decisionText, decision.ClarificationQuestion)
 		a.logInfo(
 			"requesting clarification",
-			"message_text", shortTextForLog(message.Text),
+			"message_text", shortTextForLog(sanitizedMessageText),
 			"mode", decision.Mode,
 			"skill", decision.SkillName,
-			"args", decision.Args,
+			"args", sanitizedArgs(decision.Args),
 			"confidence", decision.Confidence,
 			"question", decision.ClarificationQuestion,
 		)
@@ -147,7 +150,7 @@ func (a *Agent) HandleMessage(ctx context.Context, message telegram.IncomingMess
 	if !decision.Matched() {
 		a.logWarn(
 			"router did not match any skill",
-			"message_text", shortTextForLog(message.Text),
+			"message_text", shortTextForLog(sanitizedMessageText),
 			"chat_id", message.ChatID,
 			"user_id", message.UserID,
 		)
@@ -168,8 +171,8 @@ func (a *Agent) HandleMessage(ctx context.Context, message telegram.IncomingMess
 		"skill execution started",
 		"skill", skill.Definition().Name,
 		"mode", decision.Mode,
-		"args", decision.Args,
-		"message_text", shortTextForLog(message.Text),
+		"args", sanitizedArgs(decision.Args),
+		"message_text", shortTextForLog(sanitizedMessageText),
 		"chat_id", message.ChatID,
 		"user_id", message.UserID,
 	)
@@ -185,8 +188,8 @@ func (a *Agent) HandleMessage(ctx context.Context, message telegram.IncomingMess
 
 	a.saveSkillCall(ctx, models.SkillCall{
 		SkillName:  skill.Definition().Name,
-		InputText:  message.Text,
-		ArgsJSON:   marshalArgs(decision.Args),
+		InputText:  sanitizedMessageText,
+		ArgsJSON:   marshalArgs(sanitizedArgs(decision.Args)),
 		Status:     callStatus(execErr),
 		ErrorText:  errorText(execErr),
 		DurationMS: durationMS,
@@ -197,7 +200,7 @@ func (a *Agent) HandleMessage(ctx context.Context, message telegram.IncomingMess
 			"execute skill",
 			"skill", skill.Definition().Name,
 			"mode", decision.Mode,
-			"args", decision.Args,
+			"args", sanitizedArgs(decision.Args),
 			"duration_ms", durationMS,
 			"error", execErr,
 		)
@@ -208,7 +211,7 @@ func (a *Agent) HandleMessage(ctx context.Context, message telegram.IncomingMess
 		"skill execution completed",
 		"skill", skill.Definition().Name,
 		"mode", decision.Mode,
-		"args", decision.Args,
+		"args", sanitizedArgs(decision.Args),
 		"duration_ms", durationMS,
 	)
 
@@ -244,7 +247,7 @@ func (a *Agent) saveSkillCall(ctx context.Context, call models.SkillCall) {
 
 func (a *Agent) savePendingClarification(ctx context.Context, chatID int64, sourceText, question string) {
 	payload, err := json.Marshal(pendingClarification{
-		SourceText: strings.TrimSpace(sourceText),
+		SourceText: strings.TrimSpace(utils.RedactSensitiveText(sourceText)),
 		Question:   strings.TrimSpace(question),
 	})
 	if err != nil {
@@ -322,12 +325,12 @@ func (a *Agent) logError(msg string, args ...any) {
 func (a *Agent) logRouteDecision(msg string, message telegram.IncomingMessage, decision router.Decision) {
 	a.logDebug(
 		msg,
-		"message_text", shortTextForLog(message.Text),
+		"message_text", shortTextForLog(utils.RedactSensitiveText(message.Text)),
 		"chat_id", message.ChatID,
 		"user_id", message.UserID,
 		"mode", decision.Mode,
 		"skill", decision.SkillName,
-		"args", decision.Args,
+		"args", sanitizedArgs(decision.Args),
 		"confidence", decision.Confidence,
 		"needs_clarification", decision.NeedsClarification,
 		"clarification_question", decision.ClarificationQuestion,
@@ -340,6 +343,10 @@ func marshalArgs(args map[string]string) string {
 		return "{}"
 	}
 	return string(payload)
+}
+
+func sanitizedArgs(args map[string]string) map[string]string {
+	return utils.RedactSensitiveArgs(args)
 }
 
 func callStatus(err error) string {

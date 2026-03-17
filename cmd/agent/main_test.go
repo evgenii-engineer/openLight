@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"openlight/internal/app"
 	"openlight/internal/config"
 	basellm "openlight/internal/llm"
 )
@@ -50,7 +51,7 @@ func TestBuildRegistryRegistersBuiltInModules(t *testing.T) {
 	t.Parallel()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	registry, _, err := buildRegistry(config.Config{
+	registry, _, err := app.BuildRegistry(config.Config{
 		Files: config.FilesConfig{
 			MaxReadBytes: 4096,
 			ListLimit:    40,
@@ -88,7 +89,7 @@ func TestBuildRegistryRegistersChatModuleWhenLLMEnabled(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	provider := basellm.NewHTTPProvider("http://127.0.0.1:1", time.Second, logger)
 
-	registry, _, err := buildRegistry(config.Config{
+	registry, _, err := app.BuildRegistry(config.Config{
 		Files: config.FilesConfig{
 			MaxReadBytes: 4096,
 			ListLimit:    40,
@@ -119,7 +120,7 @@ func TestBuildRegistryRegistersWorkbenchModuleWhenEnabled(t *testing.T) {
 	t.Parallel()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	registry, _, err := buildRegistry(config.Config{
+	registry, _, err := app.BuildRegistry(config.Config{
 		Files: config.FilesConfig{
 			MaxReadBytes: 4096,
 			ListLimit:    40,

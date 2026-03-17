@@ -37,7 +37,7 @@ func (s *listSkill) Execute(ctx context.Context, _ skills.Input) (skills.Result,
 
 	lines := make([]string, 0, len(services))
 	for _, service := range services {
-		name := displayServiceName(service.Name)
+		name := displayInfoName(service)
 		state := service.ActiveState
 		if state == "" {
 			state = "unknown"
@@ -77,8 +77,9 @@ func (s *statusSkill) Execute(ctx context.Context, input skills.Input) (skills.R
 	}
 
 	text := fmt.Sprintf(
-		"Service: %s\nLoad: %s\nActive: %s\nSub: %s\nDescription: %s",
+		"Service: %s\n%sLoad: %s\nActive: %s\nSub: %s\nDescription: %s",
 		displayServiceName(info.Name),
+		formatHostLine(info.Host),
 		emptyOrUnknown(info.LoadState),
 		emptyOrUnknown(info.ActiveState),
 		emptyOrUnknown(info.SubState),
@@ -167,6 +168,22 @@ func emptyOrUnknown(value string) string {
 		return "unknown"
 	}
 	return value
+}
+
+func displayInfoName(info Info) string {
+	name := displayServiceName(info.Name)
+	if strings.TrimSpace(info.Host) == "" {
+		return name
+	}
+	return name + "@" + strings.TrimSpace(info.Host)
+}
+
+func formatHostLine(host string) string {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return ""
+	}
+	return "Host: " + host + "\n"
 }
 
 func resolveOptionalService(ctx context.Context, manager Manager, value string) (string, error) {

@@ -257,6 +257,83 @@ func TestAgentHandleExplicitNoteDeleteWithoutSlash(t *testing.T) {
 	}
 }
 
+type integrationUserAddSkill struct{}
+
+func (integrationUserAddSkill) Definition() skills.Definition {
+	return skills.Definition{
+		Name:        "user_add",
+		Group:       skills.GroupAccounts,
+		Description: "Add a user.",
+	}
+}
+
+func (integrationUserAddSkill) Execute(context.Context, skills.Input) (skills.Result, error) {
+	return skills.Result{Text: "User added: anya (jitsi)"}, nil
+}
+
+func TestAgentRedactsSensitiveUserAddDataInPersistence(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "agent.db")
+	repo, err := sqlite.New(ctx, dbPath, nil)
+	if err != nil {
+		t.Fatalf("sqlite.New returned error: %v", err)
+	}
+	defer repo.Close()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(integrationUserAddSkill{})
+
+	transport := &fakeTransport{}
+	agent := NewAgent(
+		transport,
+		auth.New([]int64{100}, []int64{200}),
+		router.New(registry, nil),
+		registry,
+		repo,
+		nil,
+		time.Second,
+	)
+
+	if err := agent.HandleMessage(ctx, telegram.IncomingMessage{
+		ChatID: 200,
+		UserID: 100,
+		Text:   "/user_add jitsi anya 123456",
+	}); err != nil {
+		t.Fatalf("HandleMessage returned error: %v", err)
+	}
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open returned error: %v", err)
+	}
+	defer db.Close()
+
+	var storedMessage string
+	if err := db.QueryRowContext(ctx, `SELECT text FROM messages WHERE role = 'user' ORDER BY id DESC LIMIT 1`).Scan(&storedMessage); err != nil {
+		t.Fatalf("load stored message: %v", err)
+	}
+	if strings.Contains(storedMessage, "123456") {
+		t.Fatalf("expected redacted stored message, got %q", storedMessage)
+	}
+	if want := "/user_add jitsi anya [redacted]"; storedMessage != want {
+		t.Fatalf("unexpected stored message: %q", storedMessage)
+	}
+
+	var inputText string
+	var argsJSON string
+	if err := db.QueryRowContext(ctx, `SELECT input_text, args_json FROM skill_calls ORDER BY id DESC LIMIT 1`).Scan(&inputText, &argsJSON); err != nil {
+		t.Fatalf("load stored skill call: %v", err)
+	}
+	if strings.Contains(inputText, "123456") || strings.Contains(argsJSON, "123456") {
+		t.Fatalf("expected redacted skill call data, got input=%q args=%q", inputText, argsJSON)
+	}
+	if !strings.Contains(argsJSON, `"password":"[redacted]"`) {
+		t.Fatalf("expected redacted password in args json, got %q", argsJSON)
+	}
+}
+
 type clarificationClassifier struct{}
 
 func (clarificationClassifier) Classify(context.Context, string) (router.Decision, bool, error) {

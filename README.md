@@ -31,7 +31,7 @@ Best suited for:
 
 | Area | Choice |
 | --- | --- |
-| Interface | Telegram |
+| Interface | Telegram and CLI |
 | Runtime | single Go binary |
 | State | SQLite |
 | Routing | deterministic first, optional two-stage LLM fallback |
@@ -119,6 +119,7 @@ For Raspberry Pi, use [Raspberry Pi Setup](#raspberry-pi-setup).
 - `telegram.bot_token`
 - at least one of `auth.allowed_user_ids` or `auth.allowed_chat_ids`
 - `storage.sqlite_path`
+- `access.hosts.*` when you want to manage services on another host over SSH
 - `files.allowed` for safe file access
 - `services.allowed` for allowed services
 - `workbench.*` only if you want temporary code execution or allowlisted executables
@@ -227,6 +228,7 @@ ssh "$PI_USER@$PI_HOST" "journalctl -u openlight-agent -f"
 | `telegram.*` | transport settings, polling or webhook mode |
 | `auth.*` | user and chat allowlists |
 | `storage.*` | SQLite database location |
+| `access.*` | optional named SSH hosts for remote service management |
 | `files.*` | allowed roots and read/list limits |
 | `services.*` | allowed services plus log line and log size limits |
 | `workbench.*` | optional temporary code execution and allowlisted files |
@@ -250,6 +252,78 @@ Webhook mode requires:
 
 Using `telegram.webhook.secret_token` is recommended for webhook deployments.
 
+### CLI
+
+Alongside Telegram, `openLight` also ships a local CLI binary that drives the same agent runtime through stdin/stdout.
+This is useful on Raspberry Pi when you want quick end-to-end checks without sending Telegram messages.
+The CLI reuses the same YAML config, SQLite state, router, skills, and auth rules; by default it picks the first allowed user/chat id from `auth.*`.
+
+Examples:
+
+```bash
+go run ./cmd/cli -config ./agent.yaml -exec "service jitsi-web"
+go run ./cmd/cli -config ./agent.yaml -exec "user list"
+printf 'ping\nstatus\nservices\n' | go run ./cmd/cli -config ./agent.yaml
+go run ./cmd/cli -config ./agent.yaml -smoke
+go run ./cmd/cli -config ./agent.yaml -smoke -smoke-routing
+go run ./cmd/cli -config ./agent.yaml -smoke-all
+```
+
+Smoke mode prints a table with one row per check.
+By default `-smoke` runs a broad but safe suite and marks disruptive checks like service restarts as `SKIP`.
+Use `-smoke-routing`, `-smoke-chat`, `-smoke-restart`, or `-smoke-all` when you want to include those rows in the actual execution path.
+
+<details>
+<summary>Latest successful <code>-smoke-all</code> run on Raspberry Pi</summary>
+
+This is a real end-to-end run against the current Raspberry Pi config, including remote Jitsi services on the VPS.
+
+```text
+| Check                      | Command                                                                                       | Status | Duration | Summary                                                                                                 |
+|----------------------------|-----------------------------------------------------------------------------------------------|--------|----------|---------------------------------------------------------------------------------------------------------|
+| core.start                 | start                                                                                         | PASS   | 4ms      | openLight is ready. | You can write normally and I will answer through the local LLM when chat mode ... |
+| core.ping                  | ping                                                                                          | PASS   | 4ms      | pong                                                                                                    |
+| core.skills                | skills                                                                                        | PASS   | 4ms      | Available skill groups: | - Chat: 1 skill(s). Use skills chat | - Notes: 3 skill(s). Use skills note... |
+| core.help                  | help ping                                                                                     | PASS   | 4ms      | ping: Quick connectivity check. | Usage: ping | Aliases: healthcheck                                    |
+| system.status              | status                                                                                        | PASS   | 155ms    | Hostname: raspberry | CPU: 0.0% | Memory: 1.1 GiB used / 7.9 GiB total | Disk: 863.4 GiB free / 916.... |
+| system.cpu                 | cpu                                                                                           | PASS   | 158ms    | CPU usage: 0.0%                                                                                         |
+| system.memory              | memory                                                                                        | PASS   | 4ms      | Memory usage: 1.1 GiB used / 7.9 GiB total (6.8 GiB free)                                               |
+| system.disk                | disk                                                                                          | PASS   | 4ms      | Disk usage: 53.0 GiB used / 916.3 GiB total (863.4 GiB free)                                            |
+| system.uptime              | uptime                                                                                        | PASS   | 4ms      | Uptime: 14h 16m 10s                                                                                     |
+| system.hostname            | hostname                                                                                      | PASS   | 4ms      | Hostname: raspberry                                                                                     |
+| system.ip                  | ip                                                                                            | PASS   | 4ms      | IP addresses: 192.168.1.82, 100.67.130.106, 172.17.0.1, 172.18.0.1, 172.19.0.1                          |
+| system.temperature         | temperature                                                                                   | PASS   | 4ms      | Temperature: 51.8C                                                                                      |
+| services.list              | services                                                                                      | PASS   | 4.088s   | Allowed services: | - jitsi-jicofo@vps: active | - jitsi-jvb@vps: active | - jitsi-prosody@vps: acti... |
+| services.status            | service jitsi-jicofo                                                                          | PASS   | 849ms    | Service: jitsi-jicofo | Host: vps | Load: docker | Active: active | Sub: running | Description: dock... |
+| services.logs              | logs jitsi-jicofo                                                                             | PASS   | 816ms    | Logs for jitsi-jicofo: | Jicofo 2026-03-17 13:13:10.273 WARNING: [1] [xmpp_connection=client] XmppPr... |
+| services.restart           | restart jitsi-jicofo                                                                          | PASS   | 7.088s   | Service restarted: jitsi-jicofo                                                                         |
+| notes.add                  | note openlight-smoke-note-smoke-1773753328                                                    | PASS   | 5ms      | Saved note #9                                                                                           |
+| notes.list                 | notes                                                                                         | PASS   | 4ms      | Notes: | - #9 openlight-smoke-note-smoke-1773753328 | - #5 купить кроссовки              |
+| notes.delete               | note_delete 9                                                                                 | PASS   | 5ms      | Deleted note #9                                                                                         |
+| files.list                 | files /tmp/openlight                                                                          | PASS   | 4ms      | Directory is empty: /tmp/openlight                                                                      |
+| files.write                | write /tmp/openlight/openlight-smoke-1773753328369200553.txt :: smoke-alpha                   | PASS   | 4ms      | Created file: /tmp/openlight/openlight-smoke-1773753328369200553.txt (11 bytes)                         |
+| files.read                 | read /tmp/openlight/openlight-smoke-1773753328369200553.txt                                   | PASS   | 4ms      | Contents of /tmp/openlight/openlight-smoke-1773753328369200553.txt: | smoke-alpha                       |
+| files.replace              | replace smoke-alpha with smoke-beta in /tmp/openlight/openlight-smoke-1773753328369200553.txt | PASS   | 4ms      | Replaced 1 occurrence(s) in /tmp/openlight/openlight-smoke-1773753328369200553.txt                      |
+| files.read_after_replace   | read /tmp/openlight/openlight-smoke-1773753328369200553.txt                                   | PASS   | 4ms      | Contents of /tmp/openlight/openlight-smoke-1773753328369200553.txt: | smoke-beta                        |
+| workbench.exec_code        | exec_code sh :: printf 'smoke-workbench-ok\n'                                                 | PASS   | 5ms      | Temporary code: /tmp/openlight/run-3385100359.sh | Runtime: sh | Output: | smoke-workbench-ok           |
+| workbench.exec_file        | run /usr/bin/uptime                                                                           | PASS   | 5ms      | Allowed file: /usr/bin/uptime | Runtime: file | Output: |  13:15:41 up 14:16,  4 users,  load averag... |
+| workbench.clean            | workspace_clean                                                                               | PASS   | 4ms      | Workspace cleaned: /tmp/openlight (2 item(s) removed)                                                   |
+| accounts.providers         | users                                                                                         | PASS   | 4ms      | Configured account providers: | - jitsi: add, delete, list via jitsi-prosody                            |
+| accounts.add               | user add jitsi smoke_1773753328 smoke-pass-53328                                              | PASS   | 1.109s   | User added: smoke_1773753328 (jitsi)                                                                    |
+| accounts.list              | user list jitsi smoke_1773753328                                                              | PASS   | 1.055s   | Users (jitsi): | smoke_1773753328@meet.jitsi | OK: Showing 1 of 3 users                                 |
+| accounts.delete            | user delete jitsi smoke_1773753328                                                            | PASS   | 1.161s   | User deleted: smoke_1773753328 (jitsi)                                                                  |
+| accounts.list_after_delete | user list jitsi smoke_1773753328                                                              | PASS   | 977ms    | Users (jitsi): | OK: Showing 0 of 2 users                                                               |
+| llm.route_status           | Could you give me a quick health snapshot of this host?                                       | PASS   | 3.249s   | mode=llm | skill=status | confidence=0.95                                                               |
+| llm.route_service_status   | I need to know if service called jitsi-jicofo is up.                                          | PASS   | 3.675s   | mode=llm | skill=service_status | confidence=0.95 | args=service=jitsi-jicofo                           |
+| chat.chat                  | chat reply with exactly SMOKE_CHAT_OK                                                         | PASS   | 861ms    | SMOKE_CHAT_OK                                                                                           |
+
+Result: PASS | pass=35 fail=0 skip=0 | total=25.343s
+Totals: 35/35 completed without failure
+```
+
+Be careful with `-smoke-all`: it can restart a real allowed service and create temporary real resources before cleaning them up.
+</details>
+
 ### LLM
 
 LLM support is optional.
@@ -270,6 +344,20 @@ Notes:
 - route-stage confidence is the execution gate; skill classification focuses on choosing a concrete skill, extracting arguments, and requesting clarification when needed
 - `OPENAI_API_KEY` overrides `llm.api_key`
 
+### Remote Hosts
+
+`openLight` can manage services on another Linux host over SSH.
+Define a named host in `access.hosts`, then point a service entry at it with `host:<alias>:...`.
+
+Examples:
+
+- `jitsi-web=host:vps:compose:/opt/jitsi/docker-compose.yml:web`
+- `jitsi-jvb=host:vps:systemd:jitsi-videobridge2`
+
+Host auth supports SSH passwords or private keys.
+For secrets, prefer `password_env` or `private_key_passphrase_env` over committing raw values.
+For host verification, either set `known_hosts_path` or explicitly opt into `insecure_ignore_host_key: true` for a short-lived test setup.
+
 ### Safety Boundaries
 
 The config defines the agent's safety envelope:
@@ -277,7 +365,9 @@ The config defines the agent's safety envelope:
 | Setting | Effect |
 | --- | --- |
 | `files.allowed` | limits file read/write access to explicit roots |
-| `services.allowed` | limits service inspection and restart to explicit systemd units or named Docker Compose services |
+| `access.hosts` | limits remote access to explicit SSH hosts only |
+| `services.allowed` | limits service inspection and restart to explicit local or remote systemd units and Docker Compose services |
+| `accounts.providers` | limits account mutations to explicit providers backed by already-allowed services |
 | `workbench.enabled` | controls whether temporary code execution is available at all |
 | `workbench.allowed_runtimes` | limits `exec_code` runtimes |
 | `workbench.allowed_files` | limits `exec_file` to exact paths |
@@ -290,6 +380,7 @@ The config defines the agent's safety envelope:
 | `system` | always | `status`, `cpu`, `memory`, `disk`, `uptime`, `hostname`, `ip`, `temperature` |
 | `files` | always | `file_list`, `file_read`, `file_write`, `file_replace` |
 | `services` | always | `service_list`, `service_status`, `service_logs`, `service_restart` |
+| `accounts` | when `accounts.providers` is non-empty | `user_providers`, `user_add`, `user_delete` |
 | `notes` | always | `note_add`, `note_list`, `note_delete` |
 | `workbench` | when `workbench.enabled: true` | `exec_code`, `exec_file`, `workspace_clean` |
 | `chat` | when `llm.enabled: true` | `chat` |
@@ -327,7 +418,57 @@ Configure `workbench.enabled: true` first.
 Configure `services.allowed` first.
 Plain entries such as `tailscale` target `systemd` units.
 Docker Compose services use `name=compose:/absolute/path/to/docker-compose.yml` or `name=compose:/absolute/path/to/docker-compose.yml:service`.
+Direct Docker containers use `name=docker:<container-name>`.
+Remote services use `name=host:<alias>:systemd:<unit>` or `name=host:<alias>:compose:/absolute/path/to/docker-compose.yml:service`.
+Remote Docker containers use `name=host:<alias>:docker:<container-name>`.
+`openLight` prefers `docker compose` and falls back to legacy `docker-compose` when the host still uses the older binary.
 `services.log_lines` limits how many recent log lines are fetched, and `services.max_log_chars` caps how much log text is sent back in one reply.
+
+Jitsi on a VPS can look like:
+
+```yaml
+access:
+  hosts:
+    vps:
+      address: "203.0.113.10:22"
+      user: "root"
+      password_env: "OPENLIGHT_VPS_PASSWORD"
+      known_hosts_path: "/home/pi/.ssh/known_hosts"
+
+services:
+  allowed:
+    - "jitsi-web=host:vps:docker:docker-jitsi-meet_web_1"
+    - "jitsi-jvb=host:vps:docker:docker-jitsi-meet_jvb_1"
+
+accounts:
+  providers:
+    jitsi:
+      service: "jitsi-prosody"
+      add_command:
+        - prosodyctl
+        - --config
+        - /config/prosody.cfg.lua
+        - register
+        - "{username}"
+        - meet.jitsi
+        - "{password}"
+      delete_command:
+        - prosodyctl
+        - --config
+        - /config/prosody.cfg.lua
+        - unregister
+        - "{username}"
+        - meet.jitsi
+      list_command:
+        - prosodyctl
+        - --config
+        - /config/prosody.cfg.lua
+        - shell
+        - user
+        - list
+        - meet.jitsi
+        - "{pattern}"
+```
 
 | Skill | What it does | Command shape | Example |
 | --- | --- | --- | --- |
@@ -335,6 +476,23 @@ Docker Compose services use `name=compose:/absolute/path/to/docker-compose.yml` 
 | `service_status` | show one service status | `service [name]` | `service tailscale` |
 | `service_logs` | show recent service logs | `logs [name]` | `logs tailscale` |
 | `service_restart` | restart one allowed service | `restart <name>` | `restart tailscale` |
+
+</details>
+
+<details>
+<summary><strong>Accounts</strong> — create and delete application users through explicit providers</summary>
+
+Configure `accounts.providers` first.
+Each provider points at one already-allowed service and renders a command template with placeholders such as `{username}`, `{password}`, and `{pattern}`.
+For Jitsi Prosody inside Docker, the provider can target the `jitsi-prosody` container service and call `prosodyctl register`, `prosodyctl unregister`, or `prosodyctl shell user list`.
+Passwords from `user_add` are redacted from stored chat history, skill-call records, and debug logs.
+
+| Skill | What it does | Command shape | Example |
+| --- | --- | --- | --- |
+| `user_providers` | list configured providers and allowed operations | `users` | `users` |
+| `user_list` | list users through a provider | `user_list [provider] [pattern]` | `user_list jitsi anya` |
+| `user_add` | create one user through a provider | `user_add [provider] <username> <password>` | `user_add jitsi anya 123456` |
+| `user_delete` | delete one user through a provider | `user_delete [provider] <username>` | `user_delete jitsi anya` |
 
 </details>
 
@@ -398,6 +556,8 @@ Local development:
 ```bash
 go test ./...
 go run ./cmd/agent -config ./agent.yaml
+go run ./cmd/cli -config ./agent.yaml -exec "ping"
+go run ./cmd/cli -config ./agent.yaml -smoke
 ```
 
 Optional Ollama smoke test on the current machine:
@@ -413,6 +573,7 @@ Cross-compile for Raspberry Pi:
 
 ```bash
 make build-rpi
+make build-rpi-cli
 ```
 
 `make build` and `make build-rpi` target `linux/arm64` by default.
@@ -426,19 +587,36 @@ Deploy helpers:
 - [scripts/deploy-rpi-config.sh](./scripts/deploy-rpi-config.sh)
 - [scripts/deploy-rpi-service.sh](./scripts/deploy-rpi-service.sh)
 
+CLI on Raspberry Pi:
+
+```bash
+make deploy-rpi-cli
+make deploy-rpi-full
+ssh <pi-user>@<pi-host> '/home/<pi-user>/openlight-cli -config /etc/openlight/agent.yaml -exec "service jitsi-web"'
+ssh <pi-user>@<pi-host> 'printf "ping\nstatus\n" | /home/<pi-user>/openlight-cli -config /etc/openlight/agent.yaml'
+make smoke-rpi-cli
+make smoke-rpi-cli SMOKE_FLAGS="-smoke -smoke-routing"
+make smoke-rpi-cli SMOKE_FLAGS="-smoke-all"
+make deploy-and-smoke-rpi
+make deploy-and-smoke-rpi SMOKE_FLAGS="-smoke -smoke-routing"
+make deploy-and-smoke-rpi SMOKE_FLAGS="-smoke-all"
+```
+
 For the end-to-end Raspberry Pi install flow, use [Raspberry Pi Setup](#raspberry-pi-setup) above.
 
 Deploy layout on the Pi:
 
 - config on Pi: `/etc/openlight/agent.yaml`
 - binary on Pi: `/home/<user>/openlight-agent`
+- cli binary on Pi: `/home/<user>/openlight-cli`
 - systemd unit: `/etc/systemd/system/openlight-agent.service`
 
 ## Security Model
 
 - Telegram access is limited by user and chat allowlists
 - file access is limited to explicitly whitelisted roots
-- service actions are limited to explicitly allowed systemd units or named Docker Compose services
+- remote access is limited to explicitly named SSH hosts in `access.hosts`
+- service actions are limited to explicitly allowed local or remote systemd units, Docker Compose services, or direct Docker containers
 - workbench execution is limited to one workspace, allowed runtimes, and exact allowed files
 - the LLM cannot bypass validation or create arbitrary shell access
 

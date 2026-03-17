@@ -250,6 +250,75 @@ func TestRouterExplicitNoteDeleteCommand(t *testing.T) {
 	}
 }
 
+func TestRouterExplicitUserAddCommand(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "user_add"})
+
+	decision, err := router.New(registry, nil).Route(context.Background(), "user_add jitsi anya 123456")
+	if err != nil {
+		t.Fatalf("route returned error: %v", err)
+	}
+	if decision.Mode != router.ModeExplicit || decision.SkillName != "user_add" {
+		t.Fatalf("unexpected decision: %#v", decision)
+	}
+	if decision.Args["provider"] != "jitsi" || decision.Args["username"] != "anya" || decision.Args["password"] != "123456" {
+		t.Fatalf("unexpected user add args: %#v", decision.Args)
+	}
+}
+
+func TestRouterExplicitUserDeleteCommandWithImplicitProvider(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "user_delete"})
+
+	decision, err := router.New(registry, nil).Route(context.Background(), "user delete anya")
+	if err != nil {
+		t.Fatalf("route returned error: %v", err)
+	}
+	if decision.Mode != router.ModeExplicit || decision.SkillName != "user_delete" {
+		t.Fatalf("unexpected decision: %#v", decision)
+	}
+	if decision.Args["provider"] != "" || decision.Args["username"] != "anya" {
+		t.Fatalf("unexpected user delete args: %#v", decision.Args)
+	}
+}
+
+func TestRouterUsersCommand(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "user_providers"})
+
+	decision, err := router.New(registry, nil).Route(context.Background(), "/users")
+	if err != nil {
+		t.Fatalf("route returned error: %v", err)
+	}
+	if decision.Mode != router.ModeSlash || decision.SkillName != "user_providers" {
+		t.Fatalf("unexpected decision: %#v", decision)
+	}
+}
+
+func TestRouterExplicitUserListCommand(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "user_list"})
+
+	decision, err := router.New(registry, nil).Route(context.Background(), "user list jitsi anya")
+	if err != nil {
+		t.Fatalf("route returned error: %v", err)
+	}
+	if decision.Mode != router.ModeExplicit || decision.SkillName != "user_list" {
+		t.Fatalf("unexpected decision: %#v", decision)
+	}
+	if decision.Args["provider"] != "jitsi" || decision.Args["pattern"] != "anya" {
+		t.Fatalf("unexpected user list args: %#v", decision.Args)
+	}
+}
+
 func TestRouterExplicitFileReadCommand(t *testing.T) {
 	t.Parallel()
 

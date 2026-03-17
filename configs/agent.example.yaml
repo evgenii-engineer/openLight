@@ -21,6 +21,16 @@ auth:
 storage:
   sqlite_path: "./data/agent.db"
 
+access:
+  hosts:
+    # Named SSH hosts can be reused by remote service entries.
+    # vps:
+    #   address: "203.0.113.10:22"
+    #   user: "root"
+    #   password_env: "OPENLIGHT_VPS_PASSWORD"
+    #   known_hosts_path: "/home/pi/.ssh/known_hosts"
+    #   sudo: false
+
 files:
   allowed:
     - /tmp/openlight
@@ -45,8 +55,44 @@ services:
     - jellyfin
     # Compose-backed services are also supported:
     # - "synapse=compose:/home/pi/matrix/docker-compose.yml"
+    # Direct Docker containers are also supported:
+    # - "jitsi-web=docker:docker-jitsi-meet_web_1"
+    # Remote services can target a named host from access.hosts:
+    # - "jitsi-web=host:vps:compose:/opt/jitsi/docker-compose.yml:web"
+    # - "jitsi-web=host:vps:docker:docker-jitsi-meet_web_1"
+    # - "jitsi-jvb=host:vps:systemd:jitsi-videobridge2"
   log_lines: 100
   max_log_chars: 3000
+
+accounts:
+  providers:
+    # Account providers run explicit commands inside an already-allowed service.
+    # jitsi:
+    #   service: "jitsi-prosody"
+    #   add_command:
+    #     - prosodyctl
+    #     - --config
+    #     - /config/prosody.cfg.lua
+    #     - register
+    #     - "{username}"
+    #     - meet.jitsi
+    #     - "{password}"
+    #   delete_command:
+    #     - prosodyctl
+    #     - --config
+    #     - /config/prosody.cfg.lua
+    #     - unregister
+    #     - "{username}"
+    #     - meet.jitsi
+    #   list_command:
+    #     - prosodyctl
+    #     - --config
+    #     - /config/prosody.cfg.lua
+    #     - shell
+    #     - user
+    #     - list
+    #     - meet.jitsi
+    #     - "{pattern}"
 
 llm:
   enabled: false
