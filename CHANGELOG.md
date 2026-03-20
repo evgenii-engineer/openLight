@@ -2,6 +2,14 @@
 
 This file tracks released tags and summarizes what each release added or changed.
 
+## Unreleased
+
+### What changed
+
+- Added `scripts/install.sh`, a one-command Docker installer that resolves the latest tagged release assets by default and supports pinning through `OPENLIGHT_REF`.
+- Reworked the README into a more aggressive landing page with a stronger quick start, earlier safety positioning, a clearer default path, and a tighter Telegram-plus-local-LLM focus.
+- Added a lightweight Telegram proof asset for the README and a release-notes draft for `v0.0.3`.
+
 ## v0.0.3 - 2026-03-20
 
 Compared with `v0.0.2`, this release turns `openLight` into a container-distributed and more operations-oriented agent, while keeping the Raspberry Pi path intact.
