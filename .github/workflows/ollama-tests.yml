@@ -1,0 +1,48 @@
+name: ollama-tests
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ollama-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      OLLAMA_COMPOSE_FILE: deployments/docker/ollama-compose.yaml
+      OLLAMA_MODEL: qwen2.5:0.5b
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Start Ollama
+        run: make ollama-up
+
+      - name: Pull default Ollama model
+        run: make ollama-pull
+
+      - name: Run unit tests
+        run: make test
+
+      - name: Run Ollama E2E tests
+        run: make test-e2e-ollama
+
+      - name: Show Ollama logs on failure
+        if: failure()
+        run: docker compose -f "$OLLAMA_COMPOSE_FILE" logs --no-color
+
+      - name: Tear down Ollama stack
+        if: always()
+        run: docker compose -f "$OLLAMA_COMPOSE_FILE" down -v

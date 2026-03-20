@@ -2,8 +2,10 @@
 
 ## Unreleased
 
+- Added a lightweight `ci` GitHub Actions workflow for `push` and `pull_request`, covering `go test ./...` and a Docker build smoke check for PR status checks.
 - Added a first-class container image: a multi-stage `Dockerfile`, a Compose example, and `make docker-*` targets for local builds and registry pushes.
-- Added GitHub Actions publishing to GHCR for `linux/amd64` and `linux/arm64` on `master`, tags, and manual dispatch.
+- Added GitHub Actions publishing to GHCR for `linux/amd64` and `linux/arm64` on release tags and manual dispatch.
+- Added a dedicated GitHub Actions workflow that starts the bundled Ollama stack and runs the real Ollama end-to-end test path on release tags or manual dispatch.
 - Added automatic container-friendly config discovery via `OPENLIGHT_CONFIG` and `/etc/openlight/agent.yaml`.
 - Added an embedded minimal container config so the Docker image can start from env vars plus a data volume without requiring a mounted YAML file.
 - Switched the bundled Docker Compose quick start to local Ollama by default, including automatic startup of `ollama` and a first-run model pull.

@@ -3,12 +3,15 @@
 ![Go](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-green)
 ![Target](https://img.shields.io/badge/Target-Raspberry%20Pi-red)
+[![CI](https://github.com/evgenii-engineer/openLight/actions/workflows/ci.yml/badge.svg)](https://github.com/evgenii-engineer/openLight/actions/workflows/ci.yml)
+[![Docker Publish](https://github.com/evgenii-engineer/openLight/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/evgenii-engineer/openLight/actions/workflows/docker-publish.yml)
+[![Ollama Tests](https://github.com/evgenii-engineer/openLight/actions/workflows/ollama-tests.yml/badge.svg)](https://github.com/evgenii-engineer/openLight/actions/workflows/ollama-tests.yml)
 
 Tiny AI control plane for your personal infrastructure.
 
 `openLight` keeps host access explicit and auditable, stores state in SQLite, and uses an optional LLM fallback for broader natural-language routing and chat. It is not a general-purpose shell agent.
 
-[Architecture](./ARCHITECTURE.md) · [Changelog](./CHANGELOG.md) · [Pi 5 Latency](#raspberry-pi-5-latency-snapshot) · [Install on Raspberry Pi](#raspberry-pi-setup) · [Configs](./configs/) · [Systemd Unit](./deployments/systemd/openlight-agent.service)
+[Architecture](./ARCHITECTURE.md) · [Changelog](./CHANGELOG.md) · [Quick Docker Install](#quick-docker-install) · [Pi 5 Latency](#raspberry-pi-5-latency-snapshot) · [Install on Raspberry Pi](#raspberry-pi-setup) · [Configs](./configs/) · [Systemd Unit](./deployments/systemd/openlight-agent.service)
 
 ## Why
 
@@ -150,6 +153,16 @@ Prebuilt multi-arch images are published to `ghcr.io/evgenii-engineer/openlight`
 The image already includes a minimal `/etc/openlight/agent.yaml`, so the baseline container can boot from env vars plus a data volume without mounting a custom config file.
 The recommended quick start uses the bundled Compose stack, which starts `openlight` together with a local Ollama instance and pulls `qwen2.5:0.5b` on first boot.
 
+### Quick Docker Install
+
+Copy-paste one line:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/evgenii-engineer/openLight/master/deployments/docker/openlight-compose.yaml -o openlight-compose.yaml && TELEGRAM_BOT_TOKEN=123456:replace-me ALLOWED_USER_IDS=111111111 docker compose -f openlight-compose.yaml up -d
+```
+
+This downloads the bundled Compose file, pulls `ghcr.io/evgenii-engineer/openlight:latest` and `ollama/ollama:latest`, then starts the stack in the background.
+
 ```bash
 export TELEGRAM_BOT_TOKEN=123456:replace-me
 export ALLOWED_USER_IDS=111111111
@@ -183,7 +196,7 @@ Set `LLM_ENABLED=false` when you want deterministic-only mode, or override `LLM_
 
 A bundled stack is provided in [deployments/docker/openlight-compose.yaml](./deployments/docker/openlight-compose.yaml).
 Maintainers can build locally with `make docker-build DOCKER_TAG=dev` and publish multi-arch images with `make docker-push DOCKER_TAG=v0.0.3`.
-Pushes to `master` and tags matching `v*` also publish automatically to GHCR through GitHub Actions.
+Pushes of tags matching `v*` and manual workflow runs publish automatically to GHCR through GitHub Actions.
 On the first GHCR publish, GitHub creates the package with private visibility by default, so switch it to public once in the package settings if you want anonymous `docker pull`.
 
 Container caveats:
