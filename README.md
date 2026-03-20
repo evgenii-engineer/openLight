@@ -27,6 +27,7 @@ Runs in about 1-2 minutes.
 - Local Ollama-backed assistant in the default setup
 - SQLite-backed notes and message history
 - Allowlisted status, logs, and restart for services
+- Background watch rules that can alert, ask with Telegram buttons, or auto-react in Telegram
 - Self-hosted runtime you can inspect and extend
 
 ## Safety At A Glance
@@ -82,6 +83,7 @@ docker compose -f openlight-compose.yaml up -d
 
 - Inspect the host with `status`, `cpu`, `memory`, `disk`, `uptime`, `hostname`, `ip`, and `temperature`
 - List, inspect, tail logs, and restart allowlisted local services
+- Watch allowlisted services and local metrics, then notify, ask with inline buttons, or auto-restart through Telegram
 - Target remote services over named SSH hosts
 - Read, write, and replace text inside allowlisted file roots
 - Store short notes in SQLite
@@ -89,6 +91,17 @@ docker compose -f openlight-compose.yaml up -d
 - Optionally use OpenAI or a generic HTTP LLM backend instead of local Ollama
 
 Common English and Russian variants are normalized even when `llm.enabled: false`.
+
+## Watch Examples
+
+```text
+/watch add service tailscale ask for 30s cooldown 10m
+/watch add cpu > 90% for 5m cooldown 15m
+/watch list
+/watch history
+```
+
+Service watches can `notify`, `ask`, or `auto`. Metric watches are `notify`-only in the current MVP.
 
 ## More
 

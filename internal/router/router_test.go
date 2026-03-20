@@ -196,6 +196,42 @@ func TestRouterSkillsCommandAcceptsTopic(t *testing.T) {
 	}
 }
 
+func TestRouterWatchAddCommand(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "watch_add"})
+
+	decision, err := router.New(registry, nil).Route(context.Background(), "/watch add service nginx ask for 30s")
+	if err != nil {
+		t.Fatalf("route returned error: %v", err)
+	}
+	if decision.Mode != router.ModeSlash || decision.SkillName != "watch_add" {
+		t.Fatalf("unexpected decision: %#v", decision)
+	}
+	if got := decision.Args["spec"]; got != "service nginx ask for 30s" {
+		t.Fatalf("unexpected watch spec: %#v", decision.Args)
+	}
+}
+
+func TestRouterWatchHistoryCommand(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "watch_history"})
+
+	decision, err := router.New(registry, nil).Route(context.Background(), "watch history 12")
+	if err != nil {
+		t.Fatalf("route returned error: %v", err)
+	}
+	if decision.Mode != router.ModeExplicit || decision.SkillName != "watch_history" {
+		t.Fatalf("unexpected decision: %#v", decision)
+	}
+	if got := decision.Args["id"]; got != "12" {
+		t.Fatalf("unexpected watch history args: %#v", decision.Args)
+	}
+}
+
 func TestRouterRuleBasedRussianNoteAddParsing(t *testing.T) {
 	t.Parallel()
 

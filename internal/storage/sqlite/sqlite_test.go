@@ -4,8 +4,10 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"openlight/internal/models"
+	"openlight/internal/storage"
 )
 
 func TestRepositoryCRUD(t *testing.T) {
@@ -74,5 +76,60 @@ func TestRepositoryCRUD(t *testing.T) {
 	}
 	if !ok || setting.Value != "42" {
 		t.Fatalf("unexpected setting: ok=%v setting=%#v", ok, setting)
+	}
+
+	watch, err := repo.CreateWatch(ctx, models.Watch{
+		TelegramUserID: 1,
+		TelegramChatID: 2,
+		Name:           "service/nginx down",
+		Kind:           models.WatchKindServiceDown,
+		Target:         "nginx",
+		Duration:       time.Minute,
+		ReactionMode:   models.WatchReactionAsk,
+		ActionType:     models.WatchActionServiceRestart,
+		Cooldown:       10 * time.Minute,
+		Enabled:        true,
+		IncidentState:  models.WatchIncidentStateClear,
+	})
+	if err != nil {
+		t.Fatalf("CreateWatch returned error: %v", err)
+	}
+
+	watches, err := repo.ListWatches(ctx, storage.WatchListOptions{ChatID: 2})
+	if err != nil {
+		t.Fatalf("ListWatches returned error: %v", err)
+	}
+	if len(watches) != 1 || watches[0].ID != watch.ID {
+		t.Fatalf("unexpected watches: %#v", watches)
+	}
+
+	incident, err := repo.CreateWatchIncident(ctx, models.WatchIncident{
+		WatchID:         watch.ID,
+		TelegramChatID:  2,
+		Summary:         "nginx is down",
+		Status:          models.WatchIncidentStatusOpen,
+		ReactionMode:    models.WatchReactionAsk,
+		ActionType:      models.WatchActionServiceRestart,
+		ActionStatus:    models.WatchActionStatusPending,
+		ActionExpiresAt: time.Now().UTC().Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("CreateWatchIncident returned error: %v", err)
+	}
+
+	openIncident, ok, err := repo.GetOpenWatchIncident(ctx, watch.ID)
+	if err != nil {
+		t.Fatalf("GetOpenWatchIncident returned error: %v", err)
+	}
+	if !ok || openIncident.ID != incident.ID {
+		t.Fatalf("unexpected open incident: ok=%v incident=%#v", ok, openIncident)
+	}
+
+	pending, err := repo.ListPendingWatchIncidents(ctx, 2, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("ListPendingWatchIncidents returned error: %v", err)
+	}
+	if len(pending) != 1 || pending[0].ID != incident.ID {
+		t.Fatalf("unexpected pending incidents: %#v", pending)
 	}
 }

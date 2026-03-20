@@ -24,6 +24,7 @@ type Config struct {
 	Files     FilesConfig     `yaml:"files"`
 	Workbench WorkbenchConfig `yaml:"workbench"`
 	Services  ServicesConfig  `yaml:"services"`
+	Watch     WatchConfig     `yaml:"watch"`
 	LLM       LLMConfig       `yaml:"llm"`
 	Chat      ChatConfig      `yaml:"chat"`
 	Notes     NotesConfig     `yaml:"notes"`
@@ -105,6 +106,12 @@ type ServicesConfig struct {
 	MaxLogChars int      `yaml:"max_log_chars"`
 }
 
+type WatchConfig struct {
+	Enabled      bool          `yaml:"enabled"`
+	PollInterval time.Duration `yaml:"poll_interval"`
+	AskTTL       time.Duration `yaml:"ask_ttl"`
+}
+
 type LLMConfig struct {
 	Enabled            bool    `yaml:"enabled"`
 	Provider           string  `yaml:"provider"`
@@ -181,6 +188,11 @@ func defaultConfig() Config {
 			LogLines:    100,
 			MaxLogChars: 3000,
 		},
+		Watch: WatchConfig{
+			Enabled:      true,
+			PollInterval: 15 * time.Second,
+			AskTTL:       10 * time.Minute,
+		},
 		LLM: LLMConfig{
 			Provider:           "generic",
 			ExecuteThreshold:   0.80,
@@ -247,6 +259,10 @@ func (c Config) Validate() error {
 		return errors.New("services.log_lines must be greater than zero")
 	case c.Services.MaxLogChars <= 0:
 		return errors.New("services.max_log_chars must be greater than zero")
+	case c.Watch.PollInterval <= 0:
+		return errors.New("watch.poll_interval must be greater than zero")
+	case c.Watch.AskTTL <= 0:
+		return errors.New("watch.ask_ttl must be greater than zero")
 	case c.Notes.ListLimit <= 0:
 		return errors.New("notes.list_limit must be greater than zero")
 	case c.Chat.HistoryLimit <= 0:
@@ -396,6 +412,15 @@ func overrideFromEnv(cfg *Config) {
 	if value := strings.TrimSpace(os.Getenv("SERVICE_MAX_LOG_CHARS")); value != "" {
 		cfg.Services.MaxLogChars = parseInt(value, cfg.Services.MaxLogChars)
 	}
+	if value := strings.TrimSpace(os.Getenv("WATCH_ENABLED")); value != "" {
+		cfg.Watch.Enabled = parseBool(value)
+	}
+	if value := strings.TrimSpace(os.Getenv("WATCH_POLL_INTERVAL")); value != "" {
+		cfg.Watch.PollInterval = parseDuration(value, cfg.Watch.PollInterval)
+	}
+	if value := strings.TrimSpace(os.Getenv("WATCH_ASK_TTL")); value != "" {
+		cfg.Watch.AskTTL = parseDuration(value, cfg.Watch.AskTTL)
+	}
 	if value := strings.TrimSpace(os.Getenv("FILE_MAX_READ_BYTES")); value != "" {
 		cfg.Files.MaxReadBytes = parseInt(value, cfg.Files.MaxReadBytes)
 	}
@@ -444,6 +469,12 @@ func normalize(cfg *Config) {
 	cfg.Workbench.AllowedRuntimes = normalizeStrings(cfg.Workbench.AllowedRuntimes)
 	cfg.Workbench.AllowedFiles = normalizePaths(cfg.Workbench.AllowedFiles)
 	cfg.Services.Allowed = normalizeServiceSpecs(cfg.Services.Allowed)
+	if cfg.Watch.PollInterval <= 0 {
+		cfg.Watch.PollInterval = 15 * time.Second
+	}
+	if cfg.Watch.AskTTL <= 0 {
+		cfg.Watch.AskTTL = 10 * time.Minute
+	}
 
 	cfg.LLM.Provider = strings.ToLower(strings.TrimSpace(cfg.LLM.Provider))
 	if cfg.LLM.Provider == "" {

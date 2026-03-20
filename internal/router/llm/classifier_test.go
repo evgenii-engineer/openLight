@@ -83,6 +83,40 @@ func TestClassifierRoutesHighConfidenceIntent(t *testing.T) {
 	}
 }
 
+func TestClassifierRoutesWatchAddWithSpec(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "watch_add", group: skills.GroupWatch, mutating: true})
+
+	classifier := NewClassifier(&stubProvider{
+		routeClassification: basellm.RouteClassification{
+			Intent:     "watch",
+			Confidence: 0.94,
+		},
+		skillClassification: basellm.Classification{
+			Skill: "watch_add",
+			Arguments: map[string]string{
+				"spec": "service synapse ask for 30s cooldown 10m",
+			},
+		},
+	}, registry, Options{}, nil)
+
+	decision, ok, err := classifier.Classify(context.Background(), "следи за synapse и если он упадет предложи рестарт")
+	if err != nil {
+		t.Fatalf("Classify returned error: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected watch_add decision")
+	}
+	if decision.Mode != router.ModeLLM || decision.SkillName != "watch_add" {
+		t.Fatalf("unexpected decision: %#v", decision)
+	}
+	if decision.Args["spec"] != "service synapse ask for 30s cooldown 10m" {
+		t.Fatalf("unexpected args: %#v", decision.Args)
+	}
+}
+
 func TestClassifierAsksForClarificationWhenRequiredArgsAreMissing(t *testing.T) {
 	t.Parallel()
 
@@ -200,6 +234,44 @@ func TestClassifierDefaultsSingleAllowedService(t *testing.T) {
 	}
 	if !slices.Equal(provider.skillRequest.AllowedServices, []string{"tailscale"}) {
 		t.Fatalf("expected allowed services for services group, got %#v", provider.skillRequest.AllowedServices)
+	}
+}
+
+func TestClassifierPassesAllowedServicesToWatchGroup(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "watch_add", group: skills.GroupWatch, mutating: true})
+
+	provider := &stubProvider{
+		routeClassification: basellm.RouteClassification{
+			Intent:     "watch",
+			Confidence: 0.93,
+		},
+		skillClassification: basellm.Classification{
+			Skill: "watch_add",
+			Arguments: map[string]string{
+				"spec": "service tailscale ask for 30s cooldown 10m",
+			},
+		},
+	}
+
+	classifier := NewClassifier(provider, registry, Options{
+		AllowedServices: []string{"tailscale", "synapse"},
+	}, nil)
+
+	decision, ok, err := classifier.Classify(context.Background(), "следи за tailscale и если он упадет предложи рестарт")
+	if err != nil {
+		t.Fatalf("Classify returned error: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected watch_add decision")
+	}
+	if decision.SkillName != "watch_add" {
+		t.Fatalf("unexpected decision: %#v", decision)
+	}
+	if !slices.Equal(provider.skillRequest.AllowedServices, []string{"tailscale", "synapse"}) {
+		t.Fatalf("expected allowed services for watch group, got %#v", provider.skillRequest.AllowedServices)
 	}
 }
 

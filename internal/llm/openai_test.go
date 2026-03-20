@@ -135,7 +135,7 @@ func TestOpenAIProviderClassifySkill(t *testing.T) {
 				t.Fatalf("unexpected parameters schema: %#v", firstTool["parameters"])
 			}
 			required, ok := parameters["required"].([]any)
-			if !ok || len(required) != 9 {
+			if !ok || len(required) != 10 {
 				t.Fatalf("unexpected required list: %#v", parameters["required"])
 			}
 			properties, ok := parameters["properties"].(map[string]any)
@@ -153,6 +153,14 @@ func TestOpenAIProviderClassifySkill(t *testing.T) {
 			serviceEnum, ok := serviceProperty["enum"].([]any)
 			if !ok || len(serviceEnum) != 2 || serviceEnum[0] != "tailscale" || serviceEnum[1] != nil {
 				t.Fatalf("unexpected service enum: %#v", serviceProperty["enum"])
+			}
+			specProperty, ok := properties["spec"].(map[string]any)
+			if !ok {
+				t.Fatalf("unexpected spec property: %#v", properties["spec"])
+			}
+			specType, ok := specProperty["type"].([]any)
+			if !ok || len(specType) != 2 || specType[0] != "string" || specType[1] != "null" {
+				t.Fatalf("unexpected spec type: %#v", specProperty["type"])
 			}
 
 			lastTool, ok := tools[2].(map[string]any)

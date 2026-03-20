@@ -9,6 +9,7 @@ This file tracks released tags and summarizes what each release added or changed
 - Added `scripts/install.sh`, a one-command Docker installer that resolves the latest tagged release assets by default and supports pinning through `OPENLIGHT_REF`.
 - Reworked the README into a more aggressive landing page with a stronger quick start, earlier safety positioning, a clearer default path, and a tighter Telegram-plus-local-LLM focus.
 - Added a lightweight Telegram proof asset for the README and a release-notes draft for `v0.0.3`.
+- Added a new `watch` subsystem with SQLite-backed watch rules and incidents, background polling, `/watch add|list|pause|remove|history|test` commands, Telegram inline-button approvals for `ask` mode, and Telegram-first notify/ask/auto restart flows for allowlisted services plus local CPU, memory, disk, and temperature alerts.
 
 ## v0.0.3 - 2026-03-20
 

@@ -19,6 +19,7 @@ import (
 	"openlight/internal/storage"
 	"openlight/internal/telegram"
 	"openlight/internal/utils"
+	watchengine "openlight/internal/watch"
 )
 
 type Transport interface {
@@ -32,6 +33,7 @@ type Agent struct {
 	router         *router.Router
 	registry       *skills.Registry
 	repository     storage.Repository
+	watchService   *watchengine.Service
 	logger         *slog.Logger
 	requestTimeout time.Duration
 }
@@ -50,6 +52,7 @@ func NewAgent(
 	router *router.Router,
 	registry *skills.Registry,
 	repository storage.Repository,
+	watchService *watchengine.Service,
 	logger *slog.Logger,
 	requestTimeout time.Duration,
 ) *Agent {
@@ -59,6 +62,7 @@ func NewAgent(
 		router:         router,
 		registry:       registry,
 		repository:     repository,
+		watchService:   watchService,
 		logger:         logger,
 		requestTimeout: requestTimeout,
 	}
@@ -85,6 +89,17 @@ func (a *Agent) HandleMessage(ctx context.Context, message telegram.IncomingMess
 	if err := a.authorizer.Error(message.UserID, message.ChatID); err != nil {
 		a.logWarn("blocked unauthorized message", "error", err)
 		return a.reply(ctx, message.ChatID, message.UserID, "access denied")
+	}
+
+	if a.watchService != nil {
+		handled, err := a.watchService.HandleConfirmation(ctx, message.ChatID, message.UserID, message.Text)
+		if err != nil {
+			a.logError("handle watch confirmation", "error", err)
+			return a.reply(ctx, message.ChatID, message.UserID, "internal error")
+		}
+		if handled {
+			return nil
+		}
 	}
 
 	decisionText := message.Text

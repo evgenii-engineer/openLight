@@ -19,6 +19,18 @@ func TestParseSmokeNoteID(t *testing.T) {
 	}
 }
 
+func TestParseSmokeWatchID(t *testing.T) {
+	t.Parallel()
+
+	got, err := parseSmokeWatchID("Watch created:\n#7 memory high\nKind: memory_high")
+	if err != nil {
+		t.Fatalf("parseSmokeWatchID returned error: %v", err)
+	}
+	if got != "7" {
+		t.Fatalf("unexpected watch id: %q", got)
+	}
+}
+
 func TestSmokeReportRenderTable(t *testing.T) {
 	t.Parallel()
 
@@ -79,5 +91,14 @@ func TestSmokeAccountUsername(t *testing.T) {
 
 	if got := smokeAccountUsername("smoke_123", "matrix-admin"); got != "smoke_123_matrix_admin" {
 		t.Fatalf("unexpected scoped username: %q", got)
+	}
+}
+
+func TestExpectContainsAllFold(t *testing.T) {
+	t.Parallel()
+
+	validate := expectContainsAllFold("alert #", "memory")
+	if err := validate("Alert #2: Memory is 17.2%"); err != nil {
+		t.Fatalf("expectContainsAllFold returned error: %v", err)
 	}
 }

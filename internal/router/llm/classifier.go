@@ -196,10 +196,12 @@ func effectiveLayerNumPredict(base int, limit int) int {
 }
 
 func (c *Classifier) allowedServicesForGroup(groupKey string) []string {
-	if groupKey != "services" {
+	switch groupKey {
+	case "services", "watch":
+		return c.allowedServices
+	default:
 		return nil
 	}
-	return c.allowedServices
 }
 
 func (c *Classifier) allowedRuntimesForGroup(groupKey string) []string {
@@ -398,6 +400,16 @@ func (c *Classifier) resolveSkillDecision(text string, allowedSkills []string, r
 
 func (c *Classifier) routeArguments(text, skillName string, arguments map[string]string) map[string]string {
 	switch skillName {
+	case "watch_add":
+		return map[string]string{"spec": strings.TrimSpace(arguments["spec"])}
+	case "watch_pause", "watch_remove", "watch_test":
+		return map[string]string{"id": strings.TrimSpace(arguments["id"])}
+	case "watch_history":
+		id := strings.TrimSpace(arguments["id"])
+		if id == "" {
+			return map[string]string{}
+		}
+		return map[string]string{"id": id}
 	case "file_list":
 		path := strings.TrimSpace(arguments["path"])
 		if path == "" {
@@ -491,6 +503,22 @@ func (c *Classifier) requiredArgumentQuestion(skillName string, arguments map[st
 	case "note_delete":
 		if strings.TrimSpace(arguments["id"]) == "" {
 			return "Which note ID should I delete?"
+		}
+	case "watch_add":
+		if strings.TrimSpace(arguments["spec"]) == "" {
+			return "What should I watch? For example: service synapse ask for 30s cooldown 10m."
+		}
+	case "watch_pause":
+		if strings.TrimSpace(arguments["id"]) == "" {
+			return "Which watch ID should I pause?"
+		}
+	case "watch_remove":
+		if strings.TrimSpace(arguments["id"]) == "" {
+			return "Which watch ID should I remove?"
+		}
+	case "watch_test":
+		if strings.TrimSpace(arguments["id"]) == "" {
+			return "Which watch ID should I test?"
 		}
 	}
 	return ""
@@ -614,12 +642,16 @@ func clarificationQuestionForGroup(groupKey, provided string) string {
 		return "Do you want something from system metrics or host info?"
 	case "services":
 		return "Do you want something about services, logs, or restart?"
+	case "watch":
+		return "Do you want to add, list, pause, inspect, or remove a watch rule?"
+	case "accounts":
+		return "Do you want to list providers, list users, add a user, or delete a user?"
 	case "notes":
 		return "Do you want to add, list, or delete a note?"
 	case "core":
 		return "Do you want help, skills list, start, or ping?"
 	case "", "other":
-		return "Which kind of tool do you want: files, workbench, system, services, notes, or core?"
+		return "Which kind of tool do you want: files, workbench, system, services, watch, accounts, notes, or core?"
 	default:
 		return "Which tool group do you want?"
 	}
@@ -759,6 +791,17 @@ func normalizeArguments(arguments map[string]string) map[string]string {
 			result["id"] = strings.TrimSpace(result["note_id"])
 		case strings.TrimSpace(result["note"]) != "":
 			result["id"] = strings.TrimSpace(result["note"])
+		case strings.TrimSpace(result["watch_id"]) != "":
+			result["id"] = strings.TrimSpace(result["watch_id"])
+		}
+	}
+
+	if spec := strings.TrimSpace(result["spec"]); spec == "" {
+		switch {
+		case strings.TrimSpace(result["rule"]) != "":
+			result["spec"] = strings.TrimSpace(result["rule"])
+		case strings.TrimSpace(result["watch_rule"]) != "":
+			result["spec"] = strings.TrimSpace(result["watch_rule"])
 		}
 	}
 

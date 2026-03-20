@@ -31,6 +31,8 @@ func buildSkillToolInstructions(request SkillClassificationRequest) string {
 			"- choose the most specific matching skill\n"+
 			"- only use allowed service names and runtimes\n"+
 			"- copy file paths and note text from the user when present\n"+
+			"- for watch_add, build a formal watch rule string in arguments.spec\n"+
+			"- examples for arguments.spec: \"service synapse ask for 30s cooldown 10m\", \"memory > 90%% for 5m cooldown 15m\"\n"+
 			"- use only the arguments relevant to the selected skill\n"+
 			"- if the request is unclear or incomplete, call %q with one short question\n",
 		openAIClarificationToolName,
@@ -133,6 +135,10 @@ func openAISkillFunctionParameters(request SkillClassificationRequest) map[strin
 				"Source code to execute.",
 				nil,
 			),
+			"spec": openAINullableStringProperty(
+				"Formal watch rule string for watch_add, for example: service synapse ask for 30s cooldown 10m",
+				nil,
+			),
 		},
 		"required": []string{
 			"service",
@@ -144,6 +150,7 @@ func openAISkillFunctionParameters(request SkillClassificationRequest) map[strin
 			"replace",
 			"runtime",
 			"code",
+			"spec",
 		},
 	}
 }

@@ -56,6 +56,7 @@ func TestAgentHandleMessagePersistsConversationAndNotes(t *testing.T) {
 		registry,
 		repo,
 		nil,
+		nil,
 		time.Second,
 	)
 
@@ -142,6 +143,7 @@ func TestAgentFallsBackToChatSkillForUnknownText(t *testing.T) {
 		registry,
 		repo,
 		nil,
+		nil,
 		time.Second,
 	)
 
@@ -180,6 +182,7 @@ func TestAgentHandleExplicitNoteAddWithoutSlash(t *testing.T) {
 		router.New(registry, nil),
 		registry,
 		repo,
+		nil,
 		nil,
 		time.Second,
 	)
@@ -232,6 +235,7 @@ func TestAgentHandleExplicitNoteDeleteWithoutSlash(t *testing.T) {
 		router.New(registry, nil),
 		registry,
 		repo,
+		nil,
 		nil,
 		time.Second,
 	)
@@ -292,6 +296,7 @@ func TestAgentRedactsSensitiveUserAddDataInPersistence(t *testing.T) {
 		router.New(registry, nil),
 		registry,
 		repo,
+		nil,
 		nil,
 		time.Second,
 	)
@@ -367,6 +372,7 @@ func TestAgentRepliesWithClarificationWithoutExecutingSkill(t *testing.T) {
 		registry,
 		repo,
 		nil,
+		nil,
 		time.Second,
 	)
 
@@ -433,6 +439,7 @@ func TestAgentUsesPendingClarificationContextOnFollowUp(t *testing.T) {
 		router.New(registry, classifier),
 		registry,
 		repo,
+		nil,
 		nil,
 		time.Second,
 	)

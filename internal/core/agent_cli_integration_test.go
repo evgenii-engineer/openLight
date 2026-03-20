@@ -47,6 +47,7 @@ func TestAgentRunWithCLITransport(t *testing.T) {
 		registry,
 		repo,
 		nil,
+		nil,
 		time.Second,
 	)
 

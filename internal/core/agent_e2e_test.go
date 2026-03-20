@@ -76,6 +76,7 @@ func TestAgentRunPollingEndToEndDeterministicNoteAdd(t *testing.T) {
 		registry,
 		repo,
 		nil,
+		nil,
 		2*time.Second,
 	)
 
@@ -166,6 +167,7 @@ func TestAgentRunPollingEndToEndWithRealOllamaResponds(t *testing.T) {
 		router.New(registry, classifier),
 		registry,
 		repo,
+		nil,
 		logger.With("component", "agent"),
 		45*time.Second,
 	)
@@ -334,6 +336,7 @@ func runRealOllamaSkillScenario(t *testing.T, input string, buildRegistry func(b
 		router.New(registry, classifier),
 		registry,
 		repo,
+		nil,
 		logger.With("component", "agent"),
 		45*time.Second,
 	)

@@ -47,6 +47,11 @@ services:
   log_lines: 42
   max_log_chars: 1234
 
+watch:
+  enabled: true
+  poll_interval: 45s
+  ask_ttl: 20m
+
 llm:
   enabled: true
   provider: "ollama"
@@ -122,6 +127,9 @@ log:
 	if cfg.Services.LogLines != 42 || cfg.Services.MaxLogChars != 1234 {
 		t.Fatalf("unexpected services config: %#v", cfg.Services)
 	}
+	if !cfg.Watch.Enabled || cfg.Watch.PollInterval != 45*time.Second || cfg.Watch.AskTTL != 20*time.Minute {
+		t.Fatalf("unexpected watch config: %#v", cfg.Watch)
+	}
 	if !cfg.LLM.Enabled || cfg.LLM.Provider != "ollama" || cfg.LLM.Model != "qwen2.5:0.5b" {
 		t.Fatalf("unexpected llm config: %#v", cfg.LLM)
 	}
@@ -191,6 +199,9 @@ storage:
 	}
 	if cfg.Services.MaxLogChars != 3000 {
 		t.Fatalf("unexpected service max log chars: %d", cfg.Services.MaxLogChars)
+	}
+	if !cfg.Watch.Enabled || cfg.Watch.PollInterval != 15*time.Second || cfg.Watch.AskTTL != 10*time.Minute {
+		t.Fatalf("unexpected watch defaults: %#v", cfg.Watch)
 	}
 	if cfg.Files.MaxReadBytes != 4096 || cfg.Files.ListLimit != 40 {
 		t.Fatalf("unexpected files defaults: %#v", cfg.Files)
@@ -506,6 +517,9 @@ func clearConfigEnv(t *testing.T) {
 		"TELEGRAM_API_BASE_URL",
 		"SERVICE_LOG_LINES",
 		"SERVICE_MAX_LOG_CHARS",
+		"WATCH_ENABLED",
+		"WATCH_POLL_INTERVAL",
+		"WATCH_ASK_TTL",
 		"NOTES_LIST_LIMIT",
 		"CHAT_HISTORY_LIMIT",
 		"CHAT_HISTORY_CHARS",

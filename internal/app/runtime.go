@@ -17,15 +17,18 @@ import (
 	"openlight/internal/skills/notes"
 	serviceskills "openlight/internal/skills/services"
 	systemskills "openlight/internal/skills/system"
+	watchskills "openlight/internal/skills/watch"
 	workbenchskills "openlight/internal/skills/workbench"
 	"openlight/internal/storage"
 	"openlight/internal/storage/sqlite"
+	watchengine "openlight/internal/watch"
 )
 
 type Runtime struct {
 	Registry   *skills.Registry
 	Classifier router.Classifier
 	Repository storage.Repository
+	Watch      *watchengine.Service
 	Closer     io.Closer
 }
 
@@ -44,7 +47,14 @@ func BuildRuntime(ctx context.Context, cfg config.Config, logger *slog.Logger) (
 		}
 	}
 
-	registry, allowedServiceNames, err := BuildRegistry(cfg, repository, logger, llmProvider)
+	systemProvider := systemskills.NewLocalProvider()
+	serviceManager, err := serviceskills.NewManager(cfg.Services.Allowed, cfg.Access.Hosts, logger.With("component", "services"))
+	if err != nil {
+		_ = repository.Close()
+		return Runtime{}, err
+	}
+
+	registry, watchService, allowedServiceNames, err := BuildRegistryWithWatch(cfg, repository, logger, llmProvider, systemProvider, serviceManager)
 	if err != nil {
 		_ = repository.Close()
 		return Runtime{}, err
@@ -66,37 +76,73 @@ func BuildRuntime(ctx context.Context, cfg config.Config, logger *slog.Logger) (
 		Registry:   registry,
 		Classifier: classifier,
 		Repository: repository,
+		Watch:      watchService,
 		Closer:     repository,
 	}, nil
 }
 
-func BuildRegistry(cfg config.Config, repository storage.Repository, logger *slog.Logger, llmProvider basellm.Provider) (*skills.Registry, []string, error) {
-	registry := skills.NewRegistry()
-
+func BuildRegistry(
+	cfg config.Config,
+	repository storage.Repository,
+	logger *slog.Logger,
+	llmProvider basellm.Provider,
+) (*skills.Registry, []string, error) {
 	systemProvider := systemskills.NewLocalProvider()
 	serviceManager, err := serviceskills.NewManager(cfg.Services.Allowed, cfg.Access.Hosts, logger.With("component", "services"))
 	if err != nil {
 		return nil, nil, err
 	}
-	allowedServiceNames, err := serviceskills.AllowedServiceNames(cfg.Services.Allowed)
+
+	registry, _, allowedServiceNames, err := BuildRegistryWithWatch(cfg, repository, logger, llmProvider, systemProvider, serviceManager)
 	if err != nil {
 		return nil, nil, err
+	}
+	return registry, allowedServiceNames, nil
+}
+
+func BuildRegistryWithWatch(
+	cfg config.Config,
+	repository storage.Repository,
+	logger *slog.Logger,
+	llmProvider basellm.Provider,
+	systemProvider systemskills.Provider,
+	serviceManager serviceskills.Manager,
+) (*skills.Registry, *watchengine.Service, []string, error) {
+	registry := skills.NewRegistry()
+
+	allowedServiceNames, err := serviceskills.AllowedServiceNames(cfg.Services.Allowed)
+	if err != nil {
+		return nil, nil, nil, err
 	}
 	fileManager, err := fileskills.NewLocalManager(cfg.Files.Allowed, cfg.Files.MaxReadBytes, cfg.Files.ListLimit)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
+	watchService := watchengine.NewService(
+		repository,
+		registry,
+		nil,
+		systemProvider,
+		serviceManager,
+		logger.With("component", "watch"),
+		watchengine.Options{
+			PollInterval:   cfg.Watch.PollInterval,
+			AskTTL:         cfg.Watch.AskTTL,
+			RequestTimeout: cfg.Agent.RequestTimeout,
+		},
+	)
 
 	modules := []skills.Module{
 		systemskills.NewModule(systemProvider),
 		fileskills.NewModule(fileManager),
 		serviceskills.NewModule(serviceManager, cfg.Services.LogLines, cfg.Services.MaxLogChars),
 		notes.NewModule(repository, cfg.Notes.ListLimit),
+		watchskills.NewModule(watchService),
 	}
 	if len(cfg.Accounts.Providers) > 0 {
 		accountManager, err := accountskills.NewManager(cfg.Accounts.Providers, serviceManager)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		modules = append(modules, accountskills.NewModule(accountManager))
 	}
@@ -108,7 +154,7 @@ func BuildRegistry(cfg config.Config, repository storage.Repository, logger *slo
 			cfg.Workbench.MaxOutputBytes,
 		)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		modules = append(modules, workbenchskills.NewModule(workbenchManager))
 	}
@@ -122,10 +168,10 @@ func BuildRegistry(cfg config.Config, repository storage.Repository, logger *slo
 	modules = append(modules, skills.NewCoreModule())
 
 	if err := skills.RegisterModules(registry, modules...); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
-	return registry, allowedServiceNames, nil
+	return registry, watchService, allowedServiceNames, nil
 }
 
 func buildLLMProvider(cfg config.Config, logger *slog.Logger) (basellm.Provider, error) {

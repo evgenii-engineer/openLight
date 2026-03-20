@@ -214,6 +214,20 @@ func routeCommand(command, argsText string, mode Mode) (Decision, bool) {
 		return Decision{Mode: mode, SkillName: "service_restart", Args: map[string]string{"service": argsText}}, true
 	case "logs", "log", "service logs":
 		return Decision{Mode: mode, SkillName: "service_logs", Args: map[string]string{"service": argsText}}, true
+	case "watch":
+		return parseWatchCommand(mode, argsText)
+	case "watch add":
+		return Decision{Mode: mode, SkillName: "watch_add", Args: map[string]string{"spec": strings.TrimSpace(argsText)}}, true
+	case "watch list":
+		return routeNoArgCommand(mode, "watch_list", argsText)
+	case "watch pause", "watch toggle":
+		return Decision{Mode: mode, SkillName: "watch_pause", Args: map[string]string{"id": strings.TrimSpace(argsText)}}, true
+	case "watch remove", "watch delete":
+		return Decision{Mode: mode, SkillName: "watch_remove", Args: map[string]string{"id": strings.TrimSpace(argsText)}}, true
+	case "watch history", "watch incidents":
+		return Decision{Mode: mode, SkillName: "watch_history", Args: map[string]string{"id": strings.TrimSpace(argsText)}}, true
+	case "watch test", "watch probe":
+		return Decision{Mode: mode, SkillName: "watch_test", Args: map[string]string{"id": strings.TrimSpace(argsText)}}, true
 	case "users", "accounts", "user providers", "account providers":
 		return routeNoArgCommand(mode, "user_providers", argsText)
 	case "user list", "list users":
@@ -270,6 +284,40 @@ func routeCommand(command, argsText string, mode Mode) (Decision, bool) {
 		return routeNoArgCommand(mode, "workspace_clean", argsText)
 	case "chat", "ask":
 		return Decision{Mode: mode, SkillName: "chat", Args: map[string]string{"text": argsText}}, true
+	default:
+		return Decision{}, false
+	}
+}
+
+func parseWatchCommand(mode Mode, argsText string) (Decision, bool) {
+	argsText = strings.TrimSpace(argsText)
+	if argsText == "" {
+		return Decision{Mode: mode, SkillName: "watch_list", Args: map[string]string{}}, true
+	}
+
+	switch {
+	case argsText == "list":
+		return Decision{Mode: mode, SkillName: "watch_list", Args: map[string]string{}}, true
+	case strings.HasPrefix(argsText, "add "):
+		return Decision{Mode: mode, SkillName: "watch_add", Args: map[string]string{"spec": strings.TrimSpace(strings.TrimPrefix(argsText, "add "))}}, true
+	case strings.HasPrefix(argsText, "pause "):
+		return Decision{Mode: mode, SkillName: "watch_pause", Args: map[string]string{"id": strings.TrimSpace(strings.TrimPrefix(argsText, "pause "))}}, true
+	case strings.HasPrefix(argsText, "toggle "):
+		return Decision{Mode: mode, SkillName: "watch_pause", Args: map[string]string{"id": strings.TrimSpace(strings.TrimPrefix(argsText, "toggle "))}}, true
+	case strings.HasPrefix(argsText, "remove "):
+		return Decision{Mode: mode, SkillName: "watch_remove", Args: map[string]string{"id": strings.TrimSpace(strings.TrimPrefix(argsText, "remove "))}}, true
+	case strings.HasPrefix(argsText, "delete "):
+		return Decision{Mode: mode, SkillName: "watch_remove", Args: map[string]string{"id": strings.TrimSpace(strings.TrimPrefix(argsText, "delete "))}}, true
+	case argsText == "history":
+		return Decision{Mode: mode, SkillName: "watch_history", Args: map[string]string{}}, true
+	case strings.HasPrefix(argsText, "history "):
+		return Decision{Mode: mode, SkillName: "watch_history", Args: map[string]string{"id": strings.TrimSpace(strings.TrimPrefix(argsText, "history "))}}, true
+	case strings.HasPrefix(argsText, "incidents "):
+		return Decision{Mode: mode, SkillName: "watch_history", Args: map[string]string{"id": strings.TrimSpace(strings.TrimPrefix(argsText, "incidents "))}}, true
+	case strings.HasPrefix(argsText, "test "):
+		return Decision{Mode: mode, SkillName: "watch_test", Args: map[string]string{"id": strings.TrimSpace(strings.TrimPrefix(argsText, "test "))}}, true
+	case strings.HasPrefix(argsText, "probe "):
+		return Decision{Mode: mode, SkillName: "watch_test", Args: map[string]string{"id": strings.TrimSpace(strings.TrimPrefix(argsText, "probe "))}}, true
 	default:
 		return Decision{}, false
 	}

@@ -221,6 +221,43 @@ func RunSmoke(ctx context.Context, cfg config.Config, runtime app.Runtime, userI
 		addPassFail("notes.delete", "note_delete "+state.noteID, expectContains("Deleted note"))
 	}
 
+	if !cfg.Watch.Enabled || runtime.Watch == nil {
+		addSkip("watch.add", "watch add memory > 0.1% for 1ms cooldown 1m", "watch subsystem disabled")
+		addSkip("watch.list", "watch list", "watch subsystem disabled")
+		addSkip("watch.test", "watch test", "watch subsystem disabled")
+		addSkip("watch.run_once", "watch runner cycle", "watch subsystem disabled")
+		addSkip("watch.history", "watch history", "watch subsystem disabled")
+		addSkip("watch.pause", "watch pause", "watch subsystem disabled")
+		addSkip("watch.resume", "watch pause", "watch subsystem disabled")
+		addSkip("watch.remove", "watch remove", "watch subsystem disabled")
+	} else {
+		addPassFail("watch.add", "watch add memory > 0.1% for 1ms cooldown 1m", func(response string) error {
+			watchID, err := parseSmokeWatchID(response)
+			if err != nil {
+				return err
+			}
+			state.watchID = watchID
+			return expectContains("memory high")(response)
+		})
+		if state.watchID == "" {
+			addSkip("watch.list", "watch list", "watch id not captured from add step")
+			addSkip("watch.test", "watch test", "watch id not captured from add step")
+			addSkip("watch.run_once", "watch runner cycle", "watch id not captured from add step")
+			addSkip("watch.history", "watch history", "watch id not captured from add step")
+			addSkip("watch.pause", "watch pause", "watch id not captured from add step")
+			addSkip("watch.resume", "watch pause", "watch id not captured from add step")
+			addSkip("watch.remove", "watch remove", "watch id not captured from add step")
+		} else {
+			addPassFail("watch.list", "watch list", expectContains("#"+state.watchID))
+			addPassFail("watch.test", "watch test "+state.watchID, expectContains("Watch #"+state.watchID))
+			addWatchRunnerCheck(&report, runtime, harness, ctx, "watch.run_once", "watch runner cycle", expectContainsAllFold("alert #", "memory"))
+			addPassFail("watch.history", "watch history "+state.watchID, expectContainsAll("#", "memory"))
+			addPassFail("watch.pause", "watch pause "+state.watchID, expectContains("paused"))
+			addPassFail("watch.resume", "watch pause "+state.watchID, expectContains("enabled"))
+			addPassFail("watch.remove", "watch remove "+state.watchID, expectContains("Removed watch"))
+		}
+	}
+
 	if state.fileRoot == "" || state.filePath == "" {
 		addSkip("files.list", "files", "no file roots configured")
 		addSkip("files.write", "", "no file roots configured")
@@ -374,6 +411,7 @@ type smokeState struct {
 	accountProvider string
 	accountUsername string
 	accountPassword string
+	watchID         string
 	fileRoot        string
 	filePath        string
 	allowedFile     string
@@ -542,6 +580,22 @@ func expectContainsAll(fragments ...string) func(string) error {
 	}
 }
 
+func expectContainsAllFold(fragments ...string) func(string) error {
+	return func(response string) error {
+		responseFolded := strings.ToLower(response)
+		for _, fragment := range fragments {
+			fragment = strings.TrimSpace(fragment)
+			if fragment == "" {
+				continue
+			}
+			if !strings.Contains(responseFolded, strings.ToLower(fragment)) {
+				return fmt.Errorf("expected response to contain %q (case-insensitive), got %q", fragment, summarizeSmokeText(response))
+			}
+		}
+		return nil
+	}
+}
+
 func expectNotContains(fragment string) func(string) error {
 	return func(response string) error {
 		if strings.Contains(response, fragment) {
@@ -561,6 +615,7 @@ func expectNonEmpty() func(string) error {
 }
 
 var smokeNoteIDPattern = regexp.MustCompile(`Saved note #([0-9]+)`)
+var smokeWatchIDPattern = regexp.MustCompile(`(?m)^#([0-9]+)\b`)
 
 func parseSmokeNoteID(response string) (string, error) {
 	matches := smokeNoteIDPattern.FindStringSubmatch(response)
@@ -568,6 +623,64 @@ func parseSmokeNoteID(response string) (string, error) {
 		return "", fmt.Errorf("failed to parse note id from %q", summarizeSmokeText(response))
 	}
 	return matches[1], nil
+}
+
+func parseSmokeWatchID(response string) (string, error) {
+	matches := smokeWatchIDPattern.FindStringSubmatch(response)
+	if len(matches) != 2 {
+		return "", fmt.Errorf("failed to parse watch id from %q", summarizeSmokeText(response))
+	}
+	return matches[1], nil
+}
+
+func addWatchRunnerCheck(
+	report *SmokeReport,
+	runtime app.Runtime,
+	harness *Harness,
+	ctx context.Context,
+	check string,
+	command string,
+	validate func(string) error,
+) {
+	start := time.Now()
+	row := SmokeRow{
+		Check:   check,
+		Command: command,
+		Status:  SmokePass,
+	}
+	if runtime.Watch == nil {
+		row.Status = SmokeSkip
+		row.Summary = "watch subsystem not configured"
+		report.Rows = append(report.Rows, row)
+		return
+	}
+
+	harness.transport.reset()
+	time.Sleep(5 * time.Millisecond)
+	err := runtime.Watch.RunOnce(ctx)
+	response := harness.transport.output()
+	harness.transport.reset()
+	row.Duration = time.Since(start)
+	row.Summary = summarizeSmokeText(response)
+
+	if err != nil {
+		row.Status = SmokeFail
+		row.Summary = summarizeSmokeText(err.Error())
+		report.Rows = append(report.Rows, row)
+		return
+	}
+	if isSmokeFrameworkFailure(response) {
+		row.Status = SmokeFail
+		report.Rows = append(report.Rows, row)
+		return
+	}
+	if validate != nil {
+		if validateErr := validate(response); validateErr != nil {
+			row.Status = SmokeFail
+			row.Summary = summarizeSmokeText(validateErr.Error())
+		}
+	}
+	report.Rows = append(report.Rows, row)
 }
 
 func isSmokeFrameworkFailure(response string) bool {

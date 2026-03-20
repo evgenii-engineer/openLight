@@ -41,8 +41,10 @@ func run() error {
 	logger := logging.New(cfg.Log.Level)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	runCtx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
 
-	runtime, err := app.BuildRuntime(ctx, cfg, logger)
+	runtime, err := app.BuildRuntime(runCtx, cfg, logger)
 	if err != nil {
 		return err
 	}
@@ -61,20 +63,38 @@ func run() error {
 		},
 		Logger: logger.With("component", "telegram"),
 	})
+	if runtime.Watch != nil {
+		runtime.Watch.SetNotifier(bot)
+	}
 	agent := core.NewAgent(
 		bot,
 		auth.New(cfg.Auth.AllowedUserIDs, cfg.Auth.AllowedChatIDs),
 		router.NewWithLogger(runtime.Registry, runtime.Classifier, logger.With("component", "router")),
 		runtime.Registry,
 		runtime.Repository,
+		runtime.Watch,
 		logger.With("component", "agent"),
 		cfg.Agent.RequestTimeout,
 	)
 
+	var watchErrCh chan error
+	if cfg.Watch.Enabled && runtime.Watch != nil {
+		watchErrCh = make(chan error, 1)
+		go func() {
+			watchErrCh <- runtime.Watch.Run(runCtx)
+		}()
+	}
+
 	logger.Info("agent starting", slog.String("sqlite_path", cfg.Storage.SQLitePath))
-	err = agent.Run(ctx)
+	err = agent.Run(runCtx)
+	cancelRun()
 	if !isExpectedShutdown(err) {
 		return err
+	}
+	if watchErrCh != nil {
+		if watchErr := <-watchErrCh; !isExpectedShutdown(watchErr) {
+			return watchErr
+		}
 	}
 
 	logger.Info("agent stopped")

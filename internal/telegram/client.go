@@ -16,10 +16,17 @@ import (
 )
 
 type IncomingMessage struct {
-	MessageID int64
-	ChatID    int64
-	UserID    int64
-	Text      string
+	MessageID  int64
+	ChatID     int64
+	UserID     int64
+	Text       string
+	CallbackID string
+	IsCallback bool
+}
+
+type Button struct {
+	Text         string
+	CallbackData string
 }
 
 type Bot struct {
@@ -96,19 +103,18 @@ func (b *Bot) pollUpdates(ctx context.Context, handler func(context.Context, Inc
 			if update.UpdateID >= offset {
 				offset = update.UpdateID + 1
 			}
-
-			if update.Message == nil || strings.TrimSpace(update.Message.Text) == "" {
+			message, ok := update.incomingMessage()
+			if !ok {
 				continue
 			}
 
-			message := IncomingMessage{
-				MessageID: update.Message.MessageID,
-				ChatID:    update.Message.Chat.ID,
-				UserID:    update.Message.From.ID,
-				Text:      update.Message.Text,
+			err := handler(ctx, message)
+			if message.IsCallback && strings.TrimSpace(message.CallbackID) != "" {
+				if ackErr := b.answerCallbackQuery(ctx, message.CallbackID); ackErr != nil && b.logger != nil {
+					b.logger.Error("answer telegram callback query", "error", ackErr, "chat_id", message.ChatID, "user_id", message.UserID)
+				}
 			}
-
-			if err := handler(ctx, message); err != nil {
+			if err != nil {
 				return err
 			}
 		}
@@ -164,12 +170,22 @@ func (b *Bot) serveWebhook(ctx context.Context, handler func(context.Context, In
 
 func (b *Bot) SendText(ctx context.Context, chatID int64, text string) error {
 	for _, chunk := range splitTelegramMessage(text) {
-		err := b.call(ctx, "/sendMessage", map[string]any{
-			"chat_id": chatID,
-			"text":    chunk,
-		}, nil)
-		if err != nil {
+		if err := b.sendMessage(ctx, chatID, chunk, nil); err != nil {
 			return fmt.Errorf("send telegram message: %w", err)
+		}
+	}
+	return nil
+}
+
+func (b *Bot) SendTextWithButtons(ctx context.Context, chatID int64, text string, buttons [][]Button) error {
+	chunks := splitTelegramMessage(text)
+	for idx, chunk := range chunks {
+		var keyboard [][]Button
+		if idx == len(chunks)-1 {
+			keyboard = buttons
+		}
+		if err := b.sendMessage(ctx, chatID, chunk, keyboard); err != nil {
+			return fmt.Errorf("send telegram message with buttons: %w", err)
 		}
 	}
 	return nil
@@ -182,8 +198,9 @@ type apiResponse struct {
 }
 
 type update struct {
-	UpdateID int64      `json:"update_id"`
-	Message  *tgMessage `json:"message"`
+	UpdateID      int64            `json:"update_id"`
+	Message       *tgMessage       `json:"message"`
+	CallbackQuery *tgCallbackQuery `json:"callback_query"`
 }
 
 type tgMessage struct {
@@ -201,12 +218,19 @@ type tgUser struct {
 	ID int64 `json:"id"`
 }
 
+type tgCallbackQuery struct {
+	ID      string     `json:"id"`
+	From    tgUser     `json:"from"`
+	Data    string     `json:"data"`
+	Message *tgMessage `json:"message"`
+}
+
 func (b *Bot) getUpdates(ctx context.Context, offset int64) ([]update, error) {
 	var updates []update
 	err := b.call(ctx, "/getUpdates", map[string]any{
 		"offset":          offset,
 		"timeout":         int(b.pollTimeout.Seconds()),
-		"allowed_updates": []string{"message"},
+		"allowed_updates": []string{"message", "callback_query"},
 	}, &updates)
 	if err != nil {
 		return nil, fmt.Errorf("get telegram updates: %w", err)
@@ -221,7 +245,7 @@ func (b *Bot) apiURL(method string) string {
 func (b *Bot) setWebhook(ctx context.Context) error {
 	err := b.call(ctx, "/setWebhook", map[string]any{
 		"url":                  b.webhook.URL,
-		"allowed_updates":      []string{"message"},
+		"allowed_updates":      []string{"message", "callback_query"},
 		"drop_pending_updates": b.webhook.DropPendingUpdates,
 		"secret_token":         b.webhook.SecretToken,
 	}, nil)
@@ -313,7 +337,13 @@ func (b *Bot) webhookHandler(ctx context.Context, handler func(context.Context, 
 		}
 
 		go func() {
-			if err := handler(ctx, message); err != nil && b.logger != nil {
+			err := handler(ctx, message)
+			if message.IsCallback && strings.TrimSpace(message.CallbackID) != "" {
+				if ackErr := b.answerCallbackQuery(ctx, message.CallbackID); ackErr != nil && b.logger != nil {
+					b.logger.Error("answer telegram callback query", "error", ackErr, "chat_id", message.ChatID, "user_id", message.UserID)
+				}
+			}
+			if err != nil && b.logger != nil {
 				b.logger.Error("handle telegram webhook message", "error", err, "chat_id", message.ChatID, "user_id", message.UserID)
 			}
 		}()
@@ -321,15 +351,26 @@ func (b *Bot) webhookHandler(ctx context.Context, handler func(context.Context, 
 }
 
 func (u update) incomingMessage() (IncomingMessage, bool) {
-	if u.Message == nil || strings.TrimSpace(u.Message.Text) == "" {
+	if u.Message != nil && strings.TrimSpace(u.Message.Text) != "" {
+		return IncomingMessage{
+			MessageID: u.Message.MessageID,
+			ChatID:    u.Message.Chat.ID,
+			UserID:    u.Message.From.ID,
+			Text:      u.Message.Text,
+		}, true
+	}
+
+	if u.CallbackQuery == nil || u.CallbackQuery.Message == nil || strings.TrimSpace(u.CallbackQuery.Data) == "" {
 		return IncomingMessage{}, false
 	}
 
 	return IncomingMessage{
-		MessageID: u.Message.MessageID,
-		ChatID:    u.Message.Chat.ID,
-		UserID:    u.Message.From.ID,
-		Text:      u.Message.Text,
+		MessageID:  u.CallbackQuery.Message.MessageID,
+		ChatID:     u.CallbackQuery.Message.Chat.ID,
+		UserID:     u.CallbackQuery.From.ID,
+		Text:       u.CallbackQuery.Data,
+		CallbackID: strings.TrimSpace(u.CallbackQuery.ID),
+		IsCallback: true,
 	}, true
 }
 
@@ -386,4 +427,48 @@ func preferredSplitIndex(runes []rune, start, end int) int {
 		}
 	}
 	return end
+}
+
+func (b *Bot) sendMessage(ctx context.Context, chatID int64, text string, buttons [][]Button) error {
+	payload := map[string]any{
+		"chat_id": chatID,
+		"text":    text,
+	}
+	if markup := inlineKeyboardMarkup(buttons); markup != nil {
+		payload["reply_markup"] = markup
+	}
+	return b.call(ctx, "/sendMessage", payload, nil)
+}
+
+func (b *Bot) answerCallbackQuery(ctx context.Context, callbackID string) error {
+	return b.call(ctx, "/answerCallbackQuery", map[string]any{
+		"callback_query_id": callbackID,
+	}, nil)
+}
+
+func inlineKeyboardMarkup(buttons [][]Button) map[string]any {
+	rows := make([][]map[string]string, 0, len(buttons))
+	for _, row := range buttons {
+		items := make([]map[string]string, 0, len(row))
+		for _, button := range row {
+			text := strings.TrimSpace(button.Text)
+			data := strings.TrimSpace(button.CallbackData)
+			if text == "" || data == "" {
+				continue
+			}
+			items = append(items, map[string]string{
+				"text":          text,
+				"callback_data": data,
+			})
+		}
+		if len(items) > 0 {
+			rows = append(rows, items)
+		}
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	return map[string]any{
+		"inline_keyboard": rows,
+	}
 }

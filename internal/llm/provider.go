@@ -111,7 +111,7 @@ func (p *HTTPProvider) ClassifySkill(ctx context.Context, text string, request S
 		"candidate_skills": request.CandidateSkills,
 		"input_chars":      request.InputChars,
 		"num_predict":      request.NumPredict,
-		"response_schema":  "skill_v2",
+		"response_schema":  "skill_v3",
 	}, &response); err != nil {
 		return Classification{}, err
 	}

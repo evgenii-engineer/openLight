@@ -74,6 +74,9 @@ func run() error {
 		UserID: resolvedUserID,
 		ChatID: resolvedChatID,
 	})
+	if runtime.Watch != nil {
+		runtime.Watch.SetNotifier(transport)
+	}
 
 	agent := core.NewAgent(
 		transport,
@@ -81,6 +84,7 @@ func run() error {
 		router.NewWithLogger(runtime.Registry, runtime.Classifier, logger.With("component", "router")),
 		runtime.Registry,
 		runtime.Repository,
+		runtime.Watch,
 		logger.With("component", "agent"),
 		cfg.Agent.RequestTimeout,
 	)

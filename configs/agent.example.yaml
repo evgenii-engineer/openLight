@@ -64,6 +64,11 @@ services:
   log_lines: 100
   max_log_chars: 3000
 
+watch:
+  enabled: true
+  poll_interval: 15s
+  ask_ttl: 10m
+
 accounts:
   providers:
     # Account providers run explicit commands inside an already-allowed service.

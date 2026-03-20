@@ -243,38 +243,50 @@ func skillOrder(name string) int {
 		return 32
 	case "service_logs":
 		return 33
-	case "user_providers":
+	case "watch_add":
 		return 34
-	case "user_list":
+	case "watch_list":
 		return 35
-	case "user_add":
+	case "watch_pause":
 		return 36
-	case "user_delete":
+	case "watch_remove":
 		return 37
-	case "status":
+	case "watch_history":
+		return 38
+	case "watch_test":
+		return 39
+	case "user_providers":
 		return 40
-	case "cpu":
+	case "user_list":
 		return 41
-	case "memory":
+	case "user_add":
 		return 42
-	case "disk":
+	case "user_delete":
 		return 43
-	case "uptime":
+	case "status":
 		return 44
-	case "temperature":
+	case "cpu":
 		return 45
-	case "hostname":
+	case "memory":
 		return 46
-	case "ip":
+	case "disk":
 		return 47
-	case "start":
+	case "uptime":
+		return 48
+	case "temperature":
+		return 49
+	case "hostname":
 		return 50
-	case "help":
+	case "ip":
 		return 51
-	case "skills":
+	case "start":
 		return 52
-	case "ping":
+	case "help":
 		return 53
+	case "skills":
+		return 54
+	case "ping":
+		return 55
 	default:
 		return 1000
 	}

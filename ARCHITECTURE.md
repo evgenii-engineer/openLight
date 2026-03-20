@@ -22,7 +22,7 @@ Both binaries build the same runtime and use the same `core.Agent`.
 
 Registered groups depend on config:
 
-- always: `core`, `system`, `files`, `services`, `notes`
+- always: `core`, `system`, `files`, `services`, `watch`, `notes`
 - when configured: `accounts`, `workbench`
 - when LLM is enabled: `chat`
 
@@ -76,6 +76,8 @@ SQLite stores:
 - messages
 - notes
 - skill calls
+- watches
+- watch incidents
 - settings
 
 Default container path: `/var/lib/openlight/data/agent.db`.

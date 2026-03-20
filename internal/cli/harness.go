@@ -22,12 +22,16 @@ type Harness struct {
 
 func NewHarness(cfg config.Config, runtime app.Runtime, userID, chatID int64) *Harness {
 	transport := &captureTransport{}
+	if runtime.Watch != nil {
+		runtime.Watch.SetNotifier(transport)
+	}
 	agent := core.NewAgent(
 		transport,
 		auth.New(cfg.Auth.AllowedUserIDs, cfg.Auth.AllowedChatIDs),
 		router.New(runtime.Registry, runtime.Classifier),
 		runtime.Registry,
 		runtime.Repository,
+		runtime.Watch,
 		nil,
 		cfg.Agent.RequestTimeout,
 	)

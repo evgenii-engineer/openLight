@@ -84,6 +84,82 @@ func TestBotPollAndSendText(t *testing.T) {
 	}
 }
 
+func TestBotPollHandlesCallbackQueries(t *testing.T) {
+	t.Parallel()
+
+	var getUpdatesCalls int32
+	var answeredCallback atomic.Value
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	bot := NewBot(Options{
+		Token:       "TOKEN",
+		BaseURL:     "https://telegram.invalid",
+		Mode:        "polling",
+		PollTimeout: time.Second,
+	})
+	bot.client = &http.Client{
+		Timeout: time.Second,
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			switch r.URL.Path {
+			case "/botTOKEN/deleteWebhook":
+				return jsonResponse(map[string]any{"ok": true, "result": true}), nil
+			case "/botTOKEN/getUpdates":
+				call := atomic.AddInt32(&getUpdatesCalls, 1)
+				if call == 1 {
+					return jsonResponse(map[string]any{
+						"ok": true,
+						"result": []map[string]any{
+							{
+								"update_id": 1,
+								"callback_query": map[string]any{
+									"id":   "cb-1",
+									"data": "watch:yes:7",
+									"from": map[string]any{"id": 100},
+									"message": map[string]any{
+										"message_id": 10,
+										"chat":       map[string]any{"id": 200},
+									},
+								},
+							},
+						},
+					}), nil
+				}
+				return jsonResponse(map[string]any{"ok": true, "result": []any{}}), nil
+			case "/botTOKEN/answerCallbackQuery":
+				var payload map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					t.Fatalf("decode answerCallbackQuery payload: %v", err)
+				}
+				answeredCallback.Store(payload["callback_query_id"])
+				cancel()
+				return jsonResponse(map[string]any{"ok": true, "result": true}), nil
+			default:
+				t.Fatalf("unexpected path: %s", r.URL.Path)
+				return nil, nil
+			}
+		}),
+	}
+
+	err := bot.Poll(ctx, func(_ context.Context, message IncomingMessage) error {
+		if message.Text != "watch:yes:7" || message.ChatID != 200 || message.UserID != 100 {
+			t.Fatalf("unexpected callback message: %#v", message)
+		}
+		if !message.IsCallback || message.CallbackID != "cb-1" {
+			t.Fatalf("expected callback metadata, got %#v", message)
+		}
+		return nil
+	})
+	if err != nil && err != context.Canceled {
+		t.Fatalf("Poll returned error: %v", err)
+	}
+
+	if got, _ := answeredCallback.Load().(string); got != "cb-1" {
+		t.Fatalf("expected callback query to be acknowledged, got %q", got)
+	}
+}
+
 func TestBotWebhookReceivesMessages(t *testing.T) {
 	t.Parallel()
 
@@ -220,6 +296,57 @@ func TestBotSendTextSplitsLongMessages(t *testing.T) {
 	}
 	if !slices.Equal(sentTexts, splitTelegramMessage(longText)) {
 		t.Fatalf("unexpected chunks: %#v", sentTexts)
+	}
+}
+
+func TestBotSendTextWithButtons(t *testing.T) {
+	t.Parallel()
+
+	var payload map[string]any
+	bot := NewBot(Options{
+		Token:       "TOKEN",
+		BaseURL:     "https://telegram.invalid",
+		Mode:        "polling",
+		PollTimeout: time.Second,
+	})
+	bot.client = &http.Client{
+		Timeout: time.Second,
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			if r.URL.Path != "/botTOKEN/sendMessage" {
+				t.Fatalf("unexpected path: %s", r.URL.Path)
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode sendMessage payload: %v", err)
+			}
+			return jsonResponse(map[string]any{"ok": true, "result": map[string]any{}}), nil
+		}),
+	}
+
+	err := bot.SendTextWithButtons(context.Background(), 200, "choose", [][]Button{
+		{
+			{Text: "Restart", CallbackData: "watch:yes:1"},
+			{Text: "Ignore", CallbackData: "watch:no:1"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("SendTextWithButtons returned error: %v", err)
+	}
+
+	replyMarkup, ok := payload["reply_markup"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected reply_markup in payload, got %#v", payload)
+	}
+	keyboard, ok := replyMarkup["inline_keyboard"].([]any)
+	if !ok || len(keyboard) != 1 {
+		t.Fatalf("unexpected inline keyboard: %#v", replyMarkup)
+	}
+	row, ok := keyboard[0].([]any)
+	if !ok || len(row) != 2 {
+		t.Fatalf("unexpected inline keyboard row: %#v", keyboard)
+	}
+	first, ok := row[0].(map[string]any)
+	if !ok || first["callback_data"] != "watch:yes:1" {
+		t.Fatalf("unexpected first button: %#v", row[0])
 	}
 }
 
