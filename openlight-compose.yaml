@@ -1,0 +1,54 @@
+services:
+  openlight:
+    image: ghcr.io/evgenii-engineer/openlight:latest
+    container_name: openlight
+    restart: unless-stopped
+    depends_on:
+      ollama:
+        condition: service_healthy
+      ollama-pull:
+        condition: service_completed_successfully
+    environment:
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?set TELEGRAM_BOT_TOKEN}
+      ALLOWED_USER_IDS: ${ALLOWED_USER_IDS:?set ALLOWED_USER_IDS}
+      LLM_ENABLED: ${LLM_ENABLED:-true}
+      LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
+      LLM_ENDPOINT: ${LLM_ENDPOINT:-http://ollama:11434}
+      LLM_MODEL: ${LLM_MODEL:-qwen2.5:0.5b}
+    volumes:
+      - ./data:/var/lib/openlight/data
+      # Uncomment to override the embedded minimal container config.
+      # - ./agent.yaml:/etc/openlight/agent.yaml:ro
+    ports:
+      - "8081:8081"
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: openlight-ollama
+    restart: unless-stopped
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
+  ollama-pull:
+    image: ollama/ollama:latest
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: "no"
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      OLLAMA_MODEL: ${LLM_MODEL:-qwen2.5:0.5b}
+    entrypoint:
+      - /bin/sh
+      - -lc
+    command:
+      - ollama pull "$$OLLAMA_MODEL"
+
+volumes:
+  ollama_data:
