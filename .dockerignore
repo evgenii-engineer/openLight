@@ -1,0 +1,7 @@
+.git
+.github
+build
+data
+Makefile.local
+configs/agent.rpi.yaml
+configs/*.local.yaml

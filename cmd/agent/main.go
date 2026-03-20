@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"openlight/internal/app"
@@ -18,6 +19,8 @@ import (
 	"openlight/internal/router"
 	"openlight/internal/telegram"
 )
+
+var defaultConfigPath = "/etc/openlight/agent.yaml"
 
 func main() {
 	if err := run(); err != nil {
@@ -30,7 +33,7 @@ func run() error {
 	configPath := flag.String("config", "", "Path to YAML configuration file")
 	flag.Parse()
 
-	cfg, err := config.Load(*configPath)
+	cfg, err := config.Load(resolveConfigPath(*configPath))
 	if err != nil {
 		return err
 	}
@@ -80,4 +83,20 @@ func run() error {
 
 func isExpectedShutdown(err error) bool {
 	return err == nil || errors.Is(err, context.Canceled)
+}
+
+func resolveConfigPath(flagValue string) string {
+	if value := strings.TrimSpace(flagValue); value != "" {
+		return value
+	}
+
+	if value := strings.TrimSpace(os.Getenv("OPENLIGHT_CONFIG")); value != "" {
+		return value
+	}
+
+	if info, err := os.Stat(defaultConfigPath); err == nil && !info.IsDir() {
+		return defaultConfigPath
+	}
+
+	return ""
 }

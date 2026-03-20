@@ -144,6 +144,54 @@ Useful first commands:
 Common English and Russian variants such as `show logs tailscale` or `покажи логи tailscale` are handled by deterministic routing even when `llm.enabled: false`.
 Enabling the LLM broadens ambiguous natural-language routing and adds the `chat` skill.
 
+## Docker Image
+
+Prebuilt multi-arch images are published to `ghcr.io/evgenii-engineer/openlight` for `linux/amd64` and `linux/arm64`.
+The image already includes a minimal `/etc/openlight/agent.yaml`, so the baseline container can boot from env vars plus a data volume without mounting a custom config file.
+The recommended quick start uses the bundled Compose stack, which starts `openlight` together with a local Ollama instance and pulls `qwen2.5:0.5b` on first boot.
+
+```bash
+export TELEGRAM_BOT_TOKEN=123456:replace-me
+export ALLOWED_USER_IDS=111111111
+docker compose -f deployments/docker/openlight-compose.yaml up -d
+```
+
+This pulls and starts:
+
+- `ghcr.io/evgenii-engineer/openlight:latest`
+- `ollama/ollama:latest`
+- the Ollama model from `LLM_MODEL`, which defaults to `qwen2.5:0.5b`
+
+If you want the bare agent without local Ollama, run only the image:
+
+```bash
+docker pull ghcr.io/evgenii-engineer/openlight:latest
+docker run -d \
+  --name openlight \
+  --restart unless-stopped \
+  -e TELEGRAM_BOT_TOKEN=123456:replace-me \
+  -e ALLOWED_USER_IDS=111111111 \
+  -e LLM_ENABLED=false \
+  -v openlight-data:/var/lib/openlight/data \
+  ghcr.io/evgenii-engineer/openlight:latest
+```
+
+Add `-p 8081:8081` only when `telegram.mode: "webhook"`.
+The embedded default only sets `storage.sqlite_path: /var/lib/openlight/data/agent.db`; everything else comes from built-in defaults and env overrides.
+Mount your own `/etc/openlight/agent.yaml` when you need explicit `files.allowed`, `services.allowed`, `access.hosts`, `accounts.providers`, `workbench`, or webhook settings.
+Set `LLM_ENABLED=false` when you want deterministic-only mode, or override `LLM_PROVIDER`, `LLM_ENDPOINT`, and `LLM_MODEL` when you want a different local or remote LLM backend.
+
+A bundled stack is provided in [deployments/docker/openlight-compose.yaml](./deployments/docker/openlight-compose.yaml).
+Maintainers can build locally with `make docker-build DOCKER_TAG=dev` and publish multi-arch images with `make docker-push DOCKER_TAG=v0.0.3`.
+Pushes to `master` and tags matching `v*` also publish automatically to GHCR through GitHub Actions.
+On the first GHCR publish, GitHub creates the package with private visibility by default, so switch it to public once in the package settings if you want anonymous `docker pull`.
+
+Container caveats:
+
+- local system and service skills inspect the container namespace, not the Docker host
+- local file and workbench skills only see mounted paths
+- for real host management, prefer `access.hosts` over SSH or the native systemd deployment on the target machine
+
 ## Raspberry Pi Setup
 
 <details>

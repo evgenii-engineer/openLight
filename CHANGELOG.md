@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Added a first-class container image: a multi-stage `Dockerfile`, a Compose example, and `make docker-*` targets for local builds and registry pushes.
+- Added GitHub Actions publishing to GHCR for `linux/amd64` and `linux/arm64` on `master`, tags, and manual dispatch.
+- Added automatic container-friendly config discovery via `OPENLIGHT_CONFIG` and `/etc/openlight/agent.yaml`.
+- Added an embedded minimal container config so the Docker image can start from env vars plus a data volume without requiring a mounted YAML file.
+- Switched the bundled Docker Compose quick start to local Ollama by default, including automatic startup of `ollama` and a first-run model pull.
+
 ## v0.0.2
 
 Compared with `v0.0.1`, this release turns `openLight` into a broader but still constrained operations agent for Raspberry Pi and small Linux hosts.

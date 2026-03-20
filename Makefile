@@ -5,6 +5,14 @@ PKG ?= ./cmd/agent
 CLI_BIN_NAME ?= openlight-cli
 CLI_OUTPUT ?= $(BUILD_DIR)/$(CLI_BIN_NAME)
 CLI_PKG ?= ./cmd/cli
+DOCKER_IMAGE ?= ghcr.io/evgenii-engineer/openlight
+DOCKER_TAG ?= dev
+DOCKERFILE ?= Dockerfile
+DOCKER_PLATFORM ?= linux/$(GOARCH)
+DOCKER_PLATFORMS ?= linux/amd64,linux/arm64
+IMAGE_REF ?= $(DOCKER_IMAGE):$(DOCKER_TAG)
+BUILD_DATE ?= $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
+VCS_REF ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 
 -include Makefile.local
 
@@ -16,7 +24,7 @@ GOOS ?= linux
 GOARCH ?= arm64
 CGO_ENABLED ?= 0
 
-.PHONY: build build-rpi build-cli build-rpi-cli init-rpi-config deploy-rpi-config deploy-rpi deploy-rpi-cli deploy-rpi-service deploy-rpi-all deploy-rpi-full deploy-and-smoke-rpi smoke-rpi-cli test test-e2e-ollama clean ollama-up ollama-pull ollama-down
+.PHONY: build build-rpi build-cli build-rpi-cli init-rpi-config deploy-rpi-config deploy-rpi deploy-rpi-cli deploy-rpi-service deploy-rpi-all deploy-rpi-full deploy-and-smoke-rpi smoke-rpi-cli test test-e2e-ollama clean ollama-up ollama-pull ollama-down docker-build docker-buildx docker-push
 
 OLLAMA_COMPOSE_FILE ?= deployments/docker/ollama-compose.yaml
 OLLAMA_ENDPOINT ?= http://127.0.0.1:11434
@@ -73,6 +81,34 @@ ollama-pull:
 
 ollama-down:
 	docker compose -f $(OLLAMA_COMPOSE_FILE) down
+
+docker-build:
+	docker build \
+		--build-arg VERSION=$(DOCKER_TAG) \
+		--build-arg REVISION=$(VCS_REF) \
+		--build-arg CREATED=$(BUILD_DATE) \
+		-t $(IMAGE_REF) \
+		-f $(DOCKERFILE) .
+
+docker-buildx:
+	docker buildx build \
+		--platform $(DOCKER_PLATFORM) \
+		--build-arg VERSION=$(DOCKER_TAG) \
+		--build-arg REVISION=$(VCS_REF) \
+		--build-arg CREATED=$(BUILD_DATE) \
+		-t $(IMAGE_REF) \
+		--load \
+		-f $(DOCKERFILE) .
+
+docker-push:
+	docker buildx build \
+		--platform $(DOCKER_PLATFORMS) \
+		--build-arg VERSION=$(DOCKER_TAG) \
+		--build-arg REVISION=$(VCS_REF) \
+		--build-arg CREATED=$(BUILD_DATE) \
+		-t $(IMAGE_REF) \
+		--push \
+		-f $(DOCKERFILE) .
 
 clean:
 	rm -rf build

@@ -1,0 +1,22 @@
+# Minimal container defaults shipped inside the Docker image.
+# Required env:
+# - TELEGRAM_BOT_TOKEN
+# - ALLOWED_USER_IDS or ALLOWED_CHAT_IDS
+#
+# Optional env for local Ollama routing and chat:
+# - LLM_ENABLED=true
+# - LLM_PROVIDER=ollama
+# - LLM_ENDPOINT=http://ollama:11434
+# - LLM_MODEL=qwen2.5:0.5b
+#
+# Optional env for OpenAI routing and chat:
+# - LLM_ENABLED=true
+# - LLM_PROVIDER=openai
+# - LLM_MODEL=gpt-4o-mini
+# - OPENAI_API_KEY=...
+#
+# Mount your own /etc/openlight/agent.yaml when you want explicit file roots,
+# service allowlists, remote hosts, workbench, or webhook settings.
+
+storage:
+  sqlite_path: "/var/lib/openlight/data/agent.db"

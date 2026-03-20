@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -44,6 +46,68 @@ func TestIsExpectedShutdownRejectsOtherErrors(t *testing.T) {
 
 	if isExpectedShutdown(context.DeadlineExceeded) {
 		t.Fatal("did not expect deadline exceeded to be treated as clean shutdown")
+	}
+}
+
+func TestResolveConfigPathPrefersExplicitFlag(t *testing.T) {
+	t.Setenv("OPENLIGHT_CONFIG", "/tmp/from-env.yaml")
+
+	originalDefault := defaultConfigPath
+	defaultConfigPath = filepath.Join(t.TempDir(), "agent.yaml")
+	t.Cleanup(func() {
+		defaultConfigPath = originalDefault
+	})
+
+	if got := resolveConfigPath("/tmp/from-flag.yaml"); got != "/tmp/from-flag.yaml" {
+		t.Fatalf("resolveConfigPath() = %q, want explicit flag path", got)
+	}
+}
+
+func TestResolveConfigPathFallsBackToEnv(t *testing.T) {
+	t.Setenv("OPENLIGHT_CONFIG", "/tmp/from-env.yaml")
+
+	originalDefault := defaultConfigPath
+	defaultConfigPath = filepath.Join(t.TempDir(), "agent.yaml")
+	t.Cleanup(func() {
+		defaultConfigPath = originalDefault
+	})
+
+	if got := resolveConfigPath(""); got != "/tmp/from-env.yaml" {
+		t.Fatalf("resolveConfigPath() = %q, want env path", got)
+	}
+}
+
+func TestResolveConfigPathFallsBackToMountedDefault(t *testing.T) {
+	t.Setenv("OPENLIGHT_CONFIG", "")
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent.yaml")
+	if err := os.WriteFile(path, []byte("telegram:\n  bot_token: x\n"), 0o600); err != nil {
+		t.Fatalf("write mounted config: %v", err)
+	}
+
+	originalDefault := defaultConfigPath
+	defaultConfigPath = path
+	t.Cleanup(func() {
+		defaultConfigPath = originalDefault
+	})
+
+	if got := resolveConfigPath(""); got != path {
+		t.Fatalf("resolveConfigPath() = %q, want mounted default path %q", got, path)
+	}
+}
+
+func TestResolveConfigPathReturnsEmptyWhenUnset(t *testing.T) {
+	t.Setenv("OPENLIGHT_CONFIG", "")
+
+	originalDefault := defaultConfigPath
+	defaultConfigPath = filepath.Join(t.TempDir(), "missing.yaml")
+	t.Cleanup(func() {
+		defaultConfigPath = originalDefault
+	})
+
+	if got := resolveConfigPath(""); got != "" {
+		t.Fatalf("resolveConfigPath() = %q, want empty path", got)
 	}
 }
 
