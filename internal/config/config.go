@@ -113,7 +113,20 @@ type WatchConfig struct {
 }
 
 type LLMConfig struct {
-	Enabled            bool    `yaml:"enabled"`
+	Enabled            bool                        `yaml:"enabled"`
+	Profile            string                      `yaml:"profile"`
+	Profiles           map[string]LLMProfileConfig `yaml:"profiles"`
+	Provider           string                      `yaml:"provider"`
+	Endpoint           string                      `yaml:"endpoint"`
+	Model              string                      `yaml:"model"`
+	APIKey             string                      `yaml:"api_key"`
+	ExecuteThreshold   float64                     `yaml:"execute_threshold"`
+	ClarifyThreshold   float64                     `yaml:"clarify_threshold"`
+	DecisionInputChars int                         `yaml:"decision_input_chars"`
+	DecisionNumPredict int                         `yaml:"decision_num_predict"`
+}
+
+type LLMProfileConfig struct {
 	Provider           string  `yaml:"provider"`
 	Endpoint           string  `yaml:"endpoint"`
 	Model              string  `yaml:"model"`
@@ -154,6 +167,12 @@ func Load(path string) (Config, error) {
 		if err := yaml.Unmarshal(content, &cfg); err != nil {
 			return Config{}, fmt.Errorf("parse config file: %w", err)
 		}
+	}
+
+	normalize(&cfg)
+
+	if err := applySelectedLLMProfile(&cfg, os.Getenv("LLM_PROFILE")); err != nil {
+		return Config{}, err
 	}
 
 	overrideFromEnv(&cfg)
@@ -271,6 +290,27 @@ func (c Config) Validate() error {
 		return errors.New("chat.history_chars must be greater than zero")
 	case c.Chat.MaxResponseChars <= 0:
 		return errors.New("chat.max_response_chars must be greater than zero")
+	}
+
+	for name, profile := range c.LLM.Profiles {
+		if name == "" {
+			return errors.New("llm.profiles keys must not be empty")
+		}
+		if strings.TrimSpace(profile.Provider) == "" {
+			return fmt.Errorf("llm.profiles.%s.provider is required", name)
+		}
+		if profile.ExecuteThreshold < 0 || profile.ExecuteThreshold > 1 {
+			return fmt.Errorf("llm.profiles.%s.execute_threshold must be between zero and one", name)
+		}
+		if profile.ClarifyThreshold < 0 || profile.ClarifyThreshold >= 1 {
+			return fmt.Errorf("llm.profiles.%s.clarify_threshold must be between zero and one", name)
+		}
+		if profile.DecisionInputChars < 0 {
+			return fmt.Errorf("llm.profiles.%s.decision_input_chars must not be negative", name)
+		}
+		if profile.DecisionNumPredict < 0 {
+			return fmt.Errorf("llm.profiles.%s.decision_num_predict must not be negative", name)
+		}
 	}
 
 	for name, host := range c.Access.Hosts {
@@ -476,6 +516,8 @@ func normalize(cfg *Config) {
 		cfg.Watch.AskTTL = 10 * time.Minute
 	}
 
+	cfg.LLM.Profile = strings.ToLower(strings.TrimSpace(cfg.LLM.Profile))
+	cfg.LLM.Profiles = normalizeLLMProfiles(cfg.LLM.Profiles)
 	cfg.LLM.Provider = strings.ToLower(strings.TrimSpace(cfg.LLM.Provider))
 	if cfg.LLM.Provider == "" {
 		cfg.LLM.Provider = "generic"
@@ -491,6 +533,61 @@ func normalize(cfg *Config) {
 	if cfg.Log.Level == "" {
 		cfg.Log.Level = "info"
 	}
+}
+
+func applySelectedLLMProfile(cfg *Config, requestedProfile string) error {
+	if cfg == nil {
+		return nil
+	}
+
+	profileName := strings.ToLower(strings.TrimSpace(requestedProfile))
+	if profileName == "" {
+		profileName = cfg.LLM.Profile
+	}
+	cfg.LLM.Profile = profileName
+
+	if profileName == "" {
+		return nil
+	}
+
+	if len(cfg.LLM.Profiles) == 0 {
+		if cfg.LLM.Provider == profileName {
+			return nil
+		}
+		return fmt.Errorf("llm profile %q requested but llm.profiles is not configured; current direct provider is %q", profileName, cfg.LLM.Provider)
+	}
+
+	profile, ok := cfg.LLM.Profiles[profileName]
+	if !ok {
+		return fmt.Errorf("unknown llm profile: %s", profileName)
+	}
+
+	if strings.TrimSpace(profile.Provider) != "" {
+		cfg.LLM.Provider = profile.Provider
+	}
+	if strings.TrimSpace(profile.Endpoint) != "" {
+		cfg.LLM.Endpoint = profile.Endpoint
+	}
+	if strings.TrimSpace(profile.Model) != "" {
+		cfg.LLM.Model = profile.Model
+	}
+	if strings.TrimSpace(profile.APIKey) != "" {
+		cfg.LLM.APIKey = profile.APIKey
+	}
+	if profile.ExecuteThreshold > 0 {
+		cfg.LLM.ExecuteThreshold = profile.ExecuteThreshold
+	}
+	if profile.ClarifyThreshold > 0 {
+		cfg.LLM.ClarifyThreshold = profile.ClarifyThreshold
+	}
+	if profile.DecisionInputChars > 0 {
+		cfg.LLM.DecisionInputChars = profile.DecisionInputChars
+	}
+	if profile.DecisionNumPredict > 0 {
+		cfg.LLM.DecisionNumPredict = profile.DecisionNumPredict
+	}
+
+	return nil
 }
 
 func normalizeStrings(values []string) []string {
@@ -639,6 +736,29 @@ func normalizeAccountProviders(values map[string]AccountProviderConfig) map[stri
 
 		result[normalizedName] = provider
 	}
+	return result
+}
+
+func normalizeLLMProfiles(values map[string]LLMProfileConfig) map[string]LLMProfileConfig {
+	if len(values) == 0 {
+		return nil
+	}
+
+	result := make(map[string]LLMProfileConfig, len(values))
+	for name, profile := range values {
+		normalizedName := strings.ToLower(strings.TrimSpace(name))
+		if normalizedName == "" {
+			continue
+		}
+
+		profile.Provider = strings.ToLower(strings.TrimSpace(profile.Provider))
+		profile.Endpoint = strings.TrimSpace(profile.Endpoint)
+		profile.Model = strings.TrimSpace(profile.Model)
+		profile.APIKey = strings.TrimSpace(profile.APIKey)
+
+		result[normalizedName] = profile
+	}
+
 	return result
 }
 

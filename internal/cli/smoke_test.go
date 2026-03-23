@@ -1,10 +1,19 @@
 package cli
 
 import (
-	"openlight/internal/config"
+	"bytes"
+	"context"
+	"io"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"openlight/internal/app"
+	"openlight/internal/config"
+	"openlight/internal/router"
+	"openlight/internal/skills"
+	"openlight/internal/storage/sqlite"
 )
 
 func TestParseSmokeNoteID(t *testing.T) {
@@ -37,6 +46,7 @@ func TestSmokeReportRenderTable(t *testing.T) {
 	report := SmokeReport{
 		Rows: []SmokeRow{
 			{Check: "core.ping", Command: "ping", Status: SmokePass, Duration: 25 * time.Millisecond, Summary: "pong"},
+			{Check: "chat.chat", Command: "chat reply with exactly SMOKE_CHAT_OK", Status: SmokePass, Duration: 900 * time.Millisecond, Summary: "SMOKE_CHAT_OK"},
 			{Check: "services.restart", Command: "restart tailscale", Status: SmokeSkip, Summary: "skipped for safety"},
 		},
 	}
@@ -47,12 +57,124 @@ func TestSmokeReportRenderTable(t *testing.T) {
 		"core.ping",
 		"PASS",
 		"SKIP",
-		"Result: PASS | pass=1 fail=0 skip=1",
-		"Totals: 2/2 completed without failure",
+		"Result: PASS | pass=2 fail=0 skip=1",
+		"Totals: 3/3 completed without failure",
+		"Latency: checks=2 min=25ms p50=900ms p95=900ms max=900ms",
+		"Latency LLM: checks=1 min=900ms p50=900ms p95=900ms max=900ms",
+		"Slowest: chat.chat=900ms | core.ping=25ms",
 	} {
 		if !strings.Contains(text, fragment) {
 			t.Fatalf("expected %q in rendered table, got:\n%s", fragment, text)
 		}
+	}
+}
+
+func TestSmokeReportLatencySummary(t *testing.T) {
+	t.Parallel()
+
+	report := SmokeReport{
+		Rows: []SmokeRow{
+			{Check: "core.ping", Status: SmokePass, Duration: 10 * time.Millisecond},
+			{Check: "system.status", Status: SmokePass, Duration: 20 * time.Millisecond},
+			{Check: "chat.chat", Status: SmokePass, Duration: 300 * time.Millisecond},
+			{Check: "llm.route_status", Status: SmokeFail, Duration: 600 * time.Millisecond},
+			{Check: "services.restart", Status: SmokeSkip},
+		},
+	}
+
+	stats, ok := report.LatencySummary()
+	if !ok {
+		t.Fatal("expected latency summary")
+	}
+	if stats.Count != 4 || stats.Min != 10*time.Millisecond || stats.P50 != 300*time.Millisecond || stats.P95 != 600*time.Millisecond || stats.Max != 600*time.Millisecond {
+		t.Fatalf("unexpected latency summary: %#v", stats)
+	}
+
+	llmStats, ok := report.LLMLatencySummary()
+	if !ok {
+		t.Fatal("expected llm latency summary")
+	}
+	if llmStats.Count != 2 || llmStats.Min != 300*time.Millisecond || llmStats.P50 != 600*time.Millisecond || llmStats.P95 != 600*time.Millisecond || llmStats.Max != 600*time.Millisecond {
+		t.Fatalf("unexpected llm latency summary: %#v", llmStats)
+	}
+}
+
+func TestSmokeProgressOutput(t *testing.T) {
+	t.Parallel()
+
+	var buffer bytes.Buffer
+	writeSmokeProgressStart(&buffer, "core.ping", "ping")
+	writeSmokeProgressDone(&buffer, SmokeRow{
+		Check:    "core.ping",
+		Command:  "ping",
+		Status:   SmokePass,
+		Duration: 25 * time.Millisecond,
+		Summary:  "pong",
+	})
+
+	text := buffer.String()
+	for _, fragment := range []string{
+		"[RUN ] core.ping | ping",
+		"[PASS] core.ping | 25ms | pong",
+	} {
+		if !strings.Contains(text, fragment) {
+			t.Fatalf("expected %q in progress output, got:\n%s", fragment, text)
+		}
+	}
+}
+
+func TestAddLLMFallbackExecCheckUsesClassifierDecision(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	repo, err := sqlite.New(ctx, filepath.Join(t.TempDir(), "agent.db"), nil)
+	if err != nil {
+		t.Fatalf("sqlite.New returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = repo.Close()
+	})
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(smokeTestSkill{
+		name:     "llm_only_memory",
+		group:    skills.GroupSystem,
+		response: "Memory usage: 42%",
+	})
+
+	runtime := app.Runtime{
+		Registry: registry,
+		Classifier: smokeStubClassifier{
+			decision: router.Decision{
+				Mode:       router.ModeLLM,
+				SkillName:  "llm_only_memory",
+				Args:       map[string]string{},
+				Confidence: 0.91,
+			},
+			ok: true,
+		},
+		Repository: repo,
+	}
+
+	harness := NewHarness(config.Config{
+		Auth: config.AuthConfig{
+			AllowedUserIDs: []int64{1},
+		},
+		Agent: config.AgentConfig{
+			RequestTimeout: time.Second,
+		},
+	}, runtime, 1, 1)
+
+	var report SmokeReport
+	addLLMFallbackExecCheck(&report, runtime, harness, io.Discard, ctx, "llm.fallback.memory", expectDecisionSkill("llm_only_memory", nil), expectContains("Memory usage:"),
+		"How much RAM is being used right now?",
+	)
+
+	if len(report.Rows) != 1 {
+		t.Fatalf("expected 1 smoke row, got %d", len(report.Rows))
+	}
+	if report.Rows[0].Status != SmokePass {
+		t.Fatalf("expected fallback check to pass, got %#v", report.Rows[0])
 	}
 }
 
@@ -101,4 +223,30 @@ func TestExpectContainsAllFold(t *testing.T) {
 	if err := validate("Alert #2: Memory is 17.2%"); err != nil {
 		t.Fatalf("expectContainsAllFold returned error: %v", err)
 	}
+}
+
+type smokeStubClassifier struct {
+	decision router.Decision
+	ok       bool
+}
+
+func (s smokeStubClassifier) Classify(context.Context, string) (router.Decision, bool, error) {
+	return s.decision, s.ok, nil
+}
+
+type smokeTestSkill struct {
+	name     string
+	group    skills.Group
+	response string
+}
+
+func (s smokeTestSkill) Definition() skills.Definition {
+	return skills.Definition{
+		Name:  s.name,
+		Group: s.group,
+	}
+}
+
+func (s smokeTestSkill) Execute(context.Context, skills.Input) (skills.Result, error) {
+	return skills.Result{Text: s.response}, nil
 }

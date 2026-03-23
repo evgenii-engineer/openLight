@@ -92,28 +92,45 @@ func NewOpenAIProvider(endpoint, model, apiKey string, timeout time.Duration, lo
 }
 
 func (p *OpenAIProvider) ClassifyRoute(ctx context.Context, text string, request RouteClassificationRequest) (RouteClassification, error) {
-	prompt := buildRoutePrompt(limitText(text, request.InputChars), request)
-	responseText, err := p.createTextResponse(ctx, openAIResponsesRequest{
+	response, err := p.createResponse(ctx, openAIResponsesRequest{
 		Model:           p.model,
-		Input:           prompt,
-		Temperature:     0.1,
+		Instructions:    buildRouteToolInstructions(request),
+		Input:           limitText(text, request.InputChars),
+		Temperature:     0,
 		MaxOutputTokens: decisionNumPredict(request.NumPredict),
 		Store:           false,
 		Text: openAITextSpec{
-			Format: openAIJSONSchemaFormat("route_response", routeResponseSchema(groupKeys(request.Groups))),
+			Format: map[string]any{
+				"type": "text",
+			},
 		},
+		Tools:             openAIRouteTools(request),
+		ToolChoice:        "required",
+		ParallelToolCalls: openAIBool(false),
 	})
 	if err != nil {
 		return RouteClassification{}, err
 	}
 
-	if p.logger != nil {
-		p.logger.Debug("openai route raw response", "response", responseText)
+	call, ok := openAIFirstFunctionCall(response)
+	if !ok {
+		responseText := strings.TrimSpace(openAIResponseText(response))
+		if p.logger != nil {
+			p.logger.Debug("openai route raw response", "response", responseText)
+		}
+		if responseText == "" {
+			return RouteClassification{}, fmt.Errorf("openai route response missing function call")
+		}
+		return RouteClassification{}, fmt.Errorf("openai route response missing function call: %s", responseText)
 	}
 
-	var classification RouteClassification
-	if err := json.Unmarshal([]byte(responseText), &classification); err != nil {
-		return RouteClassification{}, fmt.Errorf("decode openai route response: %w", err)
+	if p.logger != nil {
+		p.logger.Debug("openai route raw response", "tool", call.Name, "arguments", call.Arguments)
+	}
+
+	classification, err := openAIRouteClassificationFromFunctionCall(call)
+	if err != nil {
+		return RouteClassification{}, err
 	}
 
 	return normalizeRouteClassification(classification), nil
@@ -124,7 +141,7 @@ func (p *OpenAIProvider) ClassifySkill(ctx context.Context, text string, request
 		Model:           p.model,
 		Instructions:    buildSkillToolInstructions(request),
 		Input:           limitText(text, request.InputChars),
-		Temperature:     0.1,
+		Temperature:     0,
 		MaxOutputTokens: decisionNumPredict(request.NumPredict),
 		Store:           false,
 		Text: openAITextSpec{
@@ -189,7 +206,7 @@ func (p *OpenAIProvider) Summarize(ctx context.Context, text string) (string, er
 	var response struct {
 		Summary string `json:"summary"`
 	}
-	if err := json.Unmarshal([]byte(responseText), &response); err != nil {
+	if err := json.Unmarshal([]byte(extractJSON(responseText)), &response); err != nil {
 		return "", fmt.Errorf("decode openai summary response: %w", err)
 	}
 
@@ -330,6 +347,39 @@ func openAIClassificationFromFunctionCall(call openAIOutputItem) (Classification
 	}, nil
 }
 
+func openAIRouteClassificationFromFunctionCall(call openAIOutputItem) (RouteClassification, error) {
+	arguments, err := openAIArgumentsStringMap(call.Arguments)
+	if err != nil {
+		return RouteClassification{}, fmt.Errorf("decode openai route function arguments: %w", err)
+	}
+
+	if call.Name == openAIClarificationToolName {
+		return RouteClassification{
+			NeedsClarification:    true,
+			ClarificationQuestion: strings.TrimSpace(arguments["question"]),
+		}, nil
+	}
+
+	if call.Name != openAIRouteToolName {
+		return RouteClassification{}, fmt.Errorf("unexpected openai route function call: %s", strings.TrimSpace(call.Name))
+	}
+
+	confidenceText := strings.TrimSpace(arguments["confidence"])
+	if confidenceText == "" {
+		return RouteClassification{}, fmt.Errorf("openai route function call missing confidence")
+	}
+
+	confidence, err := strconv.ParseFloat(confidenceText, 64)
+	if err != nil {
+		return RouteClassification{}, fmt.Errorf("parse openai route confidence: %w", err)
+	}
+
+	return RouteClassification{
+		Intent:     strings.TrimSpace(arguments["intent"]),
+		Confidence: confidence,
+	}, nil
+}
+
 func openAIArgumentsStringMap(raw string) (map[string]string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -337,7 +387,7 @@ func openAIArgumentsStringMap(raw string) (map[string]string, error) {
 	}
 
 	var decoded map[string]any
-	if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
+	if err := json.Unmarshal([]byte(extractJSON(raw)), &decoded); err != nil {
 		return nil, err
 	}
 

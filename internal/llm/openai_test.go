@@ -36,7 +36,7 @@ func TestOpenAIProviderClassifyRoute(t *testing.T) {
 			if payload["max_output_tokens"] != float64(64) {
 				t.Fatalf("unexpected max_output_tokens: %#v", payload["max_output_tokens"])
 			}
-			if payload["temperature"] != 0.1 {
+			if value, ok := payload["temperature"]; ok && value != 0.0 {
 				t.Fatalf("unexpected temperature: %#v", payload["temperature"])
 			}
 
@@ -44,37 +44,52 @@ func TestOpenAIProviderClassifyRoute(t *testing.T) {
 			if !ok || !strings.Contains(text, "restart tailscale") {
 				t.Fatalf("unexpected input payload: %#v", payload["input"])
 			}
+			if payload["tool_choice"] != "required" {
+				t.Fatalf("unexpected tool_choice: %#v", payload["tool_choice"])
+			}
+			if payload["parallel_tool_calls"] != false {
+				t.Fatalf("unexpected parallel_tool_calls: %#v", payload["parallel_tool_calls"])
+			}
 
 			textConfig, ok := payload["text"].(map[string]any)
 			if !ok {
 				t.Fatalf("unexpected text config: %#v", payload["text"])
 			}
 			format, ok := textConfig["format"].(map[string]any)
-			if !ok || format["type"] != "json_schema" {
+			if !ok || format["type"] != "text" {
 				t.Fatalf("unexpected format config: %#v", textConfig["format"])
 			}
-			if format["name"] != "route_response" {
-				t.Fatalf("unexpected format name: %#v", format["name"])
+
+			tools, ok := payload["tools"].([]any)
+			if !ok || len(tools) != 2 {
+				t.Fatalf("unexpected tools payload: %#v", payload["tools"])
 			}
-			schema, ok := format["schema"].(map[string]any)
+			routeTool, ok := tools[0].(map[string]any)
+			if !ok || routeTool["type"] != "function" || routeTool["name"] != openAIRouteToolName || routeTool["strict"] != true {
+				t.Fatalf("unexpected route tool: %#v", tools[0])
+			}
+			parameters, ok := routeTool["parameters"].(map[string]any)
 			if !ok {
-				t.Fatalf("unexpected schema config: %#v", format["schema"])
+				t.Fatalf("unexpected route parameters: %#v", routeTool["parameters"])
 			}
-			required, ok := schema["required"].([]any)
-			if !ok || len(required) != 4 || !containsValue(required, "clarification_question") {
-				t.Fatalf("unexpected required fields: %#v", schema["required"])
+			properties, ok := parameters["properties"].(map[string]any)
+			if !ok {
+				t.Fatalf("unexpected route properties: %#v", parameters["properties"])
+			}
+			if _, ok := properties["intent"]; !ok {
+				t.Fatalf("expected intent property, got %#v", properties)
+			}
+			if _, ok := properties["confidence"]; !ok {
+				t.Fatalf("expected confidence property, got %#v", properties)
 			}
 
 			return jsonHTTPResponse(map[string]any{
 				"output": []map[string]any{
 					{
-						"type": "message",
-						"content": []map[string]any{
-							{
-								"type": "output_text",
-								"text": `{"intent":"services","confidence":0.93,"needs_clarification":false,"clarification_question":""}`,
-							},
-						},
+						"type":      "function_call",
+						"name":      openAIRouteToolName,
+						"arguments": `{"intent":"services","confidence":0.93}`,
+						"status":    "completed",
 					},
 				},
 			}), nil
@@ -94,6 +109,44 @@ func TestOpenAIProviderClassifyRoute(t *testing.T) {
 	}
 	if classification.Intent != "services" {
 		t.Fatalf("unexpected intent: %q", classification.Intent)
+	}
+}
+
+func TestOpenAIProviderClassifyRouteClarificationTool(t *testing.T) {
+	t.Parallel()
+
+	provider := NewOpenAIProvider("https://api.openai.com/v1", "gpt-4o-mini", "secret", time.Second, nil)
+	provider.client = &http.Client{
+		Timeout: time.Second,
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			return jsonHTTPResponse(map[string]any{
+				"output": []map[string]any{
+					{
+						"type":      "function_call",
+						"name":      openAIClarificationToolName,
+						"arguments": `{"question":"Do you want the start message or general help?"}`,
+						"status":    "completed",
+					},
+				},
+			}), nil
+		}),
+	}
+
+	classification, err := provider.ClassifyRoute(context.Background(), "show me something for this bot", RouteClassificationRequest{
+		Groups: []GroupOption{
+			{Key: "core", Title: "Core", Description: "Help, discovery, and core bot commands."},
+		},
+		InputChars: 160,
+		NumPredict: 64,
+	})
+	if err != nil {
+		t.Fatalf("ClassifyRoute returned error: %v", err)
+	}
+	if !classification.NeedsClarification {
+		t.Fatalf("expected clarification classification: %#v", classification)
+	}
+	if classification.ClarificationQuestion != "Do you want the start message or general help?" {
+		t.Fatalf("unexpected clarification question: %q", classification.ClarificationQuestion)
 	}
 }
 
@@ -195,6 +248,89 @@ func TestOpenAIProviderClassifySkill(t *testing.T) {
 		t.Fatalf("unexpected skill: %q", classification.Skill)
 	}
 	if classification.Arguments["service"] != "tailscale" {
+		t.Fatalf("unexpected args: %#v", classification.Arguments)
+	}
+}
+
+func TestOpenAISkillToolsIncludeAccountArguments(t *testing.T) {
+	t.Parallel()
+
+	provider := NewOpenAIProvider("https://api.openai.com/v1", "gpt-4o-mini", "secret", time.Second, nil)
+	provider.client = &http.Client{
+		Timeout: time.Second,
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+
+			tools, ok := payload["tools"].([]any)
+			if !ok {
+				t.Fatalf("unexpected tools payload: %#v", payload["tools"])
+			}
+
+			findTool := func(name string) map[string]any {
+				for _, raw := range tools {
+					tool, ok := raw.(map[string]any)
+					if ok && tool["name"] == name {
+						return tool
+					}
+				}
+				return nil
+			}
+
+			assertProperty := func(toolName, propertyName string) {
+				t.Helper()
+				tool := findTool(toolName)
+				if tool == nil {
+					t.Fatalf("missing tool %q in %#v", toolName, tools)
+				}
+				parameters, ok := tool["parameters"].(map[string]any)
+				if !ok {
+					t.Fatalf("unexpected parameters for %s: %#v", toolName, tool["parameters"])
+				}
+				properties, ok := parameters["properties"].(map[string]any)
+				if !ok {
+					t.Fatalf("unexpected properties for %s: %#v", toolName, parameters["properties"])
+				}
+				if _, ok := properties[propertyName]; !ok {
+					t.Fatalf("expected %s property on %s, got %#v", propertyName, toolName, properties)
+				}
+			}
+
+			assertProperty("user_add", "provider")
+			assertProperty("user_add", "username")
+			assertProperty("user_add", "password")
+			assertProperty("user_list", "provider")
+			assertProperty("user_list", "pattern")
+			assertProperty("user_delete", "provider")
+			assertProperty("user_delete", "username")
+
+			return jsonHTTPResponse(map[string]any{
+				"output": []map[string]any{
+					{
+						"type":      "function_call",
+						"name":      "user_add",
+						"arguments": `{"provider":"jitsi","username":"anya","password":"secret"}`,
+						"status":    "completed",
+					},
+				},
+			}), nil
+		}),
+	}
+
+	classification, err := provider.ClassifySkill(context.Background(), "create user anya in jitsi with password secret", SkillClassificationRequest{
+		AllowedSkills: []string{"user_add", "user_list", "user_delete"},
+		InputChars:    160,
+		NumPredict:    64,
+	})
+	if err != nil {
+		t.Fatalf("ClassifySkill returned error: %v", err)
+	}
+	if classification.Skill != "user_add" {
+		t.Fatalf("unexpected skill: %q", classification.Skill)
+	}
+	if classification.Arguments["provider"] != "jitsi" || classification.Arguments["username"] != "anya" || classification.Arguments["password"] != "secret" {
 		t.Fatalf("unexpected args: %#v", classification.Arguments)
 	}
 }

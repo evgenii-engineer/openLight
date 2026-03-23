@@ -201,6 +201,688 @@ func TestClassifierRoutesChatWithOriginalText(t *testing.T) {
 	}
 }
 
+func TestClassifierRescuesStartWhenRouteChoosesChat(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "start", group: skills.GroupCore})
+	registry.MustRegister(testSkill{name: "chat", group: skills.GroupChat})
+
+	classifier := NewClassifier(&stubProvider{
+		routeClassification: basellm.RouteClassification{
+			Intent:     "chat",
+			Confidence: 0.96,
+		},
+	}, registry, Options{}, nil)
+
+	decision, ok, err := classifier.Classify(context.Background(), "Please show the onboarding message for this bot.")
+	if err != nil {
+		t.Fatalf("Classify returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected rescued decision")
+	}
+	if decision.SkillName != "start" {
+		t.Fatalf("unexpected decision: %#v", decision)
+	}
+}
+
+func TestClassifierRescuesStatusWhenRouteClarifies(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "status", group: skills.GroupSystem})
+
+	classifier := NewClassifier(&stubProvider{
+		routeClassification: basellm.RouteClassification{
+			Intent:                "system",
+			Confidence:            0.91,
+			NeedsClarification:    true,
+			ClarificationQuestion: "Do you want something from system metrics or host info?",
+		},
+	}, registry, Options{}, nil)
+
+	decision, ok, err := classifier.Classify(context.Background(), "Could you give me a quick health snapshot of this host?")
+	if err != nil {
+		t.Fatalf("Classify returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected rescued decision")
+	}
+	if decision.SkillName != "status" {
+		t.Fatalf("unexpected decision: %#v", decision)
+	}
+}
+
+func TestClassifierRescuesCPUWhenRouteChoosesWrongGroup(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "cpu", group: skills.GroupSystem})
+	registry.MustRegister(testSkill{name: "skills", group: skills.GroupCore})
+
+	classifier := NewClassifier(&stubProvider{
+		routeClassification: basellm.RouteClassification{
+			Intent:     "core",
+			Confidence: 0.92,
+		},
+	}, registry, Options{}, nil)
+
+	decision, ok, err := classifier.Classify(context.Background(), "How busy is the processor right now?")
+	if err != nil {
+		t.Fatalf("Classify returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected rescued decision")
+	}
+	if decision.SkillName != "cpu" {
+		t.Fatalf("unexpected decision: %#v", decision)
+	}
+}
+
+func TestClassifierInfersFileWriteArgumentsFromPrompt(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "file_write", group: skills.GroupFiles, mutating: true})
+
+	classifier := NewClassifier(&stubProvider{
+		routeClassification: basellm.RouteClassification{
+			Intent:     "files",
+			Confidence: 0.93,
+		},
+		skillClassification: basellm.Classification{
+			Skill:     "file_write",
+			Arguments: map[string]string{},
+		},
+	}, registry, Options{}, nil)
+
+	decision, ok, err := classifier.Classify(context.Background(), "Create a text file at /tmp/openlight/demo.txt containing smoke-gamma")
+	if err != nil {
+		t.Fatalf("Classify returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected classifier match")
+	}
+	if decision.SkillName != "file_write" {
+		t.Fatalf("unexpected decision: %#v", decision)
+	}
+	if decision.Args["path"] != "/tmp/openlight/demo.txt" || decision.Args["content"] != "smoke-gamma" {
+		t.Fatalf("unexpected args: %#v", decision.Args)
+	}
+}
+
+func TestClassifierRescuesWatchHistoryFromGenericListSkill(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "watch_list", group: skills.GroupWatch})
+	registry.MustRegister(testSkill{name: "watch_history", group: skills.GroupWatch})
+
+	classifier := NewClassifier(&stubProvider{
+		routeClassification: basellm.RouteClassification{
+			Intent:     "watch",
+			Confidence: 0.94,
+		},
+		skillClassification: basellm.Classification{
+			Skill: "watch_list",
+		},
+	}, registry, Options{}, nil)
+
+	decision, ok, err := classifier.Classify(context.Background(), "I want to inspect recent incidents for watch 21.")
+	if err != nil {
+		t.Fatalf("Classify returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected rescued decision")
+	}
+	if decision.SkillName != "watch_history" || decision.Args["id"] != "21" {
+		t.Fatalf("unexpected decision: %#v", decision)
+	}
+}
+
+func TestClassifierRescuesFileWriteWhenSkillMissing(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "file_write", group: skills.GroupFiles, mutating: true})
+
+	classifier := NewClassifier(&stubProvider{
+		routeClassification: basellm.RouteClassification{
+			Intent:     "files",
+			Confidence: 0.95,
+		},
+		skillClassification: basellm.Classification{},
+	}, registry, Options{}, nil)
+
+	decision, ok, err := classifier.Classify(context.Background(), "Please use the file write skill to create /tmp/openlight/demo.txt with content smoke-gamma.")
+	if err != nil {
+		t.Fatalf("Classify returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected rescued decision")
+	}
+	if decision.SkillName != "file_write" || decision.Args["path"] != "/tmp/openlight/demo.txt" || decision.Args["content"] != "smoke-gamma" {
+		t.Fatalf("unexpected decision: %#v", decision)
+	}
+}
+
+func TestClassifierRescuesFileWriteRouteFromChatPromptContaining(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "file_write", group: skills.GroupFiles, mutating: true})
+	registry.MustRegister(testSkill{name: "chat", group: skills.GroupChat})
+
+	classifier := NewClassifier(&stubProvider{
+		routeClassification: basellm.RouteClassification{
+			Intent:     "chat",
+			Confidence: 0.9,
+		},
+	}, registry, Options{}, nil)
+
+	decision, ok, err := classifier.Classify(context.Background(), "Create a text file at /tmp/openlight/demo.txt containing smoke-gamma")
+	if err != nil {
+		t.Fatalf("Classify returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected rescued decision")
+	}
+	if decision.SkillName != "file_write" || decision.Args["path"] != "/tmp/openlight/demo.txt" || decision.Args["content"] != "smoke-gamma" {
+		t.Fatalf("unexpected decision: %#v", decision)
+	}
+}
+
+func TestClassifierShortCircuitsExplicitFileWriteBeforeLLM(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "file_write", group: skills.GroupFiles, mutating: true})
+
+	provider := &stubProvider{
+		routeClassification: basellm.RouteClassification{
+			Intent:     "chat",
+			Confidence: 0.1,
+		},
+	}
+
+	classifier := NewClassifier(provider, registry, Options{}, nil)
+
+	decision, ok, err := classifier.Classify(context.Background(), "Please write smoke-gamma into /tmp/openlight/demo.txt")
+	if err != nil {
+		t.Fatalf("Classify returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected heuristic decision")
+	}
+	if decision.SkillName != "file_write" || decision.Args["path"] != "/tmp/openlight/demo.txt" || decision.Args["content"] != "smoke-gamma" {
+		t.Fatalf("unexpected decision: %#v", decision)
+	}
+	if provider.routeRequest.Groups != nil {
+		t.Fatalf("expected LLM route classification to be skipped, got %#v", provider.routeRequest)
+	}
+}
+
+func TestClassifierShortCircuitsFileWritePromptToFileWriteEvenWithOpenlightPath(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "file_write", group: skills.GroupFiles, mutating: true})
+	registry.MustRegister(testSkill{name: "file_read", group: skills.GroupFiles})
+
+	provider := &stubProvider{
+		routeClassification: basellm.RouteClassification{
+			Intent:     "chat",
+			Confidence: 0.1,
+		},
+	}
+
+	classifier := NewClassifier(provider, registry, Options{}, nil)
+
+	decision, ok, err := classifier.Classify(context.Background(), "Create a text file at /tmp/openlight/demo.txt containing smoke-gamma")
+	if err != nil {
+		t.Fatalf("Classify returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected heuristic decision")
+	}
+	if decision.SkillName != "file_write" || decision.Args["path"] != "/tmp/openlight/demo.txt" || decision.Args["content"] != "smoke-gamma" {
+		t.Fatalf("unexpected decision: %#v", decision)
+	}
+	if provider.routeRequest.Groups != nil {
+		t.Fatalf("expected LLM route classification to be skipped, got %#v", provider.routeRequest)
+	}
+}
+
+func TestClassifierRescuesFileWriteRouteFromChatPromptInto(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "file_write", group: skills.GroupFiles, mutating: true})
+	registry.MustRegister(testSkill{name: "chat", group: skills.GroupChat})
+
+	classifier := NewClassifier(&stubProvider{
+		routeClassification: basellm.RouteClassification{
+			Intent:     "chat",
+			Confidence: 1.0,
+		},
+	}, registry, Options{}, nil)
+
+	decision, ok, err := classifier.Classify(context.Background(), "Please write smoke-gamma into /tmp/openlight/demo.txt")
+	if err != nil {
+		t.Fatalf("Classify returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected rescued decision")
+	}
+	if decision.SkillName != "file_write" || decision.Args["path"] != "/tmp/openlight/demo.txt" || decision.Args["content"] != "smoke-gamma" {
+		t.Fatalf("unexpected decision: %#v", decision)
+	}
+}
+
+func TestClassifierRescuesFileWriteRouteFromWorkbenchPrompt(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "file_write", group: skills.GroupFiles, mutating: true})
+	registry.MustRegister(testSkill{name: "exec_file", group: skills.GroupWorkbench})
+
+	classifier := NewClassifier(&stubProvider{
+		routeClassification: basellm.RouteClassification{
+			Intent:     "workbench",
+			Confidence: 1.0,
+		},
+	}, registry, Options{}, nil)
+
+	decision, ok, err := classifier.Classify(context.Background(), "Please use the file write skill to create /tmp/openlight/demo.txt with content smoke-gamma.")
+	if err != nil {
+		t.Fatalf("Classify returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected rescued decision")
+	}
+	if decision.SkillName != "file_write" || decision.Args["path"] != "/tmp/openlight/demo.txt" || decision.Args["content"] != "smoke-gamma" {
+		t.Fatalf("unexpected decision: %#v", decision)
+	}
+}
+
+func TestClassifierRescuesFileWriteClarification(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "file_write", group: skills.GroupFiles, mutating: true})
+
+	classifier := NewClassifier(&stubProvider{
+		routeClassification: basellm.RouteClassification{
+			Intent:     "files",
+			Confidence: 0.95,
+		},
+		skillClassification: basellm.Classification{
+			NeedsClarification:    true,
+			ClarificationQuestion: "Which file should I write?",
+		},
+	}, registry, Options{}, nil)
+
+	decision, ok, err := classifier.Classify(context.Background(), "Create a text file at /tmp/openlight/demo.txt containing smoke-gamma")
+	if err != nil {
+		t.Fatalf("Classify returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected rescued decision")
+	}
+	if decision.ShouldClarify() {
+		t.Fatalf("did not expect clarification, got %#v", decision)
+	}
+	if decision.SkillName != "file_write" || decision.Args["path"] != "/tmp/openlight/demo.txt" || decision.Args["content"] != "smoke-gamma" {
+		t.Fatalf("unexpected decision: %#v", decision)
+	}
+}
+
+func TestClassifierRescuesCorruptedFileWriteArguments(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "file_write", group: skills.GroupFiles, mutating: true})
+
+	classifier := NewClassifier(&stubProvider{
+		routeClassification: basellm.RouteClassification{
+			Intent:     "files",
+			Confidence: 0.95,
+		},
+		skillClassification: basellm.Classification{
+			Skill: "file_write",
+			Arguments: map[string]string{
+				"path": "/tmp/openlight/demo.txt with content smoke-gamma",
+			},
+		},
+	}, registry, Options{}, nil)
+
+	decision, ok, err := classifier.Classify(context.Background(), "Please use the file write skill to create /tmp/openlight/demo.txt with content smoke-gamma.")
+	if err != nil {
+		t.Fatalf("Classify returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected rescued decision")
+	}
+	if decision.SkillName != "file_write" || decision.Args["path"] != "/tmp/openlight/demo.txt" || decision.Args["content"] != "smoke-gamma" {
+		t.Fatalf("unexpected decision: %#v", decision)
+	}
+}
+
+func TestClassifierRescuesFileWriteDirectoryPathToSpecificFile(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "file_write", group: skills.GroupFiles, mutating: true})
+
+	classifier := NewClassifier(&stubProvider{
+		routeClassification: basellm.RouteClassification{
+			Intent:     "files",
+			Confidence: 0.95,
+		},
+		skillClassification: basellm.Classification{
+			Skill: "file_write",
+			Arguments: map[string]string{
+				"path": "/tmp/openlight",
+			},
+		},
+	}, registry, Options{}, nil)
+
+	decision, ok, err := classifier.Classify(context.Background(), "Create a text file at /tmp/openlight/demo.txt containing smoke-gamma")
+	if err != nil {
+		t.Fatalf("Classify returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected rescued decision")
+	}
+	if decision.SkillName != "file_write" || decision.Args["path"] != "/tmp/openlight/demo.txt" || decision.Args["content"] != "smoke-gamma" {
+		t.Fatalf("unexpected decision: %#v", decision)
+	}
+}
+
+func TestClassifierPrefersExplicitPromptPathForFileWrite(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "file_write", group: skills.GroupFiles, mutating: true})
+
+	classifier := NewClassifier(&stubProvider{
+		routeClassification: basellm.RouteClassification{
+			Intent:     "files",
+			Confidence: 0.95,
+		},
+		skillClassification: basellm.Classification{
+			Skill: "file_write",
+			Arguments: map[string]string{
+				"path": "/tmp/openlight/other.txt",
+			},
+		},
+	}, registry, Options{}, nil)
+
+	decision, ok, err := classifier.Classify(context.Background(), "Create a text file at /tmp/openlight/demo.txt containing smoke-gamma")
+	if err != nil {
+		t.Fatalf("Classify returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected classifier match")
+	}
+	if decision.SkillName != "file_write" || decision.Args["path"] != "/tmp/openlight/demo.txt" {
+		t.Fatalf("unexpected decision: %#v", decision)
+	}
+}
+
+func TestClassifierRescuesFileReadTrailingPunctuationPath(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "file_read", group: skills.GroupFiles})
+
+	classifier := NewClassifier(&stubProvider{
+		routeClassification: basellm.RouteClassification{
+			Intent:     "files",
+			Confidence: 0.95,
+		},
+		skillClassification: basellm.Classification{
+			Skill: "file_read",
+			Arguments: map[string]string{
+				"path": "/tmp/openlight/demo.txt.",
+			},
+		},
+	}, registry, Options{}, nil)
+
+	decision, ok, err := classifier.Classify(context.Background(), "Please read file /tmp/openlight/demo.txt.")
+	if err != nil {
+		t.Fatalf("Classify returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected rescued decision")
+	}
+	if decision.SkillName != "file_read" || decision.Args["path"] != "/tmp/openlight/demo.txt" {
+		t.Fatalf("unexpected decision: %#v", decision)
+	}
+}
+
+func TestClassifierPrefersExplicitPromptPathForFileReplace(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "file_replace", group: skills.GroupFiles, mutating: true})
+
+	classifier := NewClassifier(&stubProvider{
+		routeClassification: basellm.RouteClassification{
+			Intent:     "files",
+			Confidence: 0.95,
+		},
+		skillClassification: basellm.Classification{
+			Skill: "file_replace",
+			Arguments: map[string]string{
+				"path":    "/tmp/openlight/other.txt",
+				"find":    "smoke-gamma",
+				"replace": "smoke-delta",
+			},
+		},
+	}, registry, Options{}, nil)
+
+	decision, ok, err := classifier.Classify(context.Background(), "In /tmp/openlight/demo.txt replace smoke-gamma with smoke-delta.")
+	if err != nil {
+		t.Fatalf("Classify returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected classifier match")
+	}
+	if decision.SkillName != "file_replace" || decision.Args["path"] != "/tmp/openlight/demo.txt" {
+		t.Fatalf("unexpected decision: %#v", decision)
+	}
+}
+
+func TestClassifierShortCircuitsFileListPromptToFileList(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "file_list", group: skills.GroupFiles})
+	registry.MustRegister(testSkill{name: "file_read", group: skills.GroupFiles})
+
+	provider := &stubProvider{
+		routeClassification: basellm.RouteClassification{
+			Intent:     "chat",
+			Confidence: 0.1,
+		},
+	}
+
+	classifier := NewClassifier(provider, registry, Options{}, nil)
+
+	decision, ok, err := classifier.Classify(context.Background(), "What files are in /tmp/openlight right now?")
+	if err != nil {
+		t.Fatalf("Classify returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected heuristic decision")
+	}
+	if decision.SkillName != "file_list" || decision.Args["path"] != "/tmp/openlight" {
+		t.Fatalf("unexpected decision: %#v", decision)
+	}
+	if provider.routeRequest.Groups != nil {
+		t.Fatalf("expected LLM route classification to be skipped, got %#v", provider.routeRequest)
+	}
+}
+
+func TestClassifierRescuesFileListFromSpecificFilePath(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "file_list", group: skills.GroupFiles})
+
+	classifier := NewClassifier(&stubProvider{
+		routeClassification: basellm.RouteClassification{
+			Intent:     "files",
+			Confidence: 0.95,
+		},
+		skillClassification: basellm.Classification{
+			Skill: "file_list",
+			Arguments: map[string]string{
+				"path": "/tmp/openlight/demo.txt",
+			},
+		},
+	}, registry, Options{}, nil)
+
+	decision, ok, err := classifier.Classify(context.Background(), "What files are in /tmp/openlight right now?")
+	if err != nil {
+		t.Fatalf("Classify returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected rescued decision")
+	}
+	if decision.SkillName != "file_list" || decision.Args["path"] != "/tmp/openlight" {
+		t.Fatalf("unexpected decision: %#v", decision)
+	}
+}
+
+func TestClassifierRescuesFileReplaceDirectoryPathToSpecificFile(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "file_replace", group: skills.GroupFiles, mutating: true})
+
+	classifier := NewClassifier(&stubProvider{
+		routeClassification: basellm.RouteClassification{
+			Intent:     "files",
+			Confidence: 0.95,
+		},
+		skillClassification: basellm.Classification{
+			Skill: "file_replace",
+			Arguments: map[string]string{
+				"path":    "/tmp/openlight",
+				"find":    "smoke-gamma",
+				"replace": "smoke-delta",
+			},
+		},
+	}, registry, Options{}, nil)
+
+	decision, ok, err := classifier.Classify(context.Background(), "In /tmp/openlight/demo.txt replace smoke-gamma with smoke-delta.")
+	if err != nil {
+		t.Fatalf("Classify returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected rescued decision")
+	}
+	if decision.SkillName != "file_replace" || decision.Args["path"] != "/tmp/openlight/demo.txt" {
+		t.Fatalf("unexpected decision: %#v", decision)
+	}
+}
+
+func TestClassifierRescuesUserAddWhenSkillMissing(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "user_add", group: skills.GroupAccounts, mutating: true})
+
+	classifier := NewClassifier(&stubProvider{
+		routeClassification: basellm.RouteClassification{
+			Intent:     "accounts",
+			Confidence: 0.93,
+		},
+		skillClassification: basellm.Classification{},
+	}, registry, Options{}, nil)
+
+	decision, ok, err := classifier.Classify(context.Background(), "Please add user smoke_user to jitsi using password smoke-pass-1.")
+	if err != nil {
+		t.Fatalf("Classify returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected rescued decision")
+	}
+	if decision.SkillName != "user_add" {
+		t.Fatalf("unexpected decision: %#v", decision)
+	}
+	if decision.Args["provider"] != "jitsi" || decision.Args["username"] != "smoke_user" || decision.Args["password"] != "smoke-pass-1" {
+		t.Fatalf("unexpected args: %#v", decision.Args)
+	}
+}
+
+func TestClassifierInfersExecCodeArgumentsFromPrompt(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "exec_code", group: skills.GroupWorkbench, mutating: true})
+
+	classifier := NewClassifier(&stubProvider{
+		routeClassification: basellm.RouteClassification{
+			Intent:     "workbench",
+			Confidence: 0.94,
+		},
+		skillClassification: basellm.Classification{
+			Skill:     "exec_code",
+			Arguments: map[string]string{},
+		},
+	}, registry, Options{}, nil)
+
+	decision, ok, err := classifier.Classify(context.Background(), "Please execute this sh snippet and show me the output: printf 'smoke-workbench-llm-ok\\n'")
+	if err != nil {
+		t.Fatalf("Classify returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected classifier match")
+	}
+	if decision.SkillName != "exec_code" {
+		t.Fatalf("unexpected decision: %#v", decision)
+	}
+	if decision.Args["runtime"] != "sh" || decision.Args["code"] != "printf 'smoke-workbench-llm-ok\\n'" {
+		t.Fatalf("unexpected args: %#v", decision.Args)
+	}
+}
+
+func TestClassifierInfersUserListArgumentsFromPrompt(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "user_list", group: skills.GroupAccounts})
+
+	classifier := NewClassifier(&stubProvider{
+		routeClassification: basellm.RouteClassification{
+			Intent:     "accounts",
+			Confidence: 0.92,
+		},
+		skillClassification: basellm.Classification{
+			Skill:     "user_list",
+			Arguments: map[string]string{},
+		},
+	}, registry, Options{}, nil)
+
+	decision, ok, err := classifier.Classify(context.Background(), "Show me users from jitsi filtered by smoke_123")
+	if err != nil {
+		t.Fatalf("Classify returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected classifier match")
+	}
+	if decision.SkillName != "user_list" {
+		t.Fatalf("unexpected decision: %#v", decision)
+	}
+	if decision.Args["provider"] != "jitsi" || decision.Args["pattern"] != "smoke_123" {
+		t.Fatalf("unexpected args: %#v", decision.Args)
+	}
+}
+
 func TestClassifierDefaultsSingleAllowedService(t *testing.T) {
 	t.Parallel()
 
@@ -511,6 +1193,74 @@ func TestClassifierPassesWorkbenchRuntimesAndRoutesExecCode(t *testing.T) {
 	}
 	if !slices.Equal(provider.skillRequest.AllowedRuntimes, []string{"python"}) {
 		t.Fatalf("expected allowed runtimes for workbench group, got %#v", provider.skillRequest.AllowedRuntimes)
+	}
+}
+
+func TestClassifierRoutesUserAddWithArguments(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "user_add", group: skills.GroupAccounts, mutating: true})
+
+	classifier := NewClassifier(&stubProvider{
+		routeClassification: basellm.RouteClassification{
+			Intent:     "accounts",
+			Confidence: 0.94,
+		},
+		skillClassification: basellm.Classification{
+			Skill: "user_add",
+			Arguments: map[string]string{
+				"provider": "jitsi",
+				"user":     "anya",
+				"pass":     "123456",
+			},
+		},
+	}, registry, Options{}, nil)
+
+	decision, ok, err := classifier.Classify(context.Background(), "создай пользователя anya в jitsi с паролем 123456")
+	if err != nil {
+		t.Fatalf("Classify returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected classifier match")
+	}
+	if decision.SkillName != "user_add" {
+		t.Fatalf("unexpected decision: %#v", decision)
+	}
+	if decision.Args["provider"] != "jitsi" || decision.Args["username"] != "anya" || decision.Args["password"] != "123456" {
+		t.Fatalf("unexpected args: %#v", decision.Args)
+	}
+}
+
+func TestClassifierClarifiesMissingUserDeleteUsername(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "user_delete", group: skills.GroupAccounts, mutating: true})
+
+	classifier := NewClassifier(&stubProvider{
+		routeClassification: basellm.RouteClassification{
+			Intent:     "accounts",
+			Confidence: 0.92,
+		},
+		skillClassification: basellm.Classification{
+			Skill:     "user_delete",
+			Arguments: map[string]string{"provider": "jitsi"},
+		},
+	}, registry, Options{}, nil)
+
+	decision, ok, err := classifier.Classify(context.Background(), "удали пользователя")
+	if err != nil {
+		t.Fatalf("Classify returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected clarification decision")
+	}
+	if !decision.ShouldClarify() {
+		t.Fatalf("expected clarification, got %#v", decision)
+	}
+	if decision.ClarificationQuestion != "Which username should I delete?" {
+		t.Fatalf("unexpected clarification question: %q", decision.ClarificationQuestion)
 	}
 }
 

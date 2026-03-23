@@ -129,6 +129,36 @@ make test-e2e-ollama
 make ollama-down
 ```
 
+Raspberry smoke runs can reuse one config with multiple LLM profiles:
+
+```yaml
+llm:
+  enabled: true
+  profile: "ollama"
+  execute_threshold: 0.80
+  clarify_threshold: 0.60
+  decision_input_chars: 160
+  decision_num_predict: 48
+  profiles:
+    ollama:
+      provider: "ollama"
+      endpoint: "http://127.0.0.1:11434"
+      model: "qwen2.5:0.5b"
+    openai:
+      provider: "openai"
+      endpoint: "https://api.openai.com/v1"
+      model: "gpt-4o-mini"
+```
+
+Then switch the smoke provider without editing the file:
+
+```bash
+make smoke-rpi-cli-ollama SMOKE_FLAGS='-smoke-all'
+make smoke-rpi-cli-openai SMOKE_FLAGS='-smoke-all'
+```
+
+You can also select a profile explicitly with `LLM_PROFILE=openai` or `LLM_PROFILE=ollama`.
+
 ## Status
 
 Early, but active.

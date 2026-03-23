@@ -34,7 +34,7 @@ func NewOllamaProvider(endpoint, model string, timeout time.Duration, logger *sl
 }
 
 func (p *OllamaProvider) ClassifyRoute(ctx context.Context, text string, request RouteClassificationRequest) (RouteClassification, error) {
-	prompt := buildRoutePrompt(limitText(text, request.InputChars), request)
+	prompt := buildOllamaRoutePrompt(limitText(text, request.InputChars), request)
 	responseText, err := p.generate(ctx, prompt, routeResponseSchema(groupKeys(request.Groups)), 0.0, decisionNumPredict(request.NumPredict))
 	if err != nil {
 		return RouteClassification{}, err
@@ -43,8 +43,8 @@ func (p *OllamaProvider) ClassifyRoute(ctx context.Context, text string, request
 		p.logger.Debug("ollama route raw response", "response", responseText)
 	}
 
-	var classification RouteClassification
-	if err := json.Unmarshal([]byte(extractJSON(responseText)), &classification); err != nil {
+	classification, err := parseOllamaRouteClassification(responseText, groupKeys(request.Groups))
+	if err != nil {
 		return RouteClassification{}, fmt.Errorf("decode ollama route response: %w", err)
 	}
 
@@ -52,7 +52,7 @@ func (p *OllamaProvider) ClassifyRoute(ctx context.Context, text string, request
 }
 
 func (p *OllamaProvider) ClassifySkill(ctx context.Context, text string, request SkillClassificationRequest) (Classification, error) {
-	prompt := buildSkillPrompt(limitText(text, request.InputChars), request)
+	prompt := buildOllamaSkillPrompt(limitText(text, request.InputChars), request)
 	responseText, err := p.generate(
 		ctx,
 		prompt,
@@ -67,8 +67,12 @@ func (p *OllamaProvider) ClassifySkill(ctx context.Context, text string, request
 		p.logger.Debug("ollama skill raw response", "response", responseText)
 	}
 
-	var classification Classification
-	if err := json.Unmarshal([]byte(extractJSON(responseText)), &classification); err != nil {
+	classification, err := parseOllamaSkillClassification(
+		responseText,
+		request.AllowedSkills,
+		allowedArgumentKeysForSkills(request.AllowedSkills),
+	)
+	if err != nil {
 		return Classification{}, fmt.Errorf("decode ollama skill response: %w", err)
 	}
 

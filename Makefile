@@ -24,7 +24,7 @@ GOOS ?= linux
 GOARCH ?= arm64
 CGO_ENABLED ?= 0
 
-.PHONY: build build-rpi build-cli build-rpi-cli init-rpi-config deploy-rpi-config deploy-rpi deploy-rpi-cli deploy-rpi-service deploy-rpi-all deploy-rpi-full deploy-and-smoke-rpi smoke-rpi-cli test test-e2e-ollama clean ollama-up ollama-pull ollama-down docker-build docker-buildx docker-push
+.PHONY: build build-rpi build-cli build-rpi-cli init-rpi-config deploy-rpi-config deploy-rpi deploy-rpi-cli deploy-rpi-service deploy-rpi-all deploy-rpi-full deploy-and-smoke-rpi deploy-and-smoke-rpi-ollama deploy-and-smoke-rpi-openai smoke-rpi-cli smoke-rpi-cli-ollama smoke-rpi-cli-openai test test-e2e-ollama clean ollama-up ollama-pull ollama-down docker-build docker-buildx docker-push
 
 OLLAMA_COMPOSE_FILE ?= deployments/docker/ollama-compose.yaml
 OLLAMA_ENDPOINT ?= http://127.0.0.1:11434
@@ -61,11 +61,24 @@ deploy-rpi-all: deploy-rpi-config deploy-rpi deploy-rpi-service
 deploy-rpi-full: deploy-rpi-all deploy-rpi-cli
 
 SMOKE_FLAGS ?= -smoke
+SMOKE_LLM_PROFILE ?=
 
 smoke-rpi-cli:
-	ssh $(PI_USER)@$(PI_HOST) '$(PI_DEST_DIR)/$(CLI_BIN_NAME) -config /etc/openlight/agent.yaml $(SMOKE_FLAGS)'
+	ssh $(PI_USER)@$(PI_HOST) '$(if $(strip $(SMOKE_LLM_PROFILE)),LLM_PROFILE=$(SMOKE_LLM_PROFILE) ,)$(PI_DEST_DIR)/$(CLI_BIN_NAME) -config /etc/openlight/agent.yaml $(SMOKE_FLAGS)'
+
+smoke-rpi-cli-ollama:
+	$(MAKE) smoke-rpi-cli SMOKE_LLM_PROFILE=ollama
+
+smoke-rpi-cli-openai:
+	$(MAKE) smoke-rpi-cli SMOKE_LLM_PROFILE=openai
 
 deploy-and-smoke-rpi: deploy-rpi-all deploy-rpi-cli smoke-rpi-cli
+
+deploy-and-smoke-rpi-ollama:
+	$(MAKE) deploy-and-smoke-rpi SMOKE_LLM_PROFILE=ollama
+
+deploy-and-smoke-rpi-openai:
+	$(MAKE) deploy-and-smoke-rpi SMOKE_LLM_PROFILE=openai
 
 test:
 	GOCACHE=/tmp/go-build GOSUMDB=off go test ./...

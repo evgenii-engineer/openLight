@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -263,6 +264,218 @@ llm:
 	}
 }
 
+func TestLoadAppliesLLMProfileFromConfig(t *testing.T) {
+	clearConfigEnv(t)
+
+	configPath := filepath.Join(t.TempDir(), "agent.yaml")
+	writeConfig(t, configPath, `
+telegram:
+  bot_token: "token"
+
+auth:
+  allowed_user_ids: [1]
+
+storage:
+  sqlite_path: "./agent.db"
+
+llm:
+  enabled: true
+  profile: "ollama"
+  execute_threshold: 0.80
+  clarify_threshold: 0.60
+  decision_input_chars: 160
+  decision_num_predict: 48
+  profiles:
+    ollama:
+      provider: "ollama"
+      endpoint: "http://127.0.0.1:11434"
+      model: "qwen2.5:0.5b"
+      decision_num_predict: 128
+    openai:
+      provider: "openai"
+      model: "gpt-4o-mini"
+      api_key: "sk-test"
+`)
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+
+	if cfg.LLM.Profile != "ollama" {
+		t.Fatalf("unexpected llm profile: %q", cfg.LLM.Profile)
+	}
+	if cfg.LLM.Provider != "ollama" {
+		t.Fatalf("unexpected llm provider: %q", cfg.LLM.Provider)
+	}
+	if cfg.LLM.Endpoint != "http://127.0.0.1:11434" {
+		t.Fatalf("unexpected llm endpoint: %q", cfg.LLM.Endpoint)
+	}
+	if cfg.LLM.Model != "qwen2.5:0.5b" {
+		t.Fatalf("unexpected llm model: %q", cfg.LLM.Model)
+	}
+	if cfg.LLM.DecisionNumPredict != 128 {
+		t.Fatalf("unexpected llm decision_num_predict: %d", cfg.LLM.DecisionNumPredict)
+	}
+}
+
+func TestLoadAppliesLLMProfileFromEnv(t *testing.T) {
+	clearConfigEnv(t)
+	t.Setenv("LLM_PROFILE", "openai")
+	t.Setenv("OPENAI_API_KEY", "sk-from-env")
+
+	configPath := filepath.Join(t.TempDir(), "agent.yaml")
+	writeConfig(t, configPath, `
+telegram:
+  bot_token: "token"
+
+auth:
+  allowed_user_ids: [1]
+
+storage:
+  sqlite_path: "./agent.db"
+
+llm:
+  enabled: true
+  profile: "ollama"
+  execute_threshold: 0.80
+  clarify_threshold: 0.60
+  decision_input_chars: 160
+  decision_num_predict: 48
+  profiles:
+    ollama:
+      provider: "ollama"
+      endpoint: "http://127.0.0.1:11434"
+      model: "qwen2.5:0.5b"
+    openai:
+      provider: "openai"
+      model: "gpt-4o-mini"
+`)
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+
+	if cfg.LLM.Profile != "openai" {
+		t.Fatalf("unexpected llm profile: %q", cfg.LLM.Profile)
+	}
+	if cfg.LLM.Provider != "openai" {
+		t.Fatalf("unexpected llm provider: %q", cfg.LLM.Provider)
+	}
+	if cfg.LLM.Model != "gpt-4o-mini" {
+		t.Fatalf("unexpected llm model: %q", cfg.LLM.Model)
+	}
+	if cfg.LLM.APIKey != "sk-from-env" {
+		t.Fatalf("unexpected llm api key: %q", cfg.LLM.APIKey)
+	}
+	if cfg.LLM.Endpoint != defaultOpenAIAPIBaseURL {
+		t.Fatalf("unexpected llm endpoint default: %q", cfg.LLM.Endpoint)
+	}
+}
+
+func TestLoadAcceptsMatchingDirectLLMProviderFromEnvProfile(t *testing.T) {
+	clearConfigEnv(t)
+	t.Setenv("LLM_PROFILE", "openai")
+
+	configPath := filepath.Join(t.TempDir(), "agent.yaml")
+	writeConfig(t, configPath, `
+telegram:
+  bot_token: "token"
+
+auth:
+  allowed_user_ids: [1]
+
+storage:
+  sqlite_path: "./agent.db"
+
+llm:
+  enabled: true
+  provider: "openai"
+  model: "gpt-4o-mini"
+  api_key: "sk-test"
+`)
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+
+	if cfg.LLM.Profile != "openai" {
+		t.Fatalf("unexpected llm profile: %q", cfg.LLM.Profile)
+	}
+	if cfg.LLM.Provider != "openai" {
+		t.Fatalf("unexpected llm provider: %q", cfg.LLM.Provider)
+	}
+	if cfg.LLM.Model != "gpt-4o-mini" {
+		t.Fatalf("unexpected llm model: %q", cfg.LLM.Model)
+	}
+	if cfg.LLM.APIKey != "sk-test" {
+		t.Fatalf("unexpected llm api key: %q", cfg.LLM.APIKey)
+	}
+}
+
+func TestLoadRejectsMismatchedDirectLLMProviderFromEnvProfile(t *testing.T) {
+	clearConfigEnv(t)
+	t.Setenv("LLM_PROFILE", "ollama")
+
+	configPath := filepath.Join(t.TempDir(), "agent.yaml")
+	writeConfig(t, configPath, `
+telegram:
+  bot_token: "token"
+
+auth:
+  allowed_user_ids: [1]
+
+storage:
+  sqlite_path: "./agent.db"
+
+llm:
+  enabled: true
+  provider: "openai"
+  model: "gpt-4o-mini"
+  api_key: "sk-test"
+`)
+
+	_, err := Load(configPath)
+	if err == nil {
+		t.Fatal("expected mismatched direct llm provider to fail")
+	}
+	if !strings.Contains(err.Error(), `llm profile "ollama" requested but llm.profiles is not configured; current direct provider is "openai"`) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLoadRejectsUnknownLLMProfile(t *testing.T) {
+	clearConfigEnv(t)
+
+	configPath := filepath.Join(t.TempDir(), "agent.yaml")
+	writeConfig(t, configPath, `
+telegram:
+  bot_token: "token"
+
+auth:
+  allowed_user_ids: [1]
+
+storage:
+  sqlite_path: "./agent.db"
+
+llm:
+  enabled: true
+  profile: "missing"
+  profiles:
+    ollama:
+      provider: "ollama"
+      endpoint: "http://127.0.0.1:11434"
+      model: "qwen2.5:0.5b"
+`)
+
+	_, err := Load(configPath)
+	if err == nil {
+		t.Fatal("expected missing llm profile to fail")
+	}
+}
+
 func TestLoadPreservesComposeServicePath(t *testing.T) {
 	clearConfigEnv(t)
 
@@ -499,6 +712,7 @@ func clearConfigEnv(t *testing.T) {
 		"WORKBENCH_ALLOWED_FILES",
 		"WORKBENCH_MAX_OUTPUT_BYTES",
 		"LLM_ENABLED",
+		"LLM_PROFILE",
 		"LLM_PROVIDER",
 		"LLM_ENDPOINT",
 		"LLM_MODEL",

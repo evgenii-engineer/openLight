@@ -42,11 +42,11 @@ func TestOllamaProviderClassifyRoute(t *testing.T) {
 			if !strings.Contains(prompt, "restart tailscale") {
 				t.Fatalf("unexpected prompt: %v", payload["prompt"])
 			}
-			if !strings.Contains(prompt, "Pick one intent for a local Telegram agent.") {
-				t.Fatalf("prompt is missing route instructions: %s", prompt)
+			if !strings.Contains(prompt, "Choose one intent for a local agent.") {
+				t.Fatalf("prompt is missing compact route instructions: %s", prompt)
 			}
-			if !strings.Contains(prompt, "- services: service status,logs,restart") {
-				t.Fatalf("prompt is missing route group context: %s", prompt)
+			if !strings.Contains(prompt, "services=service status,logs,restart") {
+				t.Fatalf("prompt is missing compact route group context: %s", prompt)
 			}
 			options, ok := payload["options"].(map[string]any)
 			if !ok {
@@ -124,25 +124,28 @@ func TestOllamaProviderClassifySkill(t *testing.T) {
 	provider.client = &http.Client{
 		Timeout: time.Second,
 		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
-				var payload map[string]any
-				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-					t.Fatalf("decode request: %v", err)
-				}
-				if payload["think"] != false {
-					t.Fatalf("unexpected think flag: %#v", payload["think"])
-				}
-				prompt, ok := payload["prompt"].(string)
-				if !ok {
-					t.Fatalf("unexpected prompt payload: %#v", payload["prompt"])
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			if payload["think"] != false {
+				t.Fatalf("unexpected think flag: %#v", payload["think"])
+			}
+			prompt, ok := payload["prompt"].(string)
+			if !ok {
+				t.Fatalf("unexpected prompt payload: %#v", payload["prompt"])
 			}
 			if !strings.Contains(prompt, "Allowed skills: [\"service_restart\"]") {
 				t.Fatalf("prompt is missing allowed skills list: %s", prompt)
 			}
-			if !strings.Contains(prompt, "Pick one skill inside the selected group.") {
-				t.Fatalf("prompt is missing second-layer instructions: %s", prompt)
+			if !strings.Contains(prompt, "Choose one allowed skill.") {
+				t.Fatalf("prompt is missing compact second-layer instructions: %s", prompt)
 			}
 			if !strings.Contains(prompt, "Allowed services") || !strings.Contains(prompt, "tailscale") {
 				t.Fatalf("prompt is missing services: %s", prompt)
+			}
+			if !strings.Contains(prompt, "Allowed argument keys: [\"service\"]") {
+				t.Fatalf("prompt is missing compact argument guide: %s", prompt)
 			}
 			format, ok := payload["format"].(map[string]any)
 			if !ok {
@@ -151,6 +154,14 @@ func TestOllamaProviderClassifySkill(t *testing.T) {
 			properties, ok := format["properties"].(map[string]any)
 			if !ok || properties["skill"] == nil || properties["arguments"] == nil {
 				t.Fatalf("skill format is missing properties: %#v", format)
+			}
+			argumentsSchema, ok := properties["arguments"].(map[string]any)
+			if !ok {
+				t.Fatalf("unexpected arguments schema: %#v", properties["arguments"])
+			}
+			argumentProperties, ok := argumentsSchema["properties"].(map[string]any)
+			if !ok || len(argumentProperties) != 1 || argumentProperties["service"] == nil {
+				t.Fatalf("unexpected argument properties: %#v", argumentsSchema["properties"])
 			}
 
 			return jsonHTTPResponse(map[string]any{
@@ -215,19 +226,22 @@ func TestOllamaProviderClassifySkillOmitsAllowedServicesWhenEmpty(t *testing.T) 
 	provider.client = &http.Client{
 		Timeout: time.Second,
 		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
-				var payload map[string]any
-				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-					t.Fatalf("decode request: %v", err)
-				}
-				if payload["think"] != false {
-					t.Fatalf("unexpected think flag: %#v", payload["think"])
-				}
-				prompt, ok := payload["prompt"].(string)
-				if !ok {
-					t.Fatalf("unexpected prompt payload: %#v", payload["prompt"])
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			if payload["think"] != false {
+				t.Fatalf("unexpected think flag: %#v", payload["think"])
+			}
+			prompt, ok := payload["prompt"].(string)
+			if !ok {
+				t.Fatalf("unexpected prompt payload: %#v", payload["prompt"])
 			}
 			if strings.Contains(prompt, "Allowed services") {
 				t.Fatalf("did not expect allowed services section: %s", prompt)
+			}
+			if !strings.Contains(prompt, "Allowed argument keys: []") {
+				t.Fatalf("expected empty argument guide: %s", prompt)
 			}
 
 			return jsonHTTPResponse(map[string]any{
@@ -259,16 +273,16 @@ func TestOllamaProviderClassifySkillFallsBackToAllowedSkillsWhenCandidatesMissin
 	provider.client = &http.Client{
 		Timeout: time.Second,
 		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
-				var payload map[string]any
-				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-					t.Fatalf("decode request: %v", err)
-				}
-				if payload["think"] != false {
-					t.Fatalf("unexpected think flag: %#v", payload["think"])
-				}
-				prompt, ok := payload["prompt"].(string)
-				if !ok {
-					t.Fatalf("unexpected prompt payload: %#v", payload["prompt"])
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			if payload["think"] != false {
+				t.Fatalf("unexpected think flag: %#v", payload["think"])
+			}
+			prompt, ok := payload["prompt"].(string)
+			if !ok {
+				t.Fatalf("unexpected prompt payload: %#v", payload["prompt"])
 			}
 			if !strings.Contains(prompt, "Allowed skills: [\"status\"]") {
 				t.Fatalf("prompt is missing allowed-skills list: %s", prompt)
@@ -302,16 +316,16 @@ func TestOllamaProviderClassifyRouteTruncatesInputText(t *testing.T) {
 	provider.client = &http.Client{
 		Timeout: time.Second,
 		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
-				var payload map[string]any
-				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-					t.Fatalf("decode request: %v", err)
-				}
-				if payload["think"] != false {
-					t.Fatalf("unexpected think flag: %#v", payload["think"])
-				}
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			if payload["think"] != false {
+				t.Fatalf("unexpected think flag: %#v", payload["think"])
+			}
 
-				prompt, ok := payload["prompt"].(string)
-				if !ok {
+			prompt, ok := payload["prompt"].(string)
+			if !ok {
 				t.Fatalf("unexpected prompt payload: %#v", payload["prompt"])
 			}
 			if !strings.Contains(prompt, "restart ta") {
@@ -341,18 +355,18 @@ func TestOllamaProviderSummarize(t *testing.T) {
 
 	provider := NewOllamaProvider("http://ollama.local:11434", "phi3", time.Second, nil)
 	provider.client = &http.Client{
-			Timeout: time.Second,
-			Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
-				var payload map[string]any
-				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-					t.Fatalf("decode request: %v", err)
-				}
-				if payload["think"] != false {
-					t.Fatalf("unexpected think flag: %#v", payload["think"])
-				}
-				return jsonHTTPResponse(map[string]any{
-					"response": `{"summary":"short summary"}`,
-				}), nil
+		Timeout: time.Second,
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			if payload["think"] != false {
+				t.Fatalf("unexpected think flag: %#v", payload["think"])
+			}
+			return jsonHTTPResponse(map[string]any{
+				"response": `{"summary":"short summary"}`,
+			}), nil
 		}),
 	}
 
@@ -362,6 +376,112 @@ func TestOllamaProviderSummarize(t *testing.T) {
 	}
 	if summary != "short summary" {
 		t.Fatalf("unexpected summary: %q", summary)
+	}
+}
+
+func TestOllamaProviderClassifyRouteRecoversTruncatedJSON(t *testing.T) {
+	t.Parallel()
+
+	provider := NewOllamaProvider("http://ollama.local:11434", "phi3", time.Second, nil)
+	provider.client = &http.Client{
+		Timeout: time.Second,
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			return jsonHTTPResponse(map[string]any{
+				"response": `{"intent":"system","confidence":0.91,"needs_clarification":false`,
+			}), nil
+		}),
+	}
+
+	classification, err := provider.ClassifyRoute(context.Background(), "show status", RouteClassificationRequest{
+		Groups: []GroupOption{
+			{Key: "system", Title: "System", Description: "Read system metrics and host information."},
+		},
+		InputChars: 96,
+		NumPredict: 32,
+	})
+	if err != nil {
+		t.Fatalf("ClassifyRoute returned error: %v", err)
+	}
+	if classification.Intent != "system" {
+		t.Fatalf("unexpected classification: %#v", classification)
+	}
+}
+
+func TestOllamaProviderClassifySkillRecoversTruncatedJSON(t *testing.T) {
+	t.Parallel()
+
+	provider := NewOllamaProvider("http://ollama.local:11434", "phi3", time.Second, nil)
+	provider.client = &http.Client{
+		Timeout: time.Second,
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			return jsonHTTPResponse(map[string]any{
+				"response": `{"skill":"user_add","arguments":{"provider":"jitsi","username":"smoke","password":"secret"}`,
+			}), nil
+		}),
+	}
+
+	classification, err := provider.ClassifySkill(context.Background(), "add user smoke to jitsi", SkillClassificationRequest{
+		AllowedSkills: []string{"user_add"},
+		InputChars:    128,
+		NumPredict:    48,
+	})
+	if err != nil {
+		t.Fatalf("ClassifySkill returned error: %v", err)
+	}
+	if classification.Skill != "user_add" {
+		t.Fatalf("unexpected skill: %#v", classification)
+	}
+	if classification.Arguments["provider"] != "jitsi" || classification.Arguments["username"] != "smoke" || classification.Arguments["password"] != "secret" {
+		t.Fatalf("unexpected arguments: %#v", classification.Arguments)
+	}
+}
+
+func TestOllamaProviderClassifySkillSchemaIncludesAccountArguments(t *testing.T) {
+	t.Parallel()
+
+	provider := NewOllamaProvider("http://ollama.local:11434", "phi3", time.Second, nil)
+	provider.client = &http.Client{
+		Timeout: time.Second,
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			format, ok := payload["format"].(map[string]any)
+			if !ok {
+				t.Fatalf("unexpected format payload: %#v", payload["format"])
+			}
+			properties, ok := format["properties"].(map[string]any)
+			if !ok {
+				t.Fatalf("unexpected format properties: %#v", format["properties"])
+			}
+			argumentsSchema, ok := properties["arguments"].(map[string]any)
+			if !ok {
+				t.Fatalf("unexpected arguments schema: %#v", properties["arguments"])
+			}
+			argumentProperties, ok := argumentsSchema["properties"].(map[string]any)
+			if !ok {
+				t.Fatalf("unexpected argument properties: %#v", argumentsSchema["properties"])
+			}
+			for _, key := range []string{"provider", "username", "password"} {
+				if argumentProperties[key] == nil {
+					t.Fatalf("expected account argument %q in schema, got %#v", key, argumentProperties)
+				}
+			}
+
+			return jsonHTTPResponse(map[string]any{
+				"response": `{"skill":"user_add","arguments":{"provider":"jitsi","username":"smoke","password":"secret"},"needs_clarification":false}`,
+			}), nil
+		}),
+	}
+
+	_, err := provider.ClassifySkill(context.Background(), "add user smoke to jitsi", SkillClassificationRequest{
+		AllowedSkills: []string{"user_add"},
+		InputChars:    128,
+		NumPredict:    48,
+	})
+	if err != nil {
+		t.Fatalf("ClassifySkill returned error: %v", err)
 	}
 }
 
@@ -427,18 +547,18 @@ func TestOllamaProviderChat(t *testing.T) {
 				t.Fatalf("unexpected path: %s", r.URL.Path)
 			}
 			var payload map[string]any
-				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-					t.Fatalf("decode request: %v", err)
-				}
-				if payload["keep_alive"] != ollamaKeepAlive {
-					t.Fatalf("unexpected keep_alive: %#v", payload["keep_alive"])
-				}
-				if payload["think"] != false {
-					t.Fatalf("unexpected think flag: %#v", payload["think"])
-				}
-				options, ok := payload["options"].(map[string]any)
-				if !ok {
-					t.Fatalf("missing options payload: %#v", payload)
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			if payload["keep_alive"] != ollamaKeepAlive {
+				t.Fatalf("unexpected keep_alive: %#v", payload["keep_alive"])
+			}
+			if payload["think"] != false {
+				t.Fatalf("unexpected think flag: %#v", payload["think"])
+			}
+			options, ok := payload["options"].(map[string]any)
+			if !ok {
+				t.Fatalf("missing options payload: %#v", payload)
 			}
 			if options["num_predict"] != float64(64) {
 				t.Fatalf("unexpected num_predict: %#v", options["num_predict"])

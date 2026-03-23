@@ -32,10 +32,10 @@ func run() error {
 	configPath := flag.String("config", "", "Path to YAML configuration file")
 	execText := flag.String("exec", "", "Run one message and exit")
 	smoke := flag.Bool("smoke", false, "Run the built-in smoke suite and print a result table")
-	smokeChat := flag.Bool("smoke-chat", false, "Include chat/LLM smoke checks")
-	smokeRouting := flag.Bool("smoke-routing", false, "Include LLM routing and skill-classification smoke checks")
+	smokeChat := flag.Bool("smoke-chat", false, "Include direct chat skill and plain-text LLM chat smoke checks")
+	smokeRouting := flag.Bool("smoke-routing", false, "Include end-to-end LLM fallback smoke checks for built-in skills")
 	smokeRestart := flag.Bool("smoke-restart", false, "Include disruptive service restart smoke checks")
-	smokeAll := flag.Bool("smoke-all", false, "Enable all smoke checks, including LLM routing, chat, and service restart")
+	smokeAll := flag.Bool("smoke-all", false, "Enable all smoke checks, including LLM fallback, chat, and service restart")
 	userID := flag.Int64("user-id", 0, "Override CLI user id (defaults to first allowed user id)")
 	chatID := flag.Int64("chat-id", 0, "Override CLI chat id (defaults to first allowed chat id)")
 	flag.Parse()
@@ -59,11 +59,14 @@ func run() error {
 	resolvedChatID := resolveCLIChatID(cfg, *chatID, resolvedUserID)
 
 	if *smoke || *smokeAll {
+		fmt.Fprintln(os.Stdout, "Smoke started. Progress will stream below; the summary table will print at the end.")
 		report, smokeErr := clitransport.RunSmoke(ctx, cfg, runtime, resolvedUserID, resolvedChatID, clitransport.SmokeOptions{
 			IncludeChat:    *smokeChat || *smokeAll,
 			IncludeRouting: *smokeRouting || *smokeAll,
 			IncludeRestart: *smokeRestart || *smokeAll,
+			ProgressWriter: os.Stdout,
 		})
+		fmt.Fprintln(os.Stdout)
 		fmt.Fprintln(os.Stdout, report.RenderTable())
 		return smokeErr
 	}

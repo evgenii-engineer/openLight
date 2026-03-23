@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"log/slog"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -76,6 +77,17 @@ func NewClassifier(provider basellm.Provider, registry *skills.Registry, options
 func (c *Classifier) Classify(ctx context.Context, text string) (router.Decision, bool, error) {
 	normalizedText := semantic.Normalize(text)
 	availableGroups := c.buildAvailableGroups()
+	if heuristicDecision, heuristicScore, heuristicOK := c.heuristicSkillDecision(text, nil, c.executeThreshold); heuristicOK && c.shouldUsePreLLMHeuristic(heuristicDecision, heuristicScore) {
+		if c.logger != nil {
+			c.logger.Debug(
+				"llm route short-circuited by heuristic skill inference",
+				"rescued_skill", heuristicDecision.SkillName,
+				"rescued_args", heuristicDecision.Args,
+				"rescued_confidence", heuristicDecision.Confidence,
+			)
+		}
+		return heuristicDecision, true, nil
+	}
 
 	if c.logger != nil {
 		c.logger.Debug(
@@ -111,9 +123,35 @@ func (c *Classifier) Classify(ctx context.Context, text string) (router.Decision
 		)
 	}
 
+	globalHeuristicDecision, globalHeuristicScore, globalHeuristicOK := c.heuristicSkillDecision(text, nil, routeClassification.Confidence)
+
 	if decision, ok, groupKey, continueToSkill := c.resolveRouteDecision(text, availableGroups, routeClassification); !continueToSkill {
+		if globalHeuristicOK && c.shouldUseRouteRescue(decision, ok, globalHeuristicDecision) {
+			if c.logger != nil {
+				c.logger.Debug(
+					"llm route rescued by heuristic skill inference",
+					"rescued_skill", globalHeuristicDecision.SkillName,
+					"rescued_args", globalHeuristicDecision.Args,
+					"rescued_confidence", globalHeuristicDecision.Confidence,
+				)
+			}
+			return globalHeuristicDecision, true, nil
+		}
 		return decision, ok, nil
 	} else {
+		if globalHeuristicOK && c.shouldUseRouteGroupRescue(groupKey, globalHeuristicDecision, globalHeuristicScore) {
+			if c.logger != nil {
+				c.logger.Debug(
+					"llm route group rescued by heuristic skill inference",
+					"route_group", groupKey,
+					"rescued_skill", globalHeuristicDecision.SkillName,
+					"rescued_args", globalHeuristicDecision.Args,
+					"rescued_confidence", globalHeuristicDecision.Confidence,
+				)
+			}
+			return globalHeuristicDecision, true, nil
+		}
+
 		availableSkills := c.buildAvailableSkillsForGroup(groupKey)
 		allowedSkills := skillOptionNames(availableSkills)
 		allowedServices := c.allowedServicesForGroup(groupKey)
@@ -149,6 +187,18 @@ func (c *Classifier) Classify(ctx context.Context, text string) (router.Decision
 		}
 
 		decision, ok := c.resolveSkillDecision(text, allowedSkills, routeClassification.Confidence, classification)
+		if heuristicDecision, heuristicScore, heuristicOK := c.heuristicSkillDecision(text, allowedSkills, routeClassification.Confidence); heuristicOK && c.shouldUseSkillRescue(decision, ok, heuristicDecision, heuristicScore) {
+			if c.logger != nil {
+				c.logger.Debug(
+					"llm skill rescued by heuristic inference",
+					"group", groupKey,
+					"rescued_skill", heuristicDecision.SkillName,
+					"rescued_args", heuristicDecision.Args,
+					"rescued_confidence", heuristicDecision.Confidence,
+				)
+			}
+			return heuristicDecision, true, nil
+		}
 		if c.logger != nil {
 			c.logger.Debug(
 				"llm skill completed",
@@ -166,6 +216,20 @@ func (c *Classifier) Classify(ctx context.Context, text string) (router.Decision
 			)
 		}
 		return decision, ok, nil
+	}
+}
+
+func (c *Classifier) shouldUsePreLLMHeuristic(decision router.Decision, score int) bool {
+	if !decision.Matched() {
+		return false
+	}
+	switch decision.SkillName {
+	case "file_write", "file_replace", "file_read":
+		return score >= 6
+	case "file_list":
+		return score >= 5
+	default:
+		return false
 	}
 }
 
@@ -328,6 +392,8 @@ func (c *Classifier) resolveSkillDecision(text string, allowedSkills []string, r
 		}
 	}
 
+	arguments = inferArgumentsFromText(text, skillName, arguments)
+
 	if question := clarificationQuestionForSkillResponse(skillName, arguments, classification.ClarificationQuestion); classification.NeedsClarification && question != "" {
 		if c.shouldIgnoreSkillClarification(skillName, arguments) {
 			if c.logger != nil {
@@ -424,7 +490,16 @@ func (c *Classifier) shouldIgnoreSkillClarification(skillName string, arguments 
 }
 
 func (c *Classifier) routeArguments(text, skillName string, arguments map[string]string) map[string]string {
+	arguments = inferArgumentsFromText(text, skillName, arguments)
+	explicitPath := explicitPathArgument(text)
+
 	switch skillName {
+	case "help", "skills":
+		topic := strings.TrimSpace(arguments["topic"])
+		if topic == "" {
+			return map[string]string{}
+		}
+		return map[string]string{"topic": topic}
 	case "watch_add":
 		return map[string]string{"spec": strings.TrimSpace(arguments["spec"])}
 	case "watch_pause", "watch_remove", "watch_test":
@@ -437,20 +512,35 @@ func (c *Classifier) routeArguments(text, skillName string, arguments map[string
 		return map[string]string{"id": id}
 	case "file_list":
 		path := strings.TrimSpace(arguments["path"])
+		if explicitPath != "" {
+			path = explicitPath
+		}
 		if path == "" {
 			return map[string]string{}
 		}
 		return map[string]string{"path": path}
 	case "file_read":
-		return map[string]string{"path": strings.TrimSpace(arguments["path"])}
+		path := strings.TrimSpace(arguments["path"])
+		if explicitPath != "" {
+			path = explicitPath
+		}
+		return map[string]string{"path": path}
 	case "file_write":
+		path := strings.TrimSpace(arguments["path"])
+		if explicitPath != "" {
+			path = explicitPath
+		}
 		return map[string]string{
-			"path":    strings.TrimSpace(arguments["path"]),
+			"path":    path,
 			"content": arguments["content"],
 		}
 	case "file_replace":
+		path := strings.TrimSpace(arguments["path"])
+		if explicitPath != "" {
+			path = explicitPath
+		}
 		return map[string]string{
-			"path":    strings.TrimSpace(arguments["path"]),
+			"path":    path,
 			"find":    arguments["find"],
 			"replace": arguments["replace"],
 		}
@@ -460,9 +550,16 @@ func (c *Classifier) routeArguments(text, skillName string, arguments map[string
 			"code":    arguments["code"],
 		}
 	case "exec_file":
-		return map[string]string{"path": strings.TrimSpace(arguments["path"])}
+		path := strings.TrimSpace(arguments["path"])
+		if explicitPath != "" {
+			path = explicitPath
+		}
+		return map[string]string{"path": path}
 	case "service_status", "service_logs":
 		service := strings.TrimSpace(arguments["service"])
+		if service == "" {
+			service = c.extractAllowedServiceFromText(text)
+		}
 		if service == "" && len(c.allowedServices) == 1 {
 			service = c.allowedServices[0]
 		}
@@ -471,13 +568,306 @@ func (c *Classifier) routeArguments(text, skillName string, arguments map[string
 		}
 		return map[string]string{"service": service}
 	case "service_restart":
-		return map[string]string{"service": strings.TrimSpace(arguments["service"])}
+		service := strings.TrimSpace(arguments["service"])
+		if service == "" {
+			service = c.extractAllowedServiceFromText(text)
+		}
+		return map[string]string{"service": service}
 	case "note_add":
 		return map[string]string{"text": strings.TrimSpace(arguments["text"])}
 	case "note_delete":
 		return map[string]string{"id": strings.TrimSpace(arguments["id"])}
+	case "user_add":
+		return map[string]string{
+			"provider": strings.TrimSpace(arguments["provider"]),
+			"username": strings.TrimSpace(arguments["username"]),
+			"password": strings.TrimSpace(arguments["password"]),
+		}
+	case "user_list":
+		result := map[string]string{}
+		if provider := strings.TrimSpace(arguments["provider"]); provider != "" {
+			result["provider"] = provider
+		}
+		if pattern := strings.TrimSpace(arguments["pattern"]); pattern != "" {
+			result["pattern"] = pattern
+		}
+		return result
+	case "user_delete":
+		return map[string]string{
+			"provider": strings.TrimSpace(arguments["provider"]),
+			"username": strings.TrimSpace(arguments["username"]),
+		}
 	default:
 		return map[string]string{}
+	}
+}
+
+func explicitPathArgument(text string) string {
+	return strings.TrimSpace(firstPathLikeToken(text))
+}
+
+func inferArgumentsFromText(text, skillName string, arguments map[string]string) map[string]string {
+	result := make(map[string]string, len(arguments))
+	for key, value := range arguments {
+		result[key] = value
+	}
+
+	switch skillName {
+	case "file_list", "file_read", "file_write", "file_replace", "exec_file":
+		if strings.TrimSpace(result["path"]) == "" {
+			if path := firstPathLikeToken(text); path != "" {
+				result["path"] = path
+			}
+		}
+	}
+
+	switch skillName {
+	case "file_write":
+		if strings.TrimSpace(result["content"]) == "" {
+			if content := extractFileWriteContent(text); content != "" {
+				result["content"] = content
+			}
+		}
+	case "file_replace":
+		if strings.TrimSpace(result["find"]) == "" || strings.TrimSpace(result["replace"]) == "" {
+			find, replace := extractFileReplaceValues(text)
+			if strings.TrimSpace(result["find"]) == "" && find != "" {
+				result["find"] = find
+			}
+			if strings.TrimSpace(result["replace"]) == "" && replace != "" {
+				result["replace"] = replace
+			}
+		}
+	case "exec_code":
+		if strings.TrimSpace(result["runtime"]) == "" {
+			if runtime := extractRuntimeFromText(text); runtime != "" {
+				result["runtime"] = runtime
+			}
+		}
+		if strings.TrimSpace(result["code"]) == "" {
+			if code := extractCodeSnippet(text); code != "" {
+				result["code"] = code
+			}
+		}
+	case "user_list":
+		if strings.TrimSpace(result["provider"]) == "" {
+			if provider := extractAccountProvider(text); provider != "" {
+				result["provider"] = provider
+			}
+		}
+		if strings.TrimSpace(result["pattern"]) == "" {
+			if pattern := extractAccountPattern(text); pattern != "" {
+				result["pattern"] = pattern
+			}
+		}
+	case "note_add":
+		if strings.TrimSpace(result["text"]) == "" {
+			if noteText := extractNoteTextFromText(text); noteText != "" {
+				result["text"] = noteText
+			}
+		}
+	case "note_delete":
+		if strings.TrimSpace(result["id"]) == "" {
+			if noteID := extractNumericID(text, noteIDPattern); noteID != "" {
+				result["id"] = noteID
+			}
+		}
+	case "watch_add":
+		if strings.TrimSpace(result["spec"]) == "" {
+			if spec := extractWatchSpecFromText(text); spec != "" {
+				result["spec"] = spec
+			}
+		}
+	case "watch_pause", "watch_remove", "watch_test", "watch_history":
+		if strings.TrimSpace(result["id"]) == "" {
+			if watchID := extractNumericID(text, watchIDPattern); watchID != "" {
+				result["id"] = watchID
+			}
+		}
+	case "user_add":
+		if strings.TrimSpace(result["provider"]) == "" {
+			if provider := extractAccountProvider(text); provider != "" {
+				result["provider"] = provider
+			}
+		}
+		if strings.TrimSpace(result["username"]) == "" {
+			if username := extractAccountUsername(text); username != "" {
+				result["username"] = username
+			}
+		}
+		if strings.TrimSpace(result["password"]) == "" {
+			if password := extractAccountPassword(text); password != "" {
+				result["password"] = password
+			}
+		}
+	case "user_delete":
+		if strings.TrimSpace(result["provider"]) == "" {
+			if provider := extractAccountProvider(text); provider != "" {
+				result["provider"] = provider
+			}
+		}
+		if strings.TrimSpace(result["username"]) == "" {
+			if username := extractAccountUsername(text); username != "" {
+				result["username"] = username
+			}
+		}
+	}
+
+	return result
+}
+
+func firstPathLikeToken(text string) string {
+	for _, field := range strings.Fields(text) {
+		token := strings.TrimSpace(strings.Trim(field, "\"'`,.;:!?()[]{}"))
+		if looksLikePath(token) {
+			return token
+		}
+	}
+	return ""
+}
+
+func extractFileWriteContent(text string) string {
+	lowered := strings.ToLower(text)
+	if idx := strings.Index(lowered, " containing "); idx >= 0 {
+		return trimTrailingSentencePunctuation(text[idx+len(" containing "):])
+	}
+	if idx := strings.Index(lowered, " with content "); idx >= 0 {
+		return trimTrailingSentencePunctuation(text[idx+len(" with content "):])
+	}
+	if writeIdx := strings.Index(lowered, "write "); writeIdx >= 0 {
+		restLower := lowered[writeIdx+len("write "):]
+		if intoIdx := strings.Index(restLower, " into "); intoIdx >= 0 {
+			return strings.TrimSpace(text[writeIdx+len("write ") : writeIdx+len("write ")+intoIdx])
+		}
+	}
+	return ""
+}
+
+func extractFileReplaceValues(text string) (string, string) {
+	lowered := strings.ToLower(text)
+	replaceIdx := strings.Index(lowered, "replace ")
+	if replaceIdx < 0 {
+		return "", ""
+	}
+	rest := text[replaceIdx+len("replace "):]
+	restLower := lowered[replaceIdx+len("replace "):]
+	withIdx := strings.Index(restLower, " with ")
+	if withIdx <= 0 {
+		return "", ""
+	}
+	find := strings.TrimSpace(rest[:withIdx])
+	replacement := trimTrailingSentencePunctuation(rest[withIdx+len(" with "):])
+	return find, replacement
+}
+
+func extractRuntimeFromText(text string) string {
+	lowered := strings.ToLower(text)
+	if idx := strings.Index(lowered, "this "); idx >= 0 {
+		rest := text[idx+len("this "):]
+		restLower := lowered[idx+len("this "):]
+		if end := strings.Index(restLower, " snippet"); end > 0 {
+			runtime := strings.TrimSpace(rest[:end])
+			if looksLikeRuntime(runtime) {
+				return normalizeRuntime(runtime)
+			}
+		}
+	}
+	if idx := strings.Index(lowered, "runtime "); idx >= 0 {
+		if token := firstToken(strings.TrimSpace(text[idx+len("runtime "):])); looksLikeRuntime(token) {
+			return normalizeRuntime(token)
+		}
+	}
+	return ""
+}
+
+func extractCodeSnippet(text string) string {
+	if idx := strings.Index(text, ":"); idx >= 0 {
+		return strings.TrimSpace(text[idx+1:])
+	}
+	return ""
+}
+
+func extractAccountProvider(text string) string {
+	lowered := strings.ToLower(text)
+	if idx := strings.Index(lowered, "provider "); idx >= 0 {
+		if token := firstToken(strings.TrimSpace(text[idx+len("provider "):])); token != "" {
+			return token
+		}
+	}
+	if idx := strings.Index(lowered, "from "); idx >= 0 {
+		if token := firstToken(strings.TrimSpace(text[idx+len("from "):])); token != "" {
+			return token
+		}
+	}
+	if idx := strings.Index(lowered, "to "); idx >= 0 {
+		if token := firstToken(strings.TrimSpace(text[idx+len("to "):])); token != "" {
+			return token
+		}
+	}
+	return ""
+}
+
+func extractAccountPattern(text string) string {
+	lowered := strings.ToLower(text)
+	for _, marker := range []string{"matching ", "filtered by "} {
+		if idx := strings.Index(lowered, marker); idx >= 0 {
+			return trimTrailingSentencePunctuation(text[idx+len(marker):])
+		}
+	}
+	return ""
+}
+
+func trimTrailingSentencePunctuation(value string) string {
+	return strings.TrimSpace(strings.TrimRight(strings.TrimSpace(value), ".!?"))
+}
+
+func firstToken(value string) string {
+	fields := strings.Fields(value)
+	if len(fields) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(strings.Trim(fields[0], "\"'`,.;:!?()[]{}"))
+}
+
+func looksLikePath(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+
+	switch {
+	case strings.HasPrefix(value, "/"),
+		strings.HasPrefix(value, "./"),
+		strings.HasPrefix(value, "../"),
+		strings.HasPrefix(value, "~"),
+		strings.HasPrefix(value, "."):
+		return true
+	}
+
+	if strings.ContainsRune(value, '/') || strings.ContainsRune(value, '\\') {
+		return true
+	}
+
+	return filepath.Ext(value) != ""
+}
+
+func looksLikeRuntime(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "python", "python3", "sh", "shell", "bash", "node", "javascript", "js":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeRuntime(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "shell", "bash":
+		return "sh"
+	case "javascript", "js":
+		return "node"
+	default:
+		return strings.ToLower(strings.TrimSpace(value))
 	}
 }
 
@@ -545,6 +935,17 @@ func (c *Classifier) requiredArgumentQuestion(skillName string, arguments map[st
 		if strings.TrimSpace(arguments["id"]) == "" {
 			return "Which watch ID should I test?"
 		}
+	case "user_add":
+		if strings.TrimSpace(arguments["username"]) == "" {
+			return "Which username should I create?"
+		}
+		if strings.TrimSpace(arguments["password"]) == "" {
+			return "What password should I set for that user?"
+		}
+	case "user_delete":
+		if strings.TrimSpace(arguments["username"]) == "" {
+			return "Which username should I delete?"
+		}
 	}
 	return ""
 }
@@ -568,6 +969,20 @@ func clarificationQuestion(intent, skillName string, arguments map[string]string
 
 func clarificationQuestionForSkill(skillName string, arguments map[string]string) string {
 	switch skillName {
+	case "start":
+		return "Do you want the getting started message?"
+	case "ping":
+		return "Do you want a quick connectivity check?"
+	case "skills":
+		if topic := strings.TrimSpace(arguments["topic"]); topic != "" {
+			return "Do you want me to show skills for " + topic + "?"
+		}
+		return "Do you want me to list the available skill groups?"
+	case "help":
+		if topic := strings.TrimSpace(arguments["topic"]); topic != "" {
+			return "Do you want help for " + topic + "?"
+		}
+		return "Do you want me to show the general help message?"
 	case "status":
 		return "Do you want me to show system status?"
 	case "cpu":
@@ -586,6 +1001,28 @@ func clarificationQuestionForSkill(skillName string, arguments map[string]string
 		return "Do you want me to show IP addresses?"
 	case "service_list":
 		return "Do you want me to list allowed services?"
+	case "watch_list":
+		return "Do you want me to list configured watches?"
+	case "watch_pause":
+		if id := strings.TrimSpace(arguments["id"]); id != "" {
+			return "Do you want me to pause watch #" + id + "?"
+		}
+		return "Which watch ID should I pause?"
+	case "watch_remove":
+		if id := strings.TrimSpace(arguments["id"]); id != "" {
+			return "Do you want me to remove watch #" + id + "?"
+		}
+		return "Which watch ID should I remove?"
+	case "watch_history":
+		if id := strings.TrimSpace(arguments["id"]); id != "" {
+			return "Do you want me to show incidents for watch #" + id + "?"
+		}
+		return "Do you want me to show recent watch incidents?"
+	case "watch_test":
+		if id := strings.TrimSpace(arguments["id"]); id != "" {
+			return "Do you want me to probe watch #" + id + "?"
+		}
+		return "Which watch ID should I test?"
 	case "file_list":
 		return "Do you want me to list whitelisted files or roots?"
 	case "file_read":
@@ -614,6 +1051,8 @@ func clarificationQuestionForSkill(skillName string, arguments map[string]string
 			return "Do you want me to run " + path + "?"
 		}
 		return "Which file should I run?"
+	case "workspace_clean":
+		return "Do you want me to clean the workbench workspace?"
 	case "service_restart":
 		if service := strings.TrimSpace(arguments["service"]); service != "" {
 			return "Do you want me to restart " + service + "?"
@@ -641,6 +1080,26 @@ func clarificationQuestionForSkill(skillName string, arguments map[string]string
 			return "Which note ID should I delete?"
 		}
 		return "Do you want me to delete note #" + strings.TrimSpace(arguments["id"]) + "?"
+	case "user_providers":
+		return "Do you want me to list configured account providers?"
+	case "user_list":
+		if provider := strings.TrimSpace(arguments["provider"]); provider != "" {
+			if pattern := strings.TrimSpace(arguments["pattern"]); pattern != "" {
+				return "Do you want me to list users for " + provider + " matching " + pattern + "?"
+			}
+			return "Do you want me to list users for " + provider + "?"
+		}
+		return "Do you want me to list users from the configured account provider?"
+	case "user_add":
+		if username := strings.TrimSpace(arguments["username"]); username != "" {
+			return "Do you want me to create user " + username + "?"
+		}
+		return "Which username should I create?"
+	case "user_delete":
+		if username := strings.TrimSpace(arguments["username"]); username != "" {
+			return "Do you want me to delete user " + username + "?"
+		}
+		return "Which username should I delete?"
 	}
 
 	return ""
@@ -827,6 +1286,57 @@ func normalizeArguments(arguments map[string]string) map[string]string {
 			result["spec"] = strings.TrimSpace(result["rule"])
 		case strings.TrimSpace(result["watch_rule"]) != "":
 			result["spec"] = strings.TrimSpace(result["watch_rule"])
+		}
+	}
+
+	if provider := strings.TrimSpace(result["provider"]); provider == "" {
+		switch {
+		case strings.TrimSpace(result["account_provider"]) != "":
+			result["provider"] = strings.TrimSpace(result["account_provider"])
+		case strings.TrimSpace(result["provider_name"]) != "":
+			result["provider"] = strings.TrimSpace(result["provider_name"])
+		}
+	}
+
+	if username := strings.TrimSpace(result["username"]); username == "" {
+		switch {
+		case strings.TrimSpace(result["user"]) != "":
+			result["username"] = strings.TrimSpace(result["user"])
+		case strings.TrimSpace(result["user_name"]) != "":
+			result["username"] = strings.TrimSpace(result["user_name"])
+		case strings.TrimSpace(result["account"]) != "":
+			result["username"] = strings.TrimSpace(result["account"])
+		}
+	}
+
+	if password := strings.TrimSpace(result["password"]); password == "" {
+		switch {
+		case strings.TrimSpace(result["pass"]) != "":
+			result["password"] = strings.TrimSpace(result["pass"])
+		case strings.TrimSpace(result["secret"]) != "":
+			result["password"] = strings.TrimSpace(result["secret"])
+		}
+	}
+
+	if pattern := strings.TrimSpace(result["pattern"]); pattern == "" {
+		switch {
+		case strings.TrimSpace(result["query"]) != "":
+			result["pattern"] = strings.TrimSpace(result["query"])
+		case strings.TrimSpace(result["filter"]) != "":
+			result["pattern"] = strings.TrimSpace(result["filter"])
+		}
+	}
+
+	if topic := strings.TrimSpace(result["topic"]); topic == "" {
+		switch {
+		case strings.TrimSpace(result["command"]) != "":
+			result["topic"] = strings.TrimSpace(result["command"])
+		case strings.TrimSpace(result["subject"]) != "":
+			result["topic"] = strings.TrimSpace(result["subject"])
+		case strings.TrimSpace(result["tool"]) != "":
+			result["topic"] = strings.TrimSpace(result["tool"])
+		case strings.TrimSpace(result["skill_name"]) != "":
+			result["topic"] = strings.TrimSpace(result["skill_name"])
 		}
 	}
 

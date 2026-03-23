@@ -6,6 +6,73 @@ import (
 )
 
 const openAIClarificationToolName = "request_clarification"
+const openAIRouteToolName = "select_route"
+
+func buildRouteToolInstructions(request RouteClassificationRequest) string {
+	return fmt.Sprintf(
+		"Choose exactly one function for route selection.\n"+
+			"Never answer with plain text.\n"+
+			"Call %q when you can map the request to one allowed intent.\n"+
+			"Call %q when the request is ambiguous or unclear.\n\n"+
+			"Available intent groups:\n%s\n\n"+
+			"Rules:\n"+
+			"- choose one allowed intent\n"+
+			"- chat is for normal conversation, free-form replies, explanations, or when the user asks for text only\n"+
+			"- core covers start, welcome, onboarding, ping, help, skills, and capability questions\n"+
+			"- workbench covers code snippets, runtimes, and execution requests\n"+
+			"- services covers service status, logs, and restart requests\n"+
+			"- watch covers watch rules, probing, history, pause, and remove\n"+
+			"- return confidence as a number between 0 and 1\n",
+		openAIRouteToolName,
+		openAIClarificationToolName,
+		renderGroupOptions(request.Groups),
+	)
+}
+
+func openAIRouteTools(request RouteClassificationRequest) []openAITool {
+	return []openAITool{
+		{
+			Type:        "function",
+			Name:        openAIRouteToolName,
+			Description: "Select the best matching route intent and confidence for the user request.",
+			Parameters: map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"intent": map[string]any{
+						"type": "string",
+						"enum": routeIntentChoices(request.Groups),
+					},
+					"confidence": map[string]any{
+						"type":        "number",
+						"description": "Confidence from 0 to 1 for the selected intent.",
+						"minimum":     0,
+						"maximum":     1,
+					},
+				},
+				"required": []string{"intent", "confidence"},
+			},
+			Strict: true,
+		},
+		{
+			Type:        "function",
+			Name:        openAIClarificationToolName,
+			Description: "Ask one short follow-up question when the request is ambiguous or missing details.",
+			Parameters: map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"question": map[string]any{
+						"type":        "string",
+						"description": "A short clarification question for the user.",
+					},
+				},
+				"required": []string{"question"},
+			},
+			Strict: true,
+		},
+	}
+}
 
 func buildSkillToolInstructions(request SkillClassificationRequest) string {
 	skills := effectiveCandidateSkills(request)
@@ -111,6 +178,30 @@ func openAISkillFunctionParameters(skillName string, request SkillClassification
 	addPath := func(description string) {
 		properties["path"] = openAINullableStringProperty(description, nil)
 	}
+	addProvider := func() {
+		properties["provider"] = openAINullableStringProperty(
+			"Configured account provider name when the skill manages users.",
+			nil,
+		)
+	}
+	addUsername := func() {
+		properties["username"] = openAINullableStringProperty(
+			"Username or account name when the skill manages users.",
+			nil,
+		)
+	}
+	addPassword := func() {
+		properties["password"] = openAINullableStringProperty(
+			"Password when the skill creates a user.",
+			nil,
+		)
+	}
+	addPattern := func() {
+		properties["pattern"] = openAINullableStringProperty(
+			"Optional filter pattern when listing users.",
+			nil,
+		)
+	}
 	addContent := func() {
 		properties["content"] = openAINullableStringProperty("File content when writing a file.", nil)
 	}
@@ -151,6 +242,16 @@ func openAISkillFunctionParameters(skillName string, request SkillClassification
 		addRuntimeCode()
 	case "watch_add":
 		addSpec()
+	case "user_add":
+		addProvider()
+		addUsername()
+		addPassword()
+	case "user_list":
+		addProvider()
+		addPattern()
+	case "user_delete":
+		addProvider()
+		addUsername()
 	}
 
 	return map[string]any{

@@ -2,22 +2,27 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"strings"
+	"time"
 
 	"openlight/internal/app"
 	"openlight/internal/auth"
 	"openlight/internal/config"
 	"openlight/internal/core"
 	"openlight/internal/router"
+	"openlight/internal/skills"
 	"openlight/internal/telegram"
 )
 
 type Harness struct {
 	agent     *core.Agent
+	registry  *skills.Registry
 	transport *captureTransport
 	userID    int64
 	chatID    int64
 	nextID    int64
+	timeout   time.Duration
 }
 
 func NewHarness(cfg config.Config, runtime app.Runtime, userID, chatID int64) *Harness {
@@ -37,10 +42,12 @@ func NewHarness(cfg config.Config, runtime app.Runtime, userID, chatID int64) *H
 	)
 	return &Harness{
 		agent:     agent,
+		registry:  runtime.Registry,
 		transport: transport,
 		userID:    userID,
 		chatID:    chatID,
 		nextID:    1,
+		timeout:   cfg.Agent.RequestTimeout,
 	}
 }
 
@@ -54,6 +61,55 @@ func (h *Harness) Exec(ctx context.Context, text string) (string, error) {
 	})
 	h.nextID++
 	return strings.TrimSpace(h.transport.output()), err
+}
+
+func (h *Harness) ExecDecision(ctx context.Context, text string, decision router.Decision) (string, error) {
+	if !decision.Matched() {
+		return "skill not found", nil
+	}
+
+	skill, ok := h.registry.Get(decision.SkillName)
+	if !ok {
+		return "skill not found", nil
+	}
+
+	execCtx := ctx
+	cancel := func() {}
+	if h.timeout > 0 {
+		execCtx, cancel = context.WithTimeout(ctx, h.timeout)
+	}
+	defer cancel()
+
+	result, err := skill.Execute(execCtx, skills.Input{
+		RawText: text,
+		Args:    decision.Args,
+		UserID:  h.userID,
+		ChatID:  h.chatID,
+	})
+	if err != nil {
+		return harnessUserMessageForError(err), nil
+	}
+
+	return strings.TrimSpace(result.Text), nil
+}
+
+func harnessUserMessageForError(err error) string {
+	switch {
+	case errors.Is(err, skills.ErrInvalidArguments):
+		return "invalid arguments"
+	case errors.Is(err, skills.ErrSkillNotFound):
+		return "skill not found"
+	case errors.Is(err, skills.ErrNotFound):
+		return "not found"
+	case errors.Is(err, skills.ErrAccessDenied):
+		return "access denied"
+	case errors.Is(err, skills.ErrUnavailable):
+		return "unavailable"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "request timed out"
+	default:
+		return "internal error"
+	}
 }
 
 type captureTransport struct {

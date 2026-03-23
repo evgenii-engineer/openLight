@@ -41,6 +41,7 @@ func routeResponseSchema(allowedGroups []string) map[string]any {
 
 func skillResponseSchema(allowedSkills []string, allowedServices []string, allowedRuntimes []string) map[string]any {
 	skillEnum := append([]string{""}, nonEmptyUniqueStrings(allowedSkills)...)
+	argumentProperties := skillArgumentProperties(allowedSkills, allowedServices, allowedRuntimes)
 
 	return map[string]any{
 		"type":                 "object",
@@ -53,18 +54,7 @@ func skillResponseSchema(allowedSkills []string, allowedServices []string, allow
 			"arguments": map[string]any{
 				"type":                 "object",
 				"additionalProperties": false,
-				"properties": map[string]any{
-					"service": stringSchemaWithAllowedValues(allowedServices),
-					"text":    map[string]any{"type": "string"},
-					"id":      map[string]any{"type": "string"},
-					"path":    map[string]any{"type": "string"},
-					"content": map[string]any{"type": "string"},
-					"find":    map[string]any{"type": "string"},
-					"replace": map[string]any{"type": "string"},
-					"runtime": stringSchemaWithAllowedValues(allowedRuntimes),
-					"code":    map[string]any{"type": "string"},
-					"spec":    map[string]any{"type": "string"},
-				},
+				"properties":           argumentProperties,
 			},
 			"needs_clarification": map[string]any{
 				"type": "boolean",
@@ -78,6 +68,21 @@ func skillResponseSchema(allowedSkills []string, allowedServices []string, allow
 			"needs_clarification",
 		},
 	}
+}
+
+func skillArgumentProperties(allowedSkills []string, allowedServices []string, allowedRuntimes []string) map[string]any {
+	properties := make(map[string]any)
+	for _, key := range allowedArgumentKeysForSkills(allowedSkills) {
+		switch key {
+		case "service":
+			properties[key] = stringSchemaWithAllowedValues(allowedServices)
+		case "runtime":
+			properties[key] = stringSchemaWithAllowedValues(allowedRuntimes)
+		default:
+			properties[key] = map[string]any{"type": "string"}
+		}
+	}
+	return properties
 }
 
 func summaryResponseSchema() map[string]any {

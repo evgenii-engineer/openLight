@@ -136,6 +136,19 @@ accounts:
 
 llm:
   enabled: true
+  # Optional: keep both providers here and switch with llm.profile or LLM_PROFILE.
+  # profile: "ollama"
+  # profiles:
+  #   ollama:
+  #     provider: "ollama"
+  #     endpoint: "http://127.0.0.1:11434"
+  #     model: "qwen2.5:0.5b"
+  #     decision_num_predict: 48
+  #   openai:
+  #     provider: "openai"
+  #     endpoint: "https://api.openai.com/v1"
+  #     model: "gpt-4o-mini"
+  #     api_key: ""
   provider: "ollama"
   endpoint: "http://127.0.0.1:11434"
   model: "qwen2.5:0.5b"
