@@ -56,6 +56,14 @@ func TestOpenAIProviderClassifyRoute(t *testing.T) {
 			if format["name"] != "route_response" {
 				t.Fatalf("unexpected format name: %#v", format["name"])
 			}
+			schema, ok := format["schema"].(map[string]any)
+			if !ok {
+				t.Fatalf("unexpected schema config: %#v", format["schema"])
+			}
+			required, ok := schema["required"].([]any)
+			if !ok || len(required) != 4 || !containsValue(required, "clarification_question") {
+				t.Fatalf("unexpected required fields: %#v", schema["required"])
+			}
 
 			return jsonHTTPResponse(map[string]any{
 				"output": []map[string]any{
@@ -126,21 +134,23 @@ func TestOpenAIProviderClassifySkill(t *testing.T) {
 			if !ok || firstTool["type"] != "function" || firstTool["name"] != "service_restart" {
 				t.Fatalf("unexpected first tool: %#v", tools[0])
 			}
-			if firstTool["strict"] != true {
-				t.Fatalf("expected strict function tool, got %#v", firstTool["strict"])
+			if _, ok := firstTool["strict"]; ok {
+				t.Fatalf("did not expect strict flag for non-strict function tool, got %#v", firstTool["strict"])
 			}
 
 			parameters, ok := firstTool["parameters"].(map[string]any)
 			if !ok {
 				t.Fatalf("unexpected parameters schema: %#v", firstTool["parameters"])
 			}
-			required, ok := parameters["required"].([]any)
-			if !ok || len(required) != 10 {
-				t.Fatalf("unexpected required list: %#v", parameters["required"])
+			if _, ok := parameters["required"]; ok {
+				t.Fatalf("did not expect required list: %#v", parameters["required"])
 			}
 			properties, ok := parameters["properties"].(map[string]any)
 			if !ok {
 				t.Fatalf("unexpected parameters properties: %#v", parameters["properties"])
+			}
+			if len(properties) != 1 {
+				t.Fatalf("unexpected properties count: %#v", properties)
 			}
 			serviceProperty, ok := properties["service"].(map[string]any)
 			if !ok {
@@ -154,15 +164,6 @@ func TestOpenAIProviderClassifySkill(t *testing.T) {
 			if !ok || len(serviceEnum) != 2 || serviceEnum[0] != "tailscale" || serviceEnum[1] != nil {
 				t.Fatalf("unexpected service enum: %#v", serviceProperty["enum"])
 			}
-			specProperty, ok := properties["spec"].(map[string]any)
-			if !ok {
-				t.Fatalf("unexpected spec property: %#v", properties["spec"])
-			}
-			specType, ok := specProperty["type"].([]any)
-			if !ok || len(specType) != 2 || specType[0] != "string" || specType[1] != "null" {
-				t.Fatalf("unexpected spec type: %#v", specProperty["type"])
-			}
-
 			lastTool, ok := tools[2].(map[string]any)
 			if !ok || lastTool["name"] != openAIClarificationToolName {
 				t.Fatalf("unexpected clarification tool: %#v", tools[2])
@@ -231,6 +232,72 @@ func TestOpenAIProviderClassifySkillClarificationTool(t *testing.T) {
 	}
 	if classification.ClarificationQuestion != "Which service should I restart?" {
 		t.Fatalf("unexpected clarification question: %q", classification.ClarificationQuestion)
+	}
+}
+
+func TestOpenAIProviderClassifySkillWithShortArguments(t *testing.T) {
+	t.Parallel()
+
+	provider := NewOpenAIProvider("https://api.openai.com/v1", "gpt-4o-mini", "secret", time.Second, nil)
+	provider.client = &http.Client{
+		Timeout: time.Second,
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			tools, ok := payload["tools"].([]any)
+			if !ok || len(tools) < 1 {
+				t.Fatalf("unexpected tools payload: %#v", payload["tools"])
+			}
+			var noteListTool map[string]any
+			for _, raw := range tools {
+				tool, ok := raw.(map[string]any)
+				if !ok {
+					continue
+				}
+				if tool["name"] == "note_list" {
+					noteListTool = tool
+					break
+				}
+			}
+			if noteListTool == nil {
+				t.Fatalf("expected note_list tool in %#v", tools)
+			}
+			parameters, ok := noteListTool["parameters"].(map[string]any)
+			if !ok {
+				t.Fatalf("unexpected parameters schema: %#v", noteListTool["parameters"])
+			}
+			properties, ok := parameters["properties"].(map[string]any)
+			if !ok || len(properties) != 0 {
+				t.Fatalf("expected empty properties for note_list, got %#v", parameters["properties"])
+			}
+			return jsonHTTPResponse(map[string]any{
+				"output": []map[string]any{
+					{
+						"type":      "function_call",
+						"name":      "note_list",
+						"arguments": `{}`,
+						"status":    "completed",
+					},
+				},
+			}), nil
+		}),
+	}
+
+	classification, err := provider.ClassifySkill(context.Background(), "Что у меня сохранено в заметках?", SkillClassificationRequest{
+		AllowedSkills: []string{"note_add", "note_delete", "note_list"},
+		InputChars:    128,
+		NumPredict:    48,
+	})
+	if err != nil {
+		t.Fatalf("ClassifySkill returned error: %v", err)
+	}
+	if classification.Skill != "note_list" {
+		t.Fatalf("unexpected skill: %q", classification.Skill)
+	}
+	if len(classification.Arguments) != 0 {
+		t.Fatalf("expected empty args, got %#v", classification.Arguments)
 	}
 }
 
@@ -359,4 +426,13 @@ func TestOpenAIProviderChat(t *testing.T) {
 	if reply != "chat reply" {
 		t.Fatalf("unexpected reply: %q", reply)
 	}
+}
+
+func containsValue(values []any, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }

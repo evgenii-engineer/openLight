@@ -344,6 +344,76 @@ func TestClassifierUsesRouteConfidenceForValidSkillSelection(t *testing.T) {
 	}
 }
 
+func TestClassifierIgnoresClarificationForExecutableReadOnlySkill(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "status", group: skills.GroupSystem})
+
+	classifier := NewClassifier(&stubProvider{
+		routeClassification: basellm.RouteClassification{
+			Intent:     "system",
+			Confidence: 0.95,
+		},
+		skillClassification: basellm.Classification{
+			Skill:                 "status",
+			Arguments:             map[string]string{},
+			NeedsClarification:    true,
+			ClarificationQuestion: "What is the current system status?",
+		},
+	}, registry, Options{}, nil)
+
+	decision, ok, err := classifier.Classify(context.Background(), "Дай мне общий статус системы")
+	if err != nil {
+		t.Fatalf("Classify returned error: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected status decision")
+	}
+	if decision.ShouldClarify() {
+		t.Fatalf("did not expect clarification, got %#v", decision)
+	}
+	if decision.SkillName != "status" {
+		t.Fatalf("unexpected decision: %#v", decision)
+	}
+}
+
+func TestClassifierPreservesClarificationForMutatingSkill(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "service_restart", group: skills.GroupServices, mutating: true})
+
+	classifier := NewClassifier(&stubProvider{
+		routeClassification: basellm.RouteClassification{
+			Intent:     "services",
+			Confidence: 0.95,
+		},
+		skillClassification: basellm.Classification{
+			Skill:                 "service_restart",
+			Arguments:             map[string]string{"service": "tailscale"},
+			NeedsClarification:    true,
+			ClarificationQuestion: "Do you want me to restart tailscale?",
+		},
+	}, registry, Options{
+		AllowedServices: []string{"tailscale"},
+	}, nil)
+
+	decision, ok, err := classifier.Classify(context.Background(), "restart tailscale")
+	if err != nil {
+		t.Fatalf("Classify returned error: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected clarification decision")
+	}
+	if !decision.ShouldClarify() {
+		t.Fatalf("expected clarification, got %#v", decision)
+	}
+	if decision.ClarificationQuestion != "Do you want me to restart tailscale?" {
+		t.Fatalf("unexpected clarification question: %q", decision.ClarificationQuestion)
+	}
+}
+
 func TestClassifierClarifiesMissingRequiredArgsUsingRouteConfidence(t *testing.T) {
 	t.Parallel()
 

@@ -416,10 +416,62 @@ func openAIJSONSchemaFormat(name string, schema map[string]any) map[string]any {
 		"type":   "json_schema",
 		"name":   name,
 		"strict": true,
-		"schema": schema,
+		"schema": openAIStrictSchema(schema),
 	}
 }
 
 func openAIBool(value bool) *bool {
 	return &value
+}
+
+func openAIStrictSchema(schema map[string]any) map[string]any {
+	cloned, ok := deepCloneJSONValue(schema).(map[string]any)
+	if !ok {
+		return schema
+	}
+	openAIStrictifySchemaNode(cloned)
+	return cloned
+}
+
+func openAIStrictifySchemaNode(node map[string]any) {
+	properties, ok := node["properties"].(map[string]any)
+	if !ok {
+		return
+	}
+
+	required := make([]string, 0, len(properties))
+	for key, raw := range properties {
+		required = append(required, key)
+		child, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		openAIStrictifySchemaNode(child)
+	}
+	node["required"] = required
+}
+
+func deepCloneJSONValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		result := make(map[string]any, len(typed))
+		for key, child := range typed {
+			result[key] = deepCloneJSONValue(child)
+		}
+		return result
+	case []any:
+		result := make([]any, len(typed))
+		for idx, child := range typed {
+			result[idx] = deepCloneJSONValue(child)
+		}
+		return result
+	case []string:
+		result := make([]any, len(typed))
+		for idx, child := range typed {
+			result[idx] = child
+		}
+		return result
+	default:
+		return value
+	}
 }

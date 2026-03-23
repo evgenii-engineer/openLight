@@ -17,9 +17,9 @@ const (
 	defaultExecuteThreshold = 0.80
 	defaultClarifyThreshold = 0.60
 	defaultRouteInputChars  = 96
-	defaultRouteNumPredict  = 64
+	defaultRouteNumPredict  = 32
 	defaultSkillInputChars  = 128
-	defaultSkillNumPredict  = 96
+	defaultSkillNumPredict  = 48
 )
 
 type Options struct {
@@ -316,24 +316,6 @@ func (c *Classifier) resolveSkillDecision(text string, allowedSkills []string, r
 	arguments := normalizeArguments(classification.Arguments)
 	decisionConfidence := routeConfidence
 
-	if question := clarificationQuestionForSkillResponse(skillName, arguments, classification.ClarificationQuestion); classification.NeedsClarification && question != "" {
-		if c.logger != nil {
-			c.logger.Debug(
-				"llm skill requested clarification",
-				"skill", skillName,
-				"decision_confidence", decisionConfidence,
-				"question", question,
-				"args", arguments,
-			)
-		}
-		return router.Decision{
-			Mode:                  router.ModeLLM,
-			Confidence:            decisionConfidence,
-			NeedsClarification:    true,
-			ClarificationQuestion: question,
-		}, true
-	}
-
 	if skillName == "" && len(allowedSkills) == 1 {
 		skillName = allowedSkills[0]
 		if c.logger != nil {
@@ -343,6 +325,36 @@ func (c *Classifier) resolveSkillDecision(text string, allowedSkills []string, r
 				"decision_confidence", decisionConfidence,
 				"args", arguments,
 			)
+		}
+	}
+
+	if question := clarificationQuestionForSkillResponse(skillName, arguments, classification.ClarificationQuestion); classification.NeedsClarification && question != "" {
+		if c.shouldIgnoreSkillClarification(skillName, arguments) {
+			if c.logger != nil {
+				c.logger.Debug(
+					"llm skill clarification ignored for executable read-only skill",
+					"skill", skillName,
+					"decision_confidence", decisionConfidence,
+					"question", question,
+					"args", arguments,
+				)
+			}
+		} else {
+			if c.logger != nil {
+				c.logger.Debug(
+					"llm skill requested clarification",
+					"skill", skillName,
+					"decision_confidence", decisionConfidence,
+					"question", question,
+					"args", arguments,
+				)
+			}
+			return router.Decision{
+				Mode:                  router.ModeLLM,
+				Confidence:            decisionConfidence,
+				NeedsClarification:    true,
+				ClarificationQuestion: question,
+			}, true
 		}
 	}
 
@@ -396,6 +408,19 @@ func (c *Classifier) resolveSkillDecision(text string, allowedSkills []string, r
 		Args:       c.routeArguments(text, skillName, arguments),
 		Confidence: decisionConfidence,
 	}, true
+}
+
+func (c *Classifier) shouldIgnoreSkillClarification(skillName string, arguments map[string]string) bool {
+	if skillName == "" {
+		return false
+	}
+
+	definition, ok := c.skillCatalog[skillName]
+	if !ok || definition.Mutating {
+		return false
+	}
+
+	return c.requiredArgumentQuestion(skillName, arguments) == ""
 }
 
 func (c *Classifier) routeArguments(text, skillName string, arguments map[string]string) map[string]string {

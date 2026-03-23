@@ -138,7 +138,7 @@ llm:
   execute_threshold: 0.80
   clarify_threshold: 0.60
   decision_input_chars: 160
-  decision_num_predict: 128
+  decision_num_predict: 48
 
 chat:
   history_limit: 6

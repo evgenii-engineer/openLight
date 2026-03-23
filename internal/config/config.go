@@ -198,7 +198,7 @@ func defaultConfig() Config {
 			ExecuteThreshold:   0.80,
 			ClarifyThreshold:   0.60,
 			DecisionInputChars: 160,
-			DecisionNumPredict: 128,
+			DecisionNumPredict: 48,
 		},
 		Chat: ChatConfig{
 			HistoryLimit:     6,

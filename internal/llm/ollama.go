@@ -35,7 +35,7 @@ func NewOllamaProvider(endpoint, model string, timeout time.Duration, logger *sl
 
 func (p *OllamaProvider) ClassifyRoute(ctx context.Context, text string, request RouteClassificationRequest) (RouteClassification, error) {
 	prompt := buildRoutePrompt(limitText(text, request.InputChars), request)
-	responseText, err := p.generate(ctx, prompt, 0.1, decisionNumPredict(request.NumPredict))
+	responseText, err := p.generate(ctx, prompt, routeResponseSchema(groupKeys(request.Groups)), 0.0, decisionNumPredict(request.NumPredict))
 	if err != nil {
 		return RouteClassification{}, err
 	}
@@ -53,7 +53,13 @@ func (p *OllamaProvider) ClassifyRoute(ctx context.Context, text string, request
 
 func (p *OllamaProvider) ClassifySkill(ctx context.Context, text string, request SkillClassificationRequest) (Classification, error) {
 	prompt := buildSkillPrompt(limitText(text, request.InputChars), request)
-	responseText, err := p.generate(ctx, prompt, 0.1, decisionNumPredict(request.NumPredict))
+	responseText, err := p.generate(
+		ctx,
+		prompt,
+		skillResponseSchema(request.AllowedSkills, request.AllowedServices, request.AllowedRuntimes),
+		0.0,
+		decisionNumPredict(request.NumPredict),
+	)
 	if err != nil {
 		return Classification{}, err
 	}
@@ -70,7 +76,7 @@ func (p *OllamaProvider) ClassifySkill(ctx context.Context, text string, request
 }
 
 func (p *OllamaProvider) Summarize(ctx context.Context, text string) (string, error) {
-	responseText, err := p.generate(ctx, buildSummaryPrompt(text), 0.0, 64)
+	responseText, err := p.generate(ctx, buildSummaryPrompt(text), summaryResponseSchema(), 0.0, 64)
 	if err != nil {
 		return "", err
 	}
@@ -90,6 +96,7 @@ func (p *OllamaProvider) Chat(ctx context.Context, messages []ChatMessage) (stri
 		"model":      p.model,
 		"messages":   messages,
 		"stream":     false,
+		"think":      false,
 		"keep_alive": ollamaKeepAlive,
 		"options": map[string]any{
 			"temperature":    0.2,
@@ -142,12 +149,13 @@ func (p *OllamaProvider) Chat(ctx context.Context, messages []ChatMessage) (stri
 	return content, nil
 }
 
-func (p *OllamaProvider) generate(ctx context.Context, prompt string, temperature float64, numPredict int) (string, error) {
+func (p *OllamaProvider) generate(ctx context.Context, prompt string, format any, temperature float64, numPredict int) (string, error) {
 	payload := map[string]any{
 		"model":      p.model,
 		"prompt":     prompt,
 		"stream":     false,
-		"format":     "json",
+		"think":      false,
+		"format":     format,
 		"keep_alive": ollamaKeepAlive,
 		"options": map[string]any{
 			"temperature": temperature,
@@ -180,17 +188,26 @@ func (p *OllamaProvider) generate(ctx context.Context, prompt string, temperatur
 
 	var decoded struct {
 		Response string `json:"response"`
+		Thinking string `json:"thinking"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&decoded); err != nil {
 		return "", fmt.Errorf("decode ollama response: %w", err)
 	}
 
 	responseText := strings.TrimSpace(decoded.Response)
+	thinkingText := strings.TrimSpace(decoded.Thinking)
 	if p.logger != nil {
 		p.logger.Debug("ollama generate completed",
 			"prompt_chars", utf8.RuneCountInString(prompt),
 			"response_chars", utf8.RuneCountInString(responseText),
+			"thinking_chars", utf8.RuneCountInString(thinkingText),
 		)
+	}
+	if responseText == "" {
+		if thinkingText != "" {
+			return "", fmt.Errorf("empty ollama response text (thinking output present)")
+		}
+		return "", fmt.Errorf("empty ollama response text")
 	}
 
 	return responseText, nil

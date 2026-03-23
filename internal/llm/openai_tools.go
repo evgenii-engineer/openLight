@@ -45,7 +45,6 @@ func buildSkillToolInstructions(request SkillClassificationRequest) string {
 
 func openAISkillTools(request SkillClassificationRequest) []openAITool {
 	skills := effectiveCandidateSkills(request)
-	skillParameters := openAISkillFunctionParameters(request)
 	tools := make([]openAITool, 0, len(skills)+1)
 
 	for _, skill := range skills {
@@ -68,8 +67,8 @@ func openAISkillTools(request SkillClassificationRequest) []openAITool {
 			Type:        "function",
 			Name:        name,
 			Description: description,
-			Parameters:  skillParameters,
-			Strict:      true,
+			Parameters:  openAISkillFunctionParameters(name, request),
+			Strict:      false,
 		})
 	}
 
@@ -94,64 +93,70 @@ func openAISkillTools(request SkillClassificationRequest) []openAITool {
 	return tools
 }
 
-func openAISkillFunctionParameters(request SkillClassificationRequest) map[string]any {
+func openAISkillFunctionParameters(skillName string, request SkillClassificationRequest) map[string]any {
+	properties := map[string]any{}
+
+	addService := func() {
+		properties["service"] = openAINullableStringProperty(
+			"Allowed service name when the skill works with services.",
+			request.AllowedServices,
+		)
+	}
+	addText := func(description string) {
+		properties["text"] = openAINullableStringProperty(description, nil)
+	}
+	addID := func(description string) {
+		properties["id"] = openAINullableStringProperty(description, nil)
+	}
+	addPath := func(description string) {
+		properties["path"] = openAINullableStringProperty(description, nil)
+	}
+	addContent := func() {
+		properties["content"] = openAINullableStringProperty("File content when writing a file.", nil)
+	}
+	addFindReplace := func() {
+		properties["find"] = openAINullableStringProperty("Text to replace.", nil)
+		properties["replace"] = openAINullableStringProperty("Replacement text.", nil)
+	}
+	addRuntimeCode := func() {
+		properties["runtime"] = openAINullableStringProperty(
+			"Allowed runtime when the skill executes code.",
+			request.AllowedRuntimes,
+		)
+		properties["code"] = openAINullableStringProperty("Source code to execute.", nil)
+	}
+	addSpec := func() {
+		properties["spec"] = openAINullableStringProperty(
+			"Formal watch rule string for watch_add, for example: service synapse ask for 30s cooldown 10m",
+			nil,
+		)
+	}
+
+	switch skillName {
+	case "service_status", "service_restart", "service_logs":
+		addService()
+	case "note_add":
+		addText("Free-form user text, such as note text.")
+	case "note_delete", "watch_pause", "watch_remove", "watch_test", "watch_history":
+		addID("Identifier such as a note ID or watch ID.")
+	case "file_list", "file_read", "exec_file":
+		addPath("Filesystem path when the skill needs one.")
+	case "file_write":
+		addPath("Filesystem path when the skill needs one.")
+		addContent()
+	case "file_replace":
+		addPath("Filesystem path when the skill needs one.")
+		addFindReplace()
+	case "exec_code":
+		addRuntimeCode()
+	case "watch_add":
+		addSpec()
+	}
+
 	return map[string]any{
 		"type":                 "object",
 		"additionalProperties": false,
-		"properties": map[string]any{
-			"service": openAINullableStringProperty(
-				"Allowed service name when the skill works with services.",
-				request.AllowedServices,
-			),
-			"text": openAINullableStringProperty(
-				"Free-form user text, such as note text.",
-				nil,
-			),
-			"id": openAINullableStringProperty(
-				"Identifier such as a note ID.",
-				nil,
-			),
-			"path": openAINullableStringProperty(
-				"Filesystem path when the skill needs one.",
-				nil,
-			),
-			"content": openAINullableStringProperty(
-				"File content when writing a file.",
-				nil,
-			),
-			"find": openAINullableStringProperty(
-				"Text to replace.",
-				nil,
-			),
-			"replace": openAINullableStringProperty(
-				"Replacement text.",
-				nil,
-			),
-			"runtime": openAINullableStringProperty(
-				"Allowed runtime when the skill executes code.",
-				request.AllowedRuntimes,
-			),
-			"code": openAINullableStringProperty(
-				"Source code to execute.",
-				nil,
-			),
-			"spec": openAINullableStringProperty(
-				"Formal watch rule string for watch_add, for example: service synapse ask for 30s cooldown 10m",
-				nil,
-			),
-		},
-		"required": []string{
-			"service",
-			"text",
-			"id",
-			"path",
-			"content",
-			"find",
-			"replace",
-			"runtime",
-			"code",
-			"spec",
-		},
+		"properties":           properties,
 	}
 }
 
