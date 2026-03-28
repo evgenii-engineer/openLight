@@ -184,6 +184,112 @@ func TestServiceRunCycleAskAndRestartAction(t *testing.T) {
 	}
 }
 
+func TestServiceRunCycleDoesNotResolveWhileActionRunning(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	repo, err := sqlite.New(ctx, filepath.Join(t.TempDir(), "agent.db"), nil)
+	if err != nil {
+		t.Fatalf("sqlite.New returned error: %v", err)
+	}
+	defer repo.Close()
+
+	manager := &fakeServiceManager{
+		service: serviceskills.Info{
+			Name:        "nginx",
+			ActiveState: "inactive",
+			SubState:    "failed",
+			Description: "bind error",
+		},
+	}
+	registry := skills.NewRegistry()
+	if err := skills.RegisterModules(registry, serviceskills.NewModule(manager, 30, 3000)); err != nil {
+		t.Fatalf("RegisterModules returned error: %v", err)
+	}
+
+	notifier := &fakeNotifier{}
+	service := NewService(repo, registry, notifier, fakeProvider{}, manager, nil, Options{
+		PollInterval:   5 * time.Millisecond,
+		AskTTL:         time.Minute,
+		RequestTimeout: time.Second,
+	})
+
+	watch, err := service.AddWatch(ctx, 200, 100, "service nginx ask for 1ms cooldown 1m")
+	if err != nil {
+		t.Fatalf("AddWatch returned error: %v", err)
+	}
+
+	if err := service.runCycle(ctx); err != nil {
+		t.Fatalf("runCycle returned error: %v", err)
+	}
+	time.Sleep(5 * time.Millisecond)
+	if err := service.runCycle(ctx); err != nil {
+		t.Fatalf("second runCycle returned error: %v", err)
+	}
+
+	incident, ok, err := repo.GetOpenWatchIncident(ctx, watch.ID)
+	if err != nil {
+		t.Fatalf("GetOpenWatchIncident returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected open incident")
+	}
+
+	incident.ActionStatus = models.WatchActionStatusRunning
+	if err := repo.UpdateWatchIncident(ctx, incident); err != nil {
+		t.Fatalf("UpdateWatchIncident returned error: %v", err)
+	}
+
+	manager.service.ActiveState = "active"
+	manager.service.SubState = "running"
+	manager.service.Description = "healthy again"
+
+	if err := service.runCycle(ctx); err != nil {
+		t.Fatalf("healthy runCycle returned error: %v", err)
+	}
+
+	incident, ok, err = repo.GetOpenWatchIncident(ctx, watch.ID)
+	if err != nil {
+		t.Fatalf("GetOpenWatchIncident after running returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected incident to remain open while action is running")
+	}
+	if incident.ActionStatus != models.WatchActionStatusRunning {
+		t.Fatalf("unexpected action status while running: %#v", incident)
+	}
+	if len(notifier.messages) != 1 {
+		t.Fatalf("expected no resolved message while action is running, got %#v", notifier.messages)
+	}
+
+	incident.ActionStatus = models.WatchActionStatusSucceeded
+	incident.ActionCompletedAt = time.Now()
+	if err := repo.UpdateWatchIncident(ctx, incident); err != nil {
+		t.Fatalf("UpdateWatchIncident after success returned error: %v", err)
+	}
+
+	if err := service.runCycle(ctx); err != nil {
+		t.Fatalf("resolved runCycle returned error: %v", err)
+	}
+
+	incidents, err := repo.ListWatchIncidents(ctx, storage.WatchIncidentListOptions{
+		ChatID: watch.TelegramChatID,
+		Limit:  10,
+	})
+	if err != nil {
+		t.Fatalf("ListWatchIncidents returned error: %v", err)
+	}
+	if len(incidents) != 1 {
+		t.Fatalf("expected one incident, got %#v", incidents)
+	}
+	if incidents[0].Status != models.WatchIncidentStatusResolved {
+		t.Fatalf("expected resolved incident after action completion, got %#v", incidents[0])
+	}
+	if got := notifier.messages[len(notifier.messages)-1]; !strings.Contains(got, "Resolved #") {
+		t.Fatalf("expected resolved message after action completion, got %#v", notifier.messages)
+	}
+}
+
 func TestServiceRunCycleAutoRestartsService(t *testing.T) {
 	t.Parallel()
 

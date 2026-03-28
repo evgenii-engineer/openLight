@@ -383,18 +383,19 @@ func TestAgentRunPollingEndToEndWatchAskAlertRestartCallback(t *testing.T) {
 		t.Fatalf("unexpected progress message: %#v", progress)
 	}
 
-	result := telegramAPI.waitForSentMessageMatching(t, func(message fakeTelegramSentMessage) bool {
-		return strings.Contains(message.Text, "Action: restarted nginx")
+	messages := telegramAPI.waitForSentMessagesMatching(t, map[string]func(fakeTelegramSentMessage) bool{
+		"result": func(message fakeTelegramSentMessage) bool {
+			return strings.Contains(message.Text, "Action: restarted nginx")
+		},
+		"resolved": func(message fakeTelegramSentMessage) bool {
+			return strings.Contains(message.Text, "Resolved #")
+		},
 	})
-	if !strings.Contains(result.Text, "Service restarted: nginx") {
-		t.Fatalf("unexpected action result: %#v", result)
+	if !strings.Contains(messages["result"].Text, "Service restarted: nginx") {
+		t.Fatalf("unexpected action result: %#v", messages["result"])
 	}
-
-	resolved := telegramAPI.waitForSentMessageMatching(t, func(message fakeTelegramSentMessage) bool {
-		return strings.Contains(message.Text, "Resolved #")
-	})
-	if !strings.Contains(resolved.Text, "nginx is healthy again.") {
-		t.Fatalf("unexpected resolved message: %#v", resolved)
+	if !strings.Contains(messages["resolved"].Text, "nginx is healthy again.") {
+		t.Fatalf("unexpected resolved message: %#v", messages["resolved"])
 	}
 
 	waitForRowCount(t, dbPath, "messages", 6, 5*time.Second)
@@ -909,6 +910,34 @@ func (f *fakeTelegramAPI) waitForSentMessageMatching(t *testing.T, match func(fa
 		case <-time.After(minDuration(remaining, 250*time.Millisecond)):
 		}
 	}
+}
+
+func (f *fakeTelegramAPI) waitForSentMessagesMatching(t *testing.T, matchers map[string]func(fakeTelegramSentMessage) bool) map[string]fakeTelegramSentMessage {
+	t.Helper()
+
+	matches := make(map[string]fakeTelegramSentMessage, len(matchers))
+	deadline := time.Now().Add(45 * time.Second)
+	for len(matches) < len(matchers) {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			t.Fatalf("timed out waiting for matching telegram sendMessages; got %d/%d", len(matches), len(matchers))
+		}
+
+		select {
+		case message := <-f.sentCh:
+			for name, match := range matchers {
+				if _, ok := matches[name]; ok {
+					continue
+				}
+				if match(message) {
+					matches[name] = message
+				}
+			}
+		case <-time.After(minDuration(remaining, 250*time.Millisecond)):
+		}
+	}
+
+	return matches
 }
 
 func (f *fakeTelegramAPI) waitForCallbackAck(t *testing.T) string {

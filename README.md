@@ -1,5 +1,13 @@
 # openLight
 
+<p align="center">
+  <img src="./docs/output.gif" width="500">
+</p>
+
+<p align="center">
+  Synapse went down → Restart → Back online
+</p>
+
 [![Go](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go&logoColor=white)](./go.mod)
 [![CI](https://github.com/evgenii-engineer/openLight/actions/workflows/ci.yml/badge.svg)](https://github.com/evgenii-engineer/openLight/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-MIT-green)](./LICENSE)

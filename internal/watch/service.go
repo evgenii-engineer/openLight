@@ -524,6 +524,9 @@ func (s *Service) processWatch(ctx context.Context, watch models.Watch, now time
 			if exists {
 				incident = latestIncident
 			}
+			if incident.ActionStatus == models.WatchActionStatusRunning {
+				return s.repository.UpdateWatch(evalCtx, watch)
+			}
 			incident.Status = models.WatchIncidentStatusResolved
 			incident.ResolvedAt = now
 			if incident.ActionStatus == models.WatchActionStatusPending {
