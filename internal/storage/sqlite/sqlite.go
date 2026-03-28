@@ -692,6 +692,13 @@ func (r *Repository) GetSetting(ctx context.Context, key string) (models.Setting
 	return setting, true, nil
 }
 
+func (r *Repository) DeleteSetting(ctx context.Context, key string) error {
+	if _, err := r.db.ExecContext(ctx, `DELETE FROM settings WHERE key = ?`, key); err != nil {
+		return fmt.Errorf("delete setting: %w", err)
+	}
+	return nil
+}
+
 func (r *Repository) Close() error {
 	return r.db.Close()
 }

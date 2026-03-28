@@ -25,10 +25,13 @@ import (
 	"openlight/internal/skills"
 	chatskills "openlight/internal/skills/chat"
 	"openlight/internal/skills/notes"
+	serviceskills "openlight/internal/skills/services"
 	systemskills "openlight/internal/skills/system"
+	watchskills "openlight/internal/skills/watch"
 	"openlight/internal/storage"
 	"openlight/internal/storage/sqlite"
 	"openlight/internal/telegram"
+	watchengine "openlight/internal/watch"
 )
 
 const (
@@ -109,6 +112,312 @@ func TestAgentRunPollingEndToEndDeterministicNoteAdd(t *testing.T) {
 
 	assertRowCount(t, dbPath, "messages", 2)
 	assertRowCount(t, dbPath, "skill_calls", 1)
+}
+
+func TestAgentRunPollingEndToEndStartSendsEnableButtons(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	dbPath := filepath.Join(t.TempDir(), "agent.db")
+	repo, err := sqlite.New(ctx, dbPath, nil)
+	if err != nil {
+		t.Fatalf("sqlite.New returned error: %v", err)
+	}
+	defer repo.Close()
+
+	telegramAPI := newFakeTelegramAPI(t, "TOKEN", []fakeTelegramUpdate{
+		{ID: 1, ChatID: 200, UserID: 100, Text: "/start"},
+	})
+	defer telegramAPI.Close()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(skills.NewStartSkill())
+
+	bot := telegram.NewBot(telegram.Options{
+		Token:       "TOKEN",
+		BaseURL:     telegramAPI.URL(),
+		Mode:        "polling",
+		PollTimeout: 100 * time.Millisecond,
+	})
+
+	agent := NewAgent(
+		bot,
+		auth.New([]int64{100}, []int64{200}),
+		router.New(registry, nil),
+		registry,
+		repo,
+		nil,
+		nil,
+		2*time.Second,
+	)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- agent.Run(ctx)
+	}()
+
+	message := telegramAPI.waitForSentMessage(t)
+	waitForRowCount(t, dbPath, "messages", 2, 3*time.Second)
+	waitForRowCount(t, dbPath, "skill_calls", 1, 3*time.Second)
+	cancel()
+
+	err = <-errCh
+	if err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("agent.Run returned error: %v", err)
+	}
+
+	if !strings.Contains(message.Text, "Enable monitoring to get your first useful alert fast.") {
+		t.Fatalf("unexpected reply: %#v", message)
+	}
+	if len(message.Buttons) != 2 {
+		t.Fatalf("expected onboarding buttons, got %#v", message.Buttons)
+	}
+	if message.Buttons[0][0].CallbackData != "enable docker" ||
+		message.Buttons[0][1].CallbackData != "enable system" ||
+		message.Buttons[1][0].CallbackData != "enable auto-heal" {
+		t.Fatalf("unexpected onboarding buttons: %#v", message.Buttons)
+	}
+}
+
+func TestAgentRunPollingEndToEndEnableSystemViaCallbackCreatesWatches(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	dbPath := filepath.Join(t.TempDir(), "agent.db")
+	repo, err := sqlite.New(ctx, dbPath, nil)
+	if err != nil {
+		t.Fatalf("sqlite.New returned error: %v", err)
+	}
+	defer repo.Close()
+
+	telegramAPI := newFakeTelegramAPI(t, "TOKEN", []fakeTelegramUpdate{
+		{ID: 1, ChatID: 200, UserID: 100, CallbackID: "cb-enable-system", Data: "enable system"},
+	})
+	defer telegramAPI.Close()
+
+	registry := skills.NewRegistry()
+	serviceManager := &e2eServiceManager{}
+	watchService := watchengine.NewService(
+		repo,
+		registry,
+		nil,
+		stubSystemProvider{},
+		serviceManager,
+		nil,
+		watchengine.Options{
+			PollInterval:   10 * time.Millisecond,
+			AskTTL:         time.Minute,
+			RequestTimeout: time.Second,
+		},
+	)
+	if err := skills.RegisterModules(registry,
+		serviceskills.NewModule(serviceManager, 30, 3000),
+		watchskills.NewModule(watchService),
+		skills.NewCoreModule(),
+	); err != nil {
+		t.Fatalf("RegisterModules returned error: %v", err)
+	}
+
+	bot := telegram.NewBot(telegram.Options{
+		Token:       "TOKEN",
+		BaseURL:     telegramAPI.URL(),
+		Mode:        "polling",
+		PollTimeout: 100 * time.Millisecond,
+	})
+	watchService.SetNotifier(bot)
+
+	agent := NewAgent(
+		bot,
+		auth.New([]int64{100}, []int64{200}),
+		router.New(registry, nil),
+		registry,
+		repo,
+		watchService,
+		nil,
+		2*time.Second,
+	)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- agent.Run(ctx)
+	}()
+
+	message := telegramAPI.waitForSentMessage(t)
+	ackID := telegramAPI.waitForCallbackAck(t)
+	waitForRowCount(t, dbPath, "messages", 2, 3*time.Second)
+	waitForRowCount(t, dbPath, "skill_calls", 1, 3*time.Second)
+	cancel()
+
+	err = <-errCh
+	if err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("agent.Run returned error: %v", err)
+	}
+
+	if ackID != "cb-enable-system" {
+		t.Fatalf("expected callback ack for cb-enable-system, got %q", ackID)
+	}
+	if !strings.Contains(message.Text, "System pack enabled.") {
+		t.Fatalf("unexpected enable reply: %#v", message)
+	}
+
+	watches, err := repo.ListWatches(context.Background(), storage.WatchListOptions{ChatID: 200})
+	if err != nil {
+		t.Fatalf("ListWatches returned error: %v", err)
+	}
+	if len(watches) != 3 {
+		t.Fatalf("expected 3 system watches, got %#v", watches)
+	}
+}
+
+func TestAgentRunPollingEndToEndWatchAskAlertRestartCallback(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	dbPath := filepath.Join(t.TempDir(), "agent.db")
+	repo, err := sqlite.New(ctx, dbPath, nil)
+	if err != nil {
+		t.Fatalf("sqlite.New returned error: %v", err)
+	}
+	defer repo.Close()
+
+	telegramAPI := newFakeTelegramAPI(t, "TOKEN", []fakeTelegramUpdate{
+		{ID: 1, ChatID: 200, UserID: 100, Text: "/watch add service nginx ask for 1ms cooldown 1m"},
+	})
+	defer telegramAPI.Close()
+
+	registry := skills.NewRegistry()
+	serviceManager := &e2eServiceManager{
+		info: serviceskills.Info{
+			Name:        "nginx",
+			Backend:     serviceskills.BackendSystemd,
+			ActiveState: "inactive",
+			SubState:    "failed",
+			Description: "bind error",
+		},
+	}
+	watchService := watchengine.NewService(
+		repo,
+		registry,
+		nil,
+		stubSystemProvider{},
+		serviceManager,
+		nil,
+		watchengine.Options{
+			PollInterval:   5 * time.Millisecond,
+			AskTTL:         time.Minute,
+			RequestTimeout: time.Second,
+		},
+	)
+	if err := skills.RegisterModules(registry,
+		serviceskills.NewModule(serviceManager, 30, 3000),
+		watchskills.NewModule(watchService),
+		skills.NewCoreModule(),
+	); err != nil {
+		t.Fatalf("RegisterModules returned error: %v", err)
+	}
+
+	bot := telegram.NewBot(telegram.Options{
+		Token:       "TOKEN",
+		BaseURL:     telegramAPI.URL(),
+		Mode:        "polling",
+		PollTimeout: 100 * time.Millisecond,
+	})
+	watchService.SetNotifier(bot)
+
+	agent := NewAgent(
+		bot,
+		auth.New([]int64{100}, []int64{200}),
+		router.New(registry, nil),
+		registry,
+		repo,
+		watchService,
+		nil,
+		2*time.Second,
+	)
+
+	agentErrCh := make(chan error, 1)
+	go func() {
+		agentErrCh <- agent.Run(ctx)
+	}()
+
+	watchErrCh := make(chan error, 1)
+	go func() {
+		watchErrCh <- watchService.Run(ctx)
+	}()
+
+	created := telegramAPI.waitForSentMessage(t)
+	if !strings.Contains(created.Text, "Watch created:") {
+		t.Fatalf("expected watch created message, got %#v", created)
+	}
+
+	alert := telegramAPI.waitForSentMessageMatching(t, func(message fakeTelegramSentMessage) bool {
+		return strings.Contains(message.Text, "Choose an action below.")
+	})
+	if len(alert.Buttons) == 0 || len(alert.Buttons[0]) == 0 {
+		t.Fatalf("expected action buttons in alert, got %#v", alert)
+	}
+	restartCallback := alert.Buttons[0][0].CallbackData
+	telegramAPI.enqueueUpdate(fakeTelegramUpdate{
+		ID:         2,
+		ChatID:     200,
+		UserID:     100,
+		CallbackID: "cb-restart",
+		Data:       restartCallback,
+	})
+
+	ackID := telegramAPI.waitForCallbackAck(t)
+	if ackID != "cb-restart" {
+		t.Fatalf("expected restart callback ack, got %q", ackID)
+	}
+
+	progress := telegramAPI.waitForSentMessageMatching(t, func(message fakeTelegramSentMessage) bool {
+		return strings.TrimSpace(message.Text) == "Restarting nginx..."
+	})
+	if progress.Text != "Restarting nginx..." {
+		t.Fatalf("unexpected progress message: %#v", progress)
+	}
+
+	result := telegramAPI.waitForSentMessageMatching(t, func(message fakeTelegramSentMessage) bool {
+		return strings.Contains(message.Text, "Action: restarted nginx")
+	})
+	if !strings.Contains(result.Text, "Service restarted: nginx") {
+		t.Fatalf("unexpected action result: %#v", result)
+	}
+
+	resolved := telegramAPI.waitForSentMessageMatching(t, func(message fakeTelegramSentMessage) bool {
+		return strings.Contains(message.Text, "Resolved #")
+	})
+	if !strings.Contains(resolved.Text, "nginx is healthy again.") {
+		t.Fatalf("unexpected resolved message: %#v", resolved)
+	}
+
+	waitForRowCount(t, dbPath, "messages", 6, 5*time.Second)
+	waitForRowCount(t, dbPath, "skill_calls", 3, 5*time.Second)
+	cancel()
+
+	if err := <-agentErrCh; err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("agent.Run returned error: %v", err)
+	}
+	if err := <-watchErrCh; err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("watchService.Run returned error: %v", err)
+	}
+
+	incidents, err := repo.ListWatchIncidents(context.Background(), storage.WatchIncidentListOptions{
+		ChatID: 200,
+		Limit:  10,
+	})
+	if err != nil {
+		t.Fatalf("ListWatchIncidents returned error: %v", err)
+	}
+	if len(incidents) != 1 || incidents[0].ActionStatus != "succeeded" || incidents[0].Status != "resolved" {
+		t.Fatalf("unexpected incidents: %#v", incidents)
+	}
 }
 
 func TestAgentRunPollingEndToEndWithRealOllamaResponds(t *testing.T) {
@@ -468,11 +777,65 @@ func (stubSystemProvider) Temperature(context.Context) (float64, error) {
 	return 58.5, nil
 }
 
+type e2eServiceManager struct {
+	mu   sync.Mutex
+	info serviceskills.Info
+	logs string
+}
+
+func (m *e2eServiceManager) Targets() []serviceskills.Info {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return []serviceskills.Info{m.info}
+}
+
+func (m *e2eServiceManager) List(context.Context) ([]serviceskills.Info, error) {
+	return m.Targets(), nil
+}
+
+func (m *e2eServiceManager) Status(context.Context, string) (serviceskills.Info, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.info, nil
+}
+
+func (m *e2eServiceManager) Restart(_ context.Context, service string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.info.Name = service
+	m.info.ActiveState = "active"
+	m.info.SubState = "running"
+	if strings.TrimSpace(m.info.Description) == "" {
+		m.info.Description = "healthy after restart"
+	}
+	return nil
+}
+
+func (m *e2eServiceManager) Logs(context.Context, string, int) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if strings.TrimSpace(m.logs) != "" {
+		return m.logs, nil
+	}
+	return "bind error", nil
+}
+
+func (m *e2eServiceManager) Exec(context.Context, string, ...string) (string, error) {
+	return "", nil
+}
+
 type fakeTelegramUpdate struct {
-	ID     int64
-	ChatID int64
-	UserID int64
-	Text   string
+	ID         int64
+	ChatID     int64
+	UserID     int64
+	Text       string
+	CallbackID string
+	Data       string
+}
+
+type fakeTelegramSentMessage struct {
+	Text    string
+	Buttons [][]telegram.Button
 }
 
 type fakeTelegramAPI struct {
@@ -483,7 +846,9 @@ type fakeTelegramAPI struct {
 	mu        sync.Mutex
 	updates   []fakeTelegramUpdate
 	sentTexts []string
-	sentCh    chan string
+	sentCh    chan fakeTelegramSentMessage
+	acks      []string
+	ackCh     chan string
 }
 
 func newFakeTelegramAPI(t *testing.T, token string, updates []fakeTelegramUpdate) *fakeTelegramAPI {
@@ -493,7 +858,8 @@ func newFakeTelegramAPI(t *testing.T, token string, updates []fakeTelegramUpdate
 		t:       t,
 		token:   token,
 		updates: append([]fakeTelegramUpdate(nil), updates...),
-		sentCh:  make(chan string, 4),
+		sentCh:  make(chan fakeTelegramSentMessage, 16),
+		ackCh:   make(chan string, 16),
 	}
 	api.server = httptest.NewServer(http.HandlerFunc(api.handle))
 	return api
@@ -510,11 +876,49 @@ func (f *fakeTelegramAPI) Close() {
 func (f *fakeTelegramAPI) waitForSentText(t *testing.T) string {
 	t.Helper()
 
+	return f.waitForSentMessage(t).Text
+}
+
+func (f *fakeTelegramAPI) waitForSentMessage(t *testing.T) fakeTelegramSentMessage {
+	t.Helper()
+
 	select {
-	case text := <-f.sentCh:
-		return text
+	case message := <-f.sentCh:
+		return message
 	case <-time.After(45 * time.Second):
 		t.Fatal("timed out waiting for telegram sendMessage")
+		return fakeTelegramSentMessage{}
+	}
+}
+
+func (f *fakeTelegramAPI) waitForSentMessageMatching(t *testing.T, match func(fakeTelegramSentMessage) bool) fakeTelegramSentMessage {
+	t.Helper()
+
+	deadline := time.Now().Add(45 * time.Second)
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			t.Fatal("timed out waiting for matching telegram sendMessage")
+		}
+
+		select {
+		case message := <-f.sentCh:
+			if match(message) {
+				return message
+			}
+		case <-time.After(minDuration(remaining, 250*time.Millisecond)):
+		}
+	}
+}
+
+func (f *fakeTelegramAPI) waitForCallbackAck(t *testing.T) string {
+	t.Helper()
+
+	select {
+	case ack := <-f.ackCh:
+		return ack
+	case <-time.After(45 * time.Second):
+		t.Fatal("timed out waiting for telegram answerCallbackQuery")
 		return ""
 	}
 }
@@ -535,6 +939,8 @@ func (f *fakeTelegramAPI) handle(w http.ResponseWriter, r *http.Request) {
 		f.handleGetUpdates(w)
 	case "sendMessage":
 		f.handleSendMessage(w, r)
+	case "answerCallbackQuery":
+		f.handleAnswerCallbackQuery(w, r)
 	default:
 		f.t.Fatalf("unexpected telegram method: %s", method)
 	}
@@ -555,41 +961,136 @@ func (f *fakeTelegramAPI) handleGetUpdates(w http.ResponseWriter) {
 	writeJSON(w, map[string]any{
 		"ok": true,
 		"result": []map[string]any{
-			{
-				"update_id": update.ID,
-				"message": map[string]any{
-					"message_id": update.ID * 10,
-					"text":       update.Text,
-					"chat":       map[string]any{"id": update.ChatID},
-					"from":       map[string]any{"id": update.UserID},
-				},
-			},
+			f.renderUpdate(update),
 		},
 	})
 }
 
 func (f *fakeTelegramAPI) handleSendMessage(w http.ResponseWriter, r *http.Request) {
-	var payload struct {
-		ChatID int64  `json:"chat_id"`
-		Text   string `json:"text"`
-	}
+	var payload map[string]any
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		f.t.Fatalf("decode sendMessage payload: %v", err)
 	}
-	if payload.ChatID == 0 || strings.TrimSpace(payload.Text) == "" {
+	chatID, _ := payload["chat_id"].(float64)
+	text, _ := payload["text"].(string)
+	if int64(chatID) == 0 || strings.TrimSpace(text) == "" {
 		f.t.Fatalf("unexpected sendMessage payload: %#v", payload)
 	}
 
+	message := fakeTelegramSentMessage{
+		Text:    text,
+		Buttons: decodeInlineButtons(payload["reply_markup"]),
+	}
+
 	f.mu.Lock()
-	f.sentTexts = append(f.sentTexts, payload.Text)
+	f.sentTexts = append(f.sentTexts, text)
 	f.mu.Unlock()
 
 	select {
-	case f.sentCh <- payload.Text:
+	case f.sentCh <- message:
 	default:
 	}
 
 	writeJSON(w, map[string]any{"ok": true, "result": map[string]any{"message_id": 999}})
+}
+
+func (f *fakeTelegramAPI) handleAnswerCallbackQuery(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		CallbackQueryID string `json:"callback_query_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		f.t.Fatalf("decode answerCallbackQuery payload: %v", err)
+	}
+	if strings.TrimSpace(payload.CallbackQueryID) == "" {
+		f.t.Fatalf("unexpected answerCallbackQuery payload: %#v", payload)
+	}
+
+	f.mu.Lock()
+	f.acks = append(f.acks, payload.CallbackQueryID)
+	f.mu.Unlock()
+
+	select {
+	case f.ackCh <- payload.CallbackQueryID:
+	default:
+	}
+
+	writeJSON(w, map[string]any{"ok": true, "result": true})
+}
+
+func (f *fakeTelegramAPI) enqueueUpdate(update fakeTelegramUpdate) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.updates = append(f.updates, update)
+}
+
+func (f *fakeTelegramAPI) renderUpdate(update fakeTelegramUpdate) map[string]any {
+	if strings.TrimSpace(update.CallbackID) != "" && strings.TrimSpace(update.Data) != "" {
+		return map[string]any{
+			"update_id": update.ID,
+			"callback_query": map[string]any{
+				"id":   update.CallbackID,
+				"data": update.Data,
+				"from": map[string]any{"id": update.UserID},
+				"message": map[string]any{
+					"message_id": update.ID * 10,
+					"chat":       map[string]any{"id": update.ChatID},
+				},
+			},
+		}
+	}
+
+	return map[string]any{
+		"update_id": update.ID,
+		"message": map[string]any{
+			"message_id": update.ID * 10,
+			"text":       update.Text,
+			"chat":       map[string]any{"id": update.ChatID},
+			"from":       map[string]any{"id": update.UserID},
+		},
+	}
+}
+
+func decodeInlineButtons(value any) [][]telegram.Button {
+	replyMarkup, ok := value.(map[string]any)
+	if !ok {
+		return nil
+	}
+	rowsValue, ok := replyMarkup["inline_keyboard"].([]any)
+	if !ok {
+		return nil
+	}
+
+	rows := make([][]telegram.Button, 0, len(rowsValue))
+	for _, rowValue := range rowsValue {
+		buttonValues, ok := rowValue.([]any)
+		if !ok {
+			continue
+		}
+		row := make([]telegram.Button, 0, len(buttonValues))
+		for _, buttonValue := range buttonValues {
+			buttonMap, ok := buttonValue.(map[string]any)
+			if !ok {
+				continue
+			}
+			text, _ := buttonMap["text"].(string)
+			callbackData, _ := buttonMap["callback_data"].(string)
+			row = append(row, telegram.Button{
+				Text:         text,
+				CallbackData: callbackData,
+			})
+		}
+		if len(row) > 0 {
+			rows = append(rows, row)
+		}
+	}
+	return rows
+}
+
+func minDuration(left, right time.Duration) time.Duration {
+	if left < right {
+		return left
+	}
+	return right
 }
 
 func writeJSON(w http.ResponseWriter, payload any) {

@@ -64,6 +64,10 @@ type fakeServiceManager struct {
 	service serviceskills.Info
 }
 
+func (m *fakeServiceManager) Targets() []serviceskills.Info {
+	return []serviceskills.Info{m.service}
+}
+
 func (m *fakeServiceManager) List(context.Context) ([]serviceskills.Info, error) {
 	return []serviceskills.Info{m.service}, nil
 }
@@ -88,7 +92,7 @@ func (m *fakeServiceManager) Exec(context.Context, string, ...string) (string, e
 	return "", nil
 }
 
-func TestServiceRunCycleAskAndConfirm(t *testing.T) {
+func TestServiceRunCycleAskAndRestartAction(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -131,25 +135,28 @@ func TestServiceRunCycleAskAndConfirm(t *testing.T) {
 		t.Fatalf("second runCycle returned error: %v", err)
 	}
 
-	if len(notifier.messages) != 1 || !strings.Contains(notifier.messages[0], "Alert #") || !strings.Contains(notifier.messages[0], "buttons below") {
+	if len(notifier.messages) != 1 || !strings.Contains(notifier.messages[0], "Alert #") || !strings.Contains(notifier.messages[0], "Choose an action below.") {
 		t.Fatalf("unexpected alert messages: %#v", notifier.messages)
 	}
-	if len(notifier.buttons) != 1 || len(notifier.buttons[0]) != 1 || len(notifier.buttons[0][0]) != 2 {
-		t.Fatalf("expected one row of action buttons, got %#v", notifier.buttons)
+	if len(notifier.buttons) != 1 || len(notifier.buttons[0]) != 2 {
+		t.Fatalf("expected two rows of action buttons, got %#v", notifier.buttons)
 	}
-	if notifier.buttons[0][0][0].CallbackData != "watch:yes:1" || notifier.buttons[0][0][1].CallbackData != "watch:no:1" {
+	if notifier.buttons[0][0][0].CallbackData != "watch:action:1:restart_service" ||
+		notifier.buttons[0][0][1].CallbackData != "watch:action:1:show_logs" ||
+		notifier.buttons[0][0][2].CallbackData != "watch:action:1:show_status" ||
+		notifier.buttons[0][1][0].CallbackData != "watch:action:1:ignore_alert" {
 		t.Fatalf("unexpected callback data: %#v", notifier.buttons)
 	}
 
-	handled, err := service.HandleConfirmation(ctx, 200, 100, "watch:yes:1")
+	handled, err := service.HandleAction(ctx, 200, 100, "watch:action:1:restart_service")
 	if err != nil {
-		t.Fatalf("HandleConfirmation returned error: %v", err)
+		t.Fatalf("HandleAction returned error: %v", err)
 	}
 	if !handled {
-		t.Fatal("expected confirmation to be handled")
+		t.Fatal("expected action to be handled")
 	}
-	if len(notifier.messages) < 2 || !strings.Contains(notifier.messages[1], "Action: restarted nginx") {
-		t.Fatalf("unexpected confirmation messages: %#v", notifier.messages)
+	if len(notifier.messages) < 3 || notifier.messages[1] != "Restarting nginx..." || !strings.Contains(notifier.messages[2], "Action: restarted nginx") {
+		t.Fatalf("unexpected action messages: %#v", notifier.messages)
 	}
 
 	if err := service.runCycle(ctx); err != nil {
@@ -177,7 +184,73 @@ func TestServiceRunCycleAskAndConfirm(t *testing.T) {
 	}
 }
 
-func TestServiceHandleConfirmationExpiredCallback(t *testing.T) {
+func TestServiceRunCycleAutoRestartsService(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	repo, err := sqlite.New(ctx, filepath.Join(t.TempDir(), "agent.db"), nil)
+	if err != nil {
+		t.Fatalf("sqlite.New returned error: %v", err)
+	}
+	defer repo.Close()
+
+	manager := &fakeServiceManager{
+		service: serviceskills.Info{
+			Name:        "tailscale",
+			Backend:     serviceskills.BackendSystemd,
+			ActiveState: "inactive",
+			SubState:    "dead",
+			Description: "Tailscale node agent",
+		},
+	}
+	registry := skills.NewRegistry()
+	if err := skills.RegisterModules(registry, serviceskills.NewModule(manager, 30, 3000)); err != nil {
+		t.Fatalf("RegisterModules returned error: %v", err)
+	}
+
+	notifier := &fakeNotifier{}
+	service := NewService(repo, registry, notifier, fakeProvider{}, manager, nil, Options{
+		PollInterval:   5 * time.Millisecond,
+		AskTTL:         time.Minute,
+		RequestTimeout: time.Second,
+	})
+
+	watch, err := service.AddWatch(ctx, 200, 100, "service tailscale auto for 1ms cooldown 1m")
+	if err != nil {
+		t.Fatalf("AddWatch returned error: %v", err)
+	}
+
+	if err := service.runCycle(ctx); err != nil {
+		t.Fatalf("runCycle returned error: %v", err)
+	}
+	time.Sleep(5 * time.Millisecond)
+	if err := service.runCycle(ctx); err != nil {
+		t.Fatalf("second runCycle returned error: %v", err)
+	}
+
+	if len(notifier.messages) == 0 || !strings.Contains(notifier.messages[0], "Automatic recovery is enabled for this alert.") {
+		t.Fatalf("unexpected auto alert messages: %#v", notifier.messages)
+	}
+	if !strings.Contains(notifier.messages[0], "Action: restarted tailscale (automatic recovery).") {
+		t.Fatalf("expected auto restart report, got %#v", notifier.messages)
+	}
+
+	incidents, err := repo.ListWatchIncidents(ctx, storage.WatchIncidentListOptions{
+		ChatID: watch.TelegramChatID,
+		Limit:  10,
+	})
+	if err != nil {
+		t.Fatalf("ListWatchIncidents returned error: %v", err)
+	}
+	if len(incidents) != 1 {
+		t.Fatalf("expected one incident, got %#v", incidents)
+	}
+	if incidents[0].ActionStatus != models.WatchActionStatusSucceeded {
+		t.Fatalf("unexpected action status: %#v", incidents[0])
+	}
+}
+
+func TestServiceHandleActionExpiredCallback(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -194,9 +267,9 @@ func TestServiceHandleConfirmationExpiredCallback(t *testing.T) {
 		RequestTimeout: time.Second,
 	})
 
-	handled, err := service.HandleConfirmation(ctx, 200, 100, "watch:yes:99")
+	handled, err := service.HandleAction(ctx, 200, 100, "watch:action:99:restart_service")
 	if err != nil {
-		t.Fatalf("HandleConfirmation returned error: %v", err)
+		t.Fatalf("HandleAction returned error: %v", err)
 	}
 	if !handled {
 		t.Fatal("expected stale callback to be handled")
@@ -259,5 +332,121 @@ func TestParseConfirmationCallback(t *testing.T) {
 	}
 	if request.Decision != "no" || request.IncidentID != 42 || !request.Explicit {
 		t.Fatalf("unexpected request: %#v", request)
+	}
+}
+
+func TestParseActionRequestCallback(t *testing.T) {
+	t.Parallel()
+
+	request, ok := parseActionRequest("watch:action:42:show_logs")
+	if !ok {
+		t.Fatal("expected action callback to parse")
+	}
+	if request.IncidentID != 42 || request.ActionID != ActionShowLogsID {
+		t.Fatalf("unexpected action request: %#v", request)
+	}
+}
+
+func TestEnableDockerPackCreatesAskWatch(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	repo, err := sqlite.New(ctx, filepath.Join(t.TempDir(), "agent.db"), nil)
+	if err != nil {
+		t.Fatalf("sqlite.New returned error: %v", err)
+	}
+	defer repo.Close()
+
+	manager := &fakeServiceManager{
+		service: serviceskills.Info{
+			Name:        "api",
+			Backend:     serviceskills.BackendDocker,
+			ActiveState: "active",
+			SubState:    "running",
+			Description: "docker container api",
+		},
+	}
+
+	service := NewService(repo, skills.NewRegistry(), &fakeNotifier{}, fakeProvider{}, manager, nil, Options{
+		PollInterval:   time.Millisecond,
+		AskTTL:         time.Minute,
+		RequestTimeout: time.Second,
+	})
+
+	text, err := service.EnablePack(ctx, 200, 100, "docker")
+	if err != nil {
+		t.Fatalf("EnablePack returned error: %v", err)
+	}
+	if !strings.Contains(text, "Docker pack enabled.") {
+		t.Fatalf("unexpected pack text: %q", text)
+	}
+
+	watches, err := repo.ListWatches(ctx, storage.WatchListOptions{ChatID: 200})
+	if err != nil {
+		t.Fatalf("ListWatches returned error: %v", err)
+	}
+	if len(watches) != 1 {
+		t.Fatalf("expected one docker watch, got %#v", watches)
+	}
+	if watches[0].ReactionMode != models.WatchReactionAsk || watches[0].ActionType != models.WatchActionServiceRestart {
+		t.Fatalf("unexpected docker watch: %#v", watches[0])
+	}
+
+	setting, ok, err := repo.GetSetting(ctx, "pack:200:docker")
+	if err != nil {
+		t.Fatalf("GetSetting returned error: %v", err)
+	}
+	if !ok || setting.Value != "enabled" {
+		t.Fatalf("unexpected docker pack setting: %#v", setting)
+	}
+}
+
+func TestEnableAutoHealPackUpdatesExistingServiceWatch(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	repo, err := sqlite.New(ctx, filepath.Join(t.TempDir(), "agent.db"), nil)
+	if err != nil {
+		t.Fatalf("sqlite.New returned error: %v", err)
+	}
+	defer repo.Close()
+
+	manager := &fakeServiceManager{
+		service: serviceskills.Info{
+			Name:        "api",
+			Backend:     serviceskills.BackendSystemd,
+			ActiveState: "active",
+			SubState:    "running",
+			Description: "systemd service api",
+		},
+	}
+
+	service := NewService(repo, skills.NewRegistry(), &fakeNotifier{}, fakeProvider{}, manager, nil, Options{
+		PollInterval:   time.Millisecond,
+		AskTTL:         time.Minute,
+		RequestTimeout: time.Second,
+	})
+
+	if _, err := service.AddWatch(ctx, 200, 100, "service api ask for 30s cooldown 10m"); err != nil {
+		t.Fatalf("AddWatch returned error: %v", err)
+	}
+
+	text, err := service.EnablePack(ctx, 200, 100, "auto-heal")
+	if err != nil {
+		t.Fatalf("EnablePack returned error: %v", err)
+	}
+	if !strings.Contains(text, "Auto-heal enabled.") {
+		t.Fatalf("unexpected pack text: %q", text)
+	}
+
+	watches, err := repo.ListWatches(ctx, storage.WatchListOptions{ChatID: 200})
+	if err != nil {
+		t.Fatalf("ListWatches returned error: %v", err)
+	}
+	if len(watches) != 1 {
+		t.Fatalf("expected one watch after auto-heal update, got %#v", watches)
+	}
+	if watches[0].ReactionMode != models.WatchReactionAuto || watches[0].ActionType != models.WatchActionServiceRestart {
+		t.Fatalf("unexpected auto-heal watch: %#v", watches[0])
 	}
 }

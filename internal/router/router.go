@@ -187,6 +187,8 @@ func routeCommand(command, argsText string, mode Mode) (Decision, bool) {
 		return routeNoArgCommand(mode, "ping", argsText)
 	case "skills":
 		return Decision{Mode: mode, SkillName: "skills", Args: map[string]string{"topic": argsText}}, true
+	case "enable":
+		return Decision{Mode: mode, SkillName: "watch_enable", Args: map[string]string{"pack": strings.TrimSpace(argsText)}}, true
 	case "status":
 		if argsText == "" {
 			return Decision{Mode: mode, SkillName: "status", Args: map[string]string{}}, true

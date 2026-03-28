@@ -30,6 +30,7 @@ const (
 
 	WatchActionStatusNone      = "none"
 	WatchActionStatusPending   = "pending"
+	WatchActionStatusRunning   = "running"
 	WatchActionStatusDeclined  = "declined"
 	WatchActionStatusSucceeded = "succeeded"
 	WatchActionStatusFailed    = "failed"

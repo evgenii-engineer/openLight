@@ -108,12 +108,8 @@ func (b *Bot) pollUpdates(ctx context.Context, handler func(context.Context, Inc
 				continue
 			}
 
+			b.acknowledgeCallback(ctx, message)
 			err := handler(ctx, message)
-			if message.IsCallback && strings.TrimSpace(message.CallbackID) != "" {
-				if ackErr := b.answerCallbackQuery(ctx, message.CallbackID); ackErr != nil && b.logger != nil {
-					b.logger.Error("answer telegram callback query", "error", ackErr, "chat_id", message.ChatID, "user_id", message.UserID)
-				}
-			}
 			if err != nil {
 				return err
 			}
@@ -337,16 +333,21 @@ func (b *Bot) webhookHandler(ctx context.Context, handler func(context.Context, 
 		}
 
 		go func() {
+			b.acknowledgeCallback(ctx, message)
 			err := handler(ctx, message)
-			if message.IsCallback && strings.TrimSpace(message.CallbackID) != "" {
-				if ackErr := b.answerCallbackQuery(ctx, message.CallbackID); ackErr != nil && b.logger != nil {
-					b.logger.Error("answer telegram callback query", "error", ackErr, "chat_id", message.ChatID, "user_id", message.UserID)
-				}
-			}
 			if err != nil && b.logger != nil {
 				b.logger.Error("handle telegram webhook message", "error", err, "chat_id", message.ChatID, "user_id", message.UserID)
 			}
 		}()
+	}
+}
+
+func (b *Bot) acknowledgeCallback(ctx context.Context, message IncomingMessage) {
+	if !message.IsCallback || strings.TrimSpace(message.CallbackID) == "" {
+		return
+	}
+	if ackErr := b.answerCallbackQuery(ctx, message.CallbackID); ackErr != nil && b.logger != nil {
+		b.logger.Error("answer telegram callback query", "error", ackErr, "chat_id", message.ChatID, "user_id", message.UserID)
 	}
 }
 

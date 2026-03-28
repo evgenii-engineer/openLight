@@ -8,13 +8,16 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"openlight/internal/app"
 	"openlight/internal/config"
+	"openlight/internal/models"
 	"openlight/internal/router"
 	serviceskills "openlight/internal/skills/services"
+	"openlight/internal/storage"
 )
 
 type SmokeOptions struct {
@@ -176,6 +179,7 @@ func (r SmokeReport) RenderTable() string {
 func RunSmoke(ctx context.Context, cfg config.Config, runtime app.Runtime, userID, chatID int64, options SmokeOptions) (SmokeReport, error) {
 	harness := NewHarness(cfg, runtime, userID, chatID)
 	serviceNames := allAllowedServices(cfg)
+	dockerPackTargets := allDockerPackTargets(cfg)
 	accountProviders := allAccountProviders(cfg)
 	state := smokeState{
 		serviceName:     firstString(serviceNames),
@@ -286,6 +290,9 @@ func RunSmoke(ctx context.Context, cfg config.Config, runtime app.Runtime, userI
 	}
 
 	if !cfg.Watch.Enabled || runtime.Watch == nil {
+		addSkip("watch.enable_docker", "enable docker", "watch subsystem disabled")
+		addSkip("watch.enable_system", "enable system", "watch subsystem disabled")
+		addSkip("watch.enable_auto_heal", "enable auto-heal", "watch subsystem disabled")
 		addSkip("watch.add", "watch add memory > 0.1% for 1ms cooldown 1m", "watch subsystem disabled")
 		addSkip("watch.list", "watch list", "watch subsystem disabled")
 		addSkip("watch.test", "watch test", "watch subsystem disabled")
@@ -295,6 +302,33 @@ func RunSmoke(ctx context.Context, cfg config.Config, runtime app.Runtime, userI
 		addSkip("watch.resume", "watch pause", "watch subsystem disabled")
 		addSkip("watch.remove", "watch remove", "watch subsystem disabled")
 	} else {
+		if len(dockerPackTargets) == 0 {
+			addSkip("watch.enable_docker", "enable docker", "no allowlisted docker or compose services")
+		} else {
+			addPackEnableCheck(&report, runtime, harness, options.ProgressWriter, ctx, chatID, "watch.enable_docker", "enable docker", "docker",
+				smokeServicePackKeys(dockerPackTargets),
+				expectContains("Docker pack enabled."),
+				validateServicePackEnabled(chatID, "docker", dockerPackTargets, models.WatchReactionAsk),
+			)
+		}
+		addPackEnableCheck(&report, runtime, harness, options.ProgressWriter, ctx, chatID, "watch.enable_system", "enable system", "system",
+			[]smokeWatchKey{
+				{Kind: models.WatchKindCPUHigh, Target: "cpu"},
+				{Kind: models.WatchKindMemoryHigh, Target: "memory"},
+				{Kind: models.WatchKindDiskHigh, Target: "/"},
+			},
+			expectContains("System pack enabled."),
+			validateSystemPackEnabled(chatID),
+		)
+		if len(serviceNames) == 0 {
+			addSkip("watch.enable_auto_heal", "enable auto-heal", "no allowed services")
+		} else {
+			addPackEnableCheck(&report, runtime, harness, options.ProgressWriter, ctx, chatID, "watch.enable_auto_heal", "enable auto-heal", "auto-heal",
+				smokeServicePackKeys(serviceNames),
+				expectContains("Auto-heal enabled."),
+				validateServicePackEnabled(chatID, "auto-heal", serviceNames, models.WatchReactionAuto),
+			)
+		}
 		addPassFail("watch.add", "watch add memory > 0.1% for 1ms cooldown 1m", func(response string) error {
 			watchID, err := parseSmokeWatchID(response)
 			if err != nil {
@@ -314,7 +348,7 @@ func RunSmoke(ctx context.Context, cfg config.Config, runtime app.Runtime, userI
 		} else {
 			addPassFail("watch.list", "watch list", expectContains("#"+state.watchID))
 			addPassFail("watch.test", "watch test "+state.watchID, expectContains("Watch #"+state.watchID))
-			addWatchRunnerCheck(&report, runtime, harness, options.ProgressWriter, ctx, "watch.run_once", "watch runner cycle", expectContainsAllFold("alert #", "memory"))
+			addWatchRunnerCheck(&report, runtime, harness, options.ProgressWriter, ctx, chatID, state.watchID, "watch.run_once", "watch runner cycle", expectContainsAllFold("alert #", "memory"))
 			addPassFail("watch.history", "watch history "+state.watchID, expectContainsAll("#", "memory"))
 			addPassFail("watch.pause", "watch pause "+state.watchID, expectContains("paused"))
 			addPassFail("watch.resume", "watch pause "+state.watchID, expectContains("enabled"))
@@ -563,7 +597,7 @@ func RunSmoke(ctx context.Context, cfg config.Config, runtime app.Runtime, userI
 					addLLMFallbackExecCheck(&report, runtime, harness, options.ProgressWriter, ctx, "llm.fallback.watch_test", expectDecisionSkill("watch_test", map[string]string{"id": llmWatchID}), expectContains("Watch #"+llmWatchID),
 						fmt.Sprintf("Could you probe watch %s right now?", llmWatchID),
 					)
-					addWatchRunnerCheck(&report, runtime, harness, options.ProgressWriter, ctx, "llm.watch.run_once", "watch runner cycle", expectContainsAllFold("alert #", "memory"))
+					addWatchRunnerCheck(&report, runtime, harness, options.ProgressWriter, ctx, chatID, llmWatchID, "llm.watch.run_once", "watch runner cycle", expectContainsAllFold("alert #", "memory"))
 					addLLMFallbackExecCheck(&report, runtime, harness, options.ProgressWriter, ctx, "llm.fallback.watch_history", expectDecisionSkill("watch_history", map[string]string{"id": llmWatchID}), expectContainsAll("#", "memory"),
 						fmt.Sprintf("I want to inspect recent incidents for watch %s.", llmWatchID),
 					)
@@ -686,10 +720,10 @@ func RunSmoke(ctx context.Context, cfg config.Config, runtime app.Runtime, userI
 
 		if options.IncludeChat {
 			addPassFail("chat.chat", "chat reply with exactly SMOKE_CHAT_OK", expectNonEmpty())
-			addLLMFallbackExecCheck(&report, runtime, harness, options.ProgressWriter, ctx, "llm.fallback.chat", expectDecisionSkill("chat", nil), expectContains("SMOKE_CHAT_LLM_OK"),
-				"Please answer in one short line and include token SMOKE_CHAT_LLM_OK.",
+			addLLMFallbackExecCheck(&report, runtime, harness, options.ProgressWriter, ctx, "llm.fallback.chat", expectDecisionSkill("chat", nil), expectNonEmpty(),
+				"Reply exactly with SMOKE_CHAT_LLM_OK.",
+				"This is a normal chat reply, not a tool request. Reply exactly with SMOKE_CHAT_LLM_OK.",
 				"Let's just chat for a moment. Reply in one short line and include token SMOKE_CHAT_LLM_OK.",
-				"This is a normal chat reply, not a tool request. Answer in one short line and include token SMOKE_CHAT_LLM_OK.",
 			)
 		} else {
 			addSkip("chat.chat", "chat reply with exactly SMOKE_CHAT_OK", "skipped to avoid LLM cost; rerun with chat enabled")
@@ -738,6 +772,70 @@ func allAllowedServices(cfg config.Config) []string {
 		return nil
 	}
 	return names
+}
+
+func allDockerPackTargets(cfg config.Config) []string {
+	names := make([]string, 0, len(cfg.Services.Allowed))
+	for _, raw := range cfg.Services.Allowed {
+		name, backend, ok := smokeAllowedServiceTarget(raw)
+		if !ok {
+			continue
+		}
+		if backend != serviceskills.BackendDocker && backend != serviceskills.BackendCompose {
+			continue
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func smokeAllowedServiceTarget(raw string) (string, string, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", "", false
+	}
+
+	name, spec, hasAlias := strings.Cut(raw, "=")
+	if !hasAlias {
+		return "", serviceskills.BackendSystemd, false
+	}
+
+	name = smokeNormalizeServiceName(name)
+	if name == "" {
+		return "", "", false
+	}
+
+	spec = strings.TrimSpace(spec)
+	if spec == "" {
+		return "", "", false
+	}
+
+	lowerSpec := strings.ToLower(spec)
+	if strings.HasPrefix(lowerSpec, "host:") {
+		rest := strings.TrimSpace(spec[len("host:"):])
+		idx := strings.Index(rest, ":")
+		if idx <= 0 || idx == len(rest)-1 {
+			return "", "", false
+		}
+		spec = strings.TrimSpace(rest[idx+1:])
+		lowerSpec = strings.ToLower(spec)
+	}
+
+	switch {
+	case strings.HasPrefix(lowerSpec, "docker:"):
+		return name, serviceskills.BackendDocker, true
+	case strings.HasPrefix(lowerSpec, "compose:"):
+		return name, serviceskills.BackendCompose, true
+	default:
+		return name, serviceskills.BackendSystemd, true
+	}
+}
+
+func smokeNormalizeServiceName(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.TrimSuffix(value, ".service")
+	return value
 }
 
 func firstAccountProvider(cfg config.Config) string {
@@ -1049,12 +1147,397 @@ func parseSmokeWatchID(response string) (string, error) {
 	return matches[1], nil
 }
 
+type smokeWatchKey struct {
+	Kind   string
+	Target string
+}
+
+type smokeSettingSnapshot struct {
+	Exists bool
+	Value  string
+}
+
+type smokePackSnapshot struct {
+	ChatID   int64
+	Keys     []smokeWatchKey
+	Watches  map[int64]models.Watch
+	Settings map[string]smokeSettingSnapshot
+}
+
+type smokeSettingDeleter interface {
+	DeleteSetting(context.Context, string) error
+}
+
+func smokeServicePackKeys(targets []string) []smokeWatchKey {
+	keys := make([]smokeWatchKey, 0, len(targets))
+	for _, target := range targets {
+		target = strings.TrimSpace(target)
+		if target == "" {
+			continue
+		}
+		keys = append(keys, smokeWatchKey{Kind: models.WatchKindServiceDown, Target: target})
+	}
+	return keys
+}
+
+func packSettingKey(chatID int64, pack string) string {
+	return fmt.Sprintf("pack:%d:%s", chatID, pack)
+}
+
+func captureSmokePackSnapshot(
+	ctx context.Context,
+	repo storage.Repository,
+	chatID int64,
+	keys []smokeWatchKey,
+	settingKeys []string,
+) (smokePackSnapshot, error) {
+	snapshot := smokePackSnapshot{
+		ChatID:   chatID,
+		Keys:     append([]smokeWatchKey(nil), keys...),
+		Watches:  make(map[int64]models.Watch),
+		Settings: make(map[string]smokeSettingSnapshot, len(settingKeys)),
+	}
+
+	watches, err := repo.ListWatches(ctx, storage.WatchListOptions{ChatID: chatID})
+	if err != nil {
+		return smokePackSnapshot{}, err
+	}
+	for _, watch := range watches {
+		if !smokeWatchMatchesAnyKey(watch, keys) {
+			continue
+		}
+		snapshot.Watches[watch.ID] = watch
+	}
+
+	for _, key := range settingKeys {
+		setting, ok, err := repo.GetSetting(ctx, key)
+		if err != nil {
+			return smokePackSnapshot{}, err
+		}
+		snapshot.Settings[key] = smokeSettingSnapshot{
+			Exists: ok,
+			Value:  setting.Value,
+		}
+	}
+
+	return snapshot, nil
+}
+
+func (s smokePackSnapshot) restore(ctx context.Context, repo storage.Repository) error {
+	current, err := repo.ListWatches(ctx, storage.WatchListOptions{ChatID: s.ChatID})
+	if err != nil {
+		return err
+	}
+
+	restored := make(map[int64]bool, len(s.Watches))
+	for _, watch := range current {
+		if !smokeWatchMatchesAnyKey(watch, s.Keys) {
+			continue
+		}
+
+		original, ok := s.Watches[watch.ID]
+		if !ok {
+			if err := repo.DeleteWatch(ctx, watch.ID); err != nil {
+				return err
+			}
+			continue
+		}
+
+		restored[watch.ID] = true
+		if smokeWatchEquals(watch, original) {
+			continue
+		}
+		if err := repo.UpdateWatch(ctx, original); err != nil {
+			return err
+		}
+	}
+
+	for id, watch := range s.Watches {
+		if restored[id] {
+			continue
+		}
+
+		currentWatch, ok, err := repo.GetWatch(ctx, id)
+		if err != nil {
+			return err
+		}
+		if ok {
+			if smokeWatchEquals(currentWatch, watch) {
+				continue
+			}
+			if err := repo.UpdateWatch(ctx, watch); err != nil {
+				return err
+			}
+			continue
+		}
+
+		watch.ID = 0
+		watch.CreatedAt = time.Time{}
+		watch.UpdatedAt = time.Time{}
+		if _, err := repo.CreateWatch(ctx, watch); err != nil {
+			return err
+		}
+	}
+
+	for key, snapshot := range s.Settings {
+		if snapshot.Exists {
+			if err := repo.SetSetting(ctx, key, snapshot.Value); err != nil {
+				return err
+			}
+			continue
+		}
+
+		if deleter, ok := repo.(smokeSettingDeleter); ok {
+			if err := deleter.DeleteSetting(ctx, key); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := repo.SetSetting(ctx, key, ""); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func smokeWatchMatchesAnyKey(watch models.Watch, keys []smokeWatchKey) bool {
+	for _, key := range keys {
+		if watch.Kind == key.Kind && watch.Target == key.Target {
+			return true
+		}
+	}
+	return false
+}
+
+func smokeWatchEquals(left, right models.Watch) bool {
+	return left.ID == right.ID &&
+		left.TelegramUserID == right.TelegramUserID &&
+		left.TelegramChatID == right.TelegramChatID &&
+		left.Name == right.Name &&
+		left.Kind == right.Kind &&
+		left.Target == right.Target &&
+		left.Threshold == right.Threshold &&
+		left.Duration == right.Duration &&
+		left.ReactionMode == right.ReactionMode &&
+		left.ActionType == right.ActionType &&
+		left.Cooldown == right.Cooldown &&
+		left.Enabled == right.Enabled &&
+		left.IncidentState == right.IncidentState &&
+		left.ConditionSince.Equal(right.ConditionSince) &&
+		left.LastTriggeredAt.Equal(right.LastTriggeredAt) &&
+		left.LastCheckedAt.Equal(right.LastCheckedAt)
+}
+
+func addPackEnableCheck(
+	report *SmokeReport,
+	runtime app.Runtime,
+	harness *Harness,
+	progress io.Writer,
+	ctx context.Context,
+	chatID int64,
+	check string,
+	command string,
+	pack string,
+	keys []smokeWatchKey,
+	validateResponse func(string) error,
+	validateState func(context.Context, storage.Repository) error,
+) {
+	start := time.Now()
+	row := SmokeRow{
+		Check:   check,
+		Command: command,
+		Status:  SmokePass,
+	}
+	writeSmokeProgressStart(progress, row.Check, row.Command)
+	if runtime.Repository == nil {
+		row.Status = SmokeSkip
+		row.Summary = "repository not configured"
+		report.Rows = append(report.Rows, row)
+		writeSmokeProgressDone(progress, row)
+		return
+	}
+
+	snapshot, err := captureSmokePackSnapshot(ctx, runtime.Repository, chatID, keys, []string{packSettingKey(chatID, pack)})
+	if err != nil {
+		row.Status = SmokeFail
+		row.Duration = time.Since(start)
+		row.Summary = summarizeSmokeText("capture pack snapshot: " + err.Error())
+		report.Rows = append(report.Rows, row)
+		writeSmokeProgressDone(progress, row)
+		return
+	}
+
+	response, execErr := harness.Exec(ctx, command)
+	row.Duration = time.Since(start)
+	row.Summary = summarizeSmokeText(response)
+
+	var failures []string
+	if execErr != nil {
+		failures = append(failures, execErr.Error())
+	} else if isSmokeFrameworkFailure(response) {
+		failures = append(failures, response)
+	} else {
+		if validateResponse != nil {
+			if err := validateResponse(response); err != nil {
+				failures = append(failures, err.Error())
+			}
+		}
+		if validateState != nil {
+			if err := validateState(ctx, runtime.Repository); err != nil {
+				failures = append(failures, err.Error())
+			}
+		}
+	}
+
+	if err := snapshot.restore(ctx, runtime.Repository); err != nil {
+		failures = append(failures, "restore smoke state: "+err.Error())
+	}
+
+	if len(failures) > 0 {
+		row.Status = SmokeFail
+		row.Summary = summarizeSmokeText(strings.Join(failures, " || "))
+	}
+
+	report.Rows = append(report.Rows, row)
+	writeSmokeProgressDone(progress, row)
+}
+
+func validateSystemPackEnabled(chatID int64) func(context.Context, storage.Repository) error {
+	expected := []models.Watch{
+		{
+			TelegramChatID: chatID,
+			Kind:           models.WatchKindCPUHigh,
+			Target:         "cpu",
+			Threshold:      90,
+			Duration:       5 * time.Minute,
+			ReactionMode:   models.WatchReactionNotify,
+			ActionType:     models.WatchActionNone,
+			Cooldown:       15 * time.Minute,
+			Enabled:        true,
+		},
+		{
+			TelegramChatID: chatID,
+			Kind:           models.WatchKindMemoryHigh,
+			Target:         "memory",
+			Threshold:      90,
+			Duration:       5 * time.Minute,
+			ReactionMode:   models.WatchReactionNotify,
+			ActionType:     models.WatchActionNone,
+			Cooldown:       15 * time.Minute,
+			Enabled:        true,
+		},
+		{
+			TelegramChatID: chatID,
+			Kind:           models.WatchKindDiskHigh,
+			Target:         "/",
+			Threshold:      85,
+			Duration:       3 * time.Minute,
+			ReactionMode:   models.WatchReactionNotify,
+			ActionType:     models.WatchActionNone,
+			Cooldown:       15 * time.Minute,
+			Enabled:        true,
+		},
+	}
+
+	return func(ctx context.Context, repo storage.Repository) error {
+		watches, err := repo.ListWatches(ctx, storage.WatchListOptions{ChatID: chatID})
+		if err != nil {
+			return fmt.Errorf("list watches: %w", err)
+		}
+		for _, want := range expected {
+			if !smokeHasWatchSpec(watches, want) {
+				return fmt.Errorf("expected %s/%s watch with pack defaults", want.Kind, want.Target)
+			}
+		}
+
+		setting, ok, err := repo.GetSetting(ctx, packSettingKey(chatID, "system"))
+		if err != nil {
+			return fmt.Errorf("get system pack setting: %w", err)
+		}
+		if !ok || strings.TrimSpace(setting.Value) != "enabled" {
+			return fmt.Errorf("expected system pack setting to be enabled")
+		}
+		return nil
+	}
+}
+
+func validateServicePackEnabled(chatID int64, pack string, targets []string, reaction string) func(context.Context, storage.Repository) error {
+	expected := make([]models.Watch, 0, len(targets))
+	for _, target := range targets {
+		expected = append(expected, models.Watch{
+			TelegramChatID: chatID,
+			Kind:           models.WatchKindServiceDown,
+			Target:         target,
+			Duration:       30 * time.Second,
+			ReactionMode:   reaction,
+			ActionType:     models.WatchActionServiceRestart,
+			Cooldown:       10 * time.Minute,
+			Enabled:        true,
+		})
+	}
+
+	return func(ctx context.Context, repo storage.Repository) error {
+		watches, err := repo.ListWatches(ctx, storage.WatchListOptions{ChatID: chatID})
+		if err != nil {
+			return fmt.Errorf("list watches: %w", err)
+		}
+		for _, want := range expected {
+			if !smokeHasWatchSpec(watches, want) {
+				return fmt.Errorf("expected %s pack watch for service %s", pack, want.Target)
+			}
+		}
+
+		setting, ok, err := repo.GetSetting(ctx, packSettingKey(chatID, pack))
+		if err != nil {
+			return fmt.Errorf("get %s pack setting: %w", pack, err)
+		}
+		if !ok || strings.TrimSpace(setting.Value) != "enabled" {
+			return fmt.Errorf("expected %s pack setting to be enabled", pack)
+		}
+		return nil
+	}
+}
+
+func smokeHasWatchSpec(watches []models.Watch, want models.Watch) bool {
+	for _, watch := range watches {
+		if watch.TelegramChatID != want.TelegramChatID {
+			continue
+		}
+		if watch.Kind != want.Kind || watch.Target != want.Target {
+			continue
+		}
+		if watch.Threshold != want.Threshold {
+			continue
+		}
+		if watch.Duration != want.Duration {
+			continue
+		}
+		if watch.ReactionMode != want.ReactionMode {
+			continue
+		}
+		if watch.ActionType != want.ActionType {
+			continue
+		}
+		if watch.Cooldown != want.Cooldown {
+			continue
+		}
+		if watch.Enabled != want.Enabled {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
 func addWatchRunnerCheck(
 	report *SmokeReport,
 	runtime app.Runtime,
 	harness *Harness,
 	progress io.Writer,
 	ctx context.Context,
+	chatID int64,
+	watchID string,
 	check string,
 	command string,
 	validate func(string) error,
@@ -1073,18 +1556,106 @@ func addWatchRunnerCheck(
 		writeSmokeProgressDone(progress, row)
 		return
 	}
+	if runtime.Repository == nil {
+		row.Status = SmokeSkip
+		row.Summary = "repository not configured"
+		report.Rows = append(report.Rows, row)
+		writeSmokeProgressDone(progress, row)
+		return
+	}
+
+	id, err := strconv.ParseInt(strings.TrimPrefix(strings.TrimSpace(watchID), "#"), 10, 64)
+	if err != nil || id <= 0 {
+		row.Status = SmokeFail
+		row.Summary = summarizeSmokeText(fmt.Sprintf("invalid watch id %q", watchID))
+		report.Rows = append(report.Rows, row)
+		writeSmokeProgressDone(progress, row)
+		return
+	}
+
+	before, err := runtime.Repository.ListWatchIncidents(ctx, storage.WatchIncidentListOptions{
+		ChatID:  chatID,
+		WatchID: id,
+		Limit:   20,
+	})
+	if err != nil {
+		row.Status = SmokeFail
+		row.Summary = summarizeSmokeText("list watch incidents: " + err.Error())
+		report.Rows = append(report.Rows, row)
+		writeSmokeProgressDone(progress, row)
+		return
+	}
+
+	knownIDs := make(map[int64]struct{}, len(before))
+	for _, incident := range before {
+		knownIDs[incident.ID] = struct{}{}
+	}
+	var createdIncident models.WatchIncident
+	created := false
+	openBefore, openBeforeExists, err := runtime.Repository.GetOpenWatchIncident(ctx, id)
+	if err != nil {
+		row.Status = SmokeFail
+		row.Summary = summarizeSmokeText("get open watch incident: " + err.Error())
+		report.Rows = append(report.Rows, row)
+		writeSmokeProgressDone(progress, row)
+		return
+	}
+	if openBeforeExists {
+		knownIDs[openBefore.ID] = struct{}{}
+		createdIncident = openBefore
+		created = true
+	}
 
 	harness.transport.reset()
-	time.Sleep(5 * time.Millisecond)
-	err := runtime.Watch.RunOnce(ctx)
-	response := harness.transport.output()
-	harness.transport.reset()
+	var outputs []string
+	if !created {
+		for attempt := 0; attempt < 3; attempt++ {
+			if attempt > 0 {
+				time.Sleep(10 * time.Millisecond)
+			}
+			err = runtime.Watch.RunOnce(ctx)
+			output := strings.TrimSpace(harness.transport.output())
+			if output != "" {
+				outputs = append(outputs, output)
+			}
+			harness.transport.reset()
+			if err != nil {
+				break
+			}
+			createdIncident, created, err = waitForNewWatchIncident(ctx, runtime.Repository, chatID, id, knownIDs, 250*time.Millisecond)
+			if err != nil || created {
+				break
+			}
+		}
+		if err == nil && !created {
+			createdIncident, created, err = waitForNewWatchIncident(ctx, runtime.Repository, chatID, id, knownIDs, 8*time.Second)
+		}
+	}
+
+	response := strings.TrimSpace(strings.Join(outputs, "\n"))
+	if created && response == "" {
+		parts := []string{fmt.Sprintf("Alert #%d", createdIncident.ID)}
+		if strings.TrimSpace(createdIncident.Summary) != "" {
+			parts = append(parts, createdIncident.Summary)
+		}
+		if strings.TrimSpace(createdIncident.Details) != "" {
+			parts = append(parts, createdIncident.Details)
+		}
+		response = strings.Join(parts, "\n")
+	}
 	row.Duration = time.Since(start)
 	row.Summary = summarizeSmokeText(response)
 
 	if err != nil {
 		row.Status = SmokeFail
 		row.Summary = summarizeSmokeText(err.Error())
+		report.Rows = append(report.Rows, row)
+		writeSmokeProgressDone(progress, row)
+		return
+	}
+	if !created {
+		row.Status = SmokeFail
+		row.Summary = summarizeSmokeText(fmt.Sprintf("expected a new incident for watch #%d, got %q", id, response))
 		report.Rows = append(report.Rows, row)
 		writeSmokeProgressDone(progress, row)
 		return
@@ -1103,6 +1674,58 @@ func addWatchRunnerCheck(
 	}
 	report.Rows = append(report.Rows, row)
 	writeSmokeProgressDone(progress, row)
+}
+
+func smokeFindNewWatchIncident(incidents []models.WatchIncident, knownIDs map[int64]struct{}) (models.WatchIncident, bool) {
+	for _, incident := range incidents {
+		if _, ok := knownIDs[incident.ID]; ok {
+			continue
+		}
+		return incident, true
+	}
+	return models.WatchIncident{}, false
+}
+
+func waitForNewWatchIncident(
+	ctx context.Context,
+	repo storage.Repository,
+	chatID, watchID int64,
+	knownIDs map[int64]struct{},
+	wait time.Duration,
+) (models.WatchIncident, bool, error) {
+	deadline := time.Now().Add(wait)
+	for {
+		openIncident, openExists, err := repo.GetOpenWatchIncident(ctx, watchID)
+		if err != nil {
+			return models.WatchIncident{}, false, err
+		}
+		if openExists {
+			if _, ok := knownIDs[openIncident.ID]; !ok {
+				return openIncident, true, nil
+			}
+		}
+
+		incidents, err := repo.ListWatchIncidents(ctx, storage.WatchIncidentListOptions{
+			ChatID:  chatID,
+			WatchID: watchID,
+			Limit:   20,
+		})
+		if err != nil {
+			return models.WatchIncident{}, false, err
+		}
+		if incident, ok := smokeFindNewWatchIncident(incidents, knownIDs); ok {
+			return incident, true, nil
+		}
+
+		if time.Now().After(deadline) {
+			return models.WatchIncident{}, false, nil
+		}
+		select {
+		case <-ctx.Done():
+			return models.WatchIncident{}, false, ctx.Err()
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
 }
 
 func isSmokeFrameworkFailure(response string) bool {

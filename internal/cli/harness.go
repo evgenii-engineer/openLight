@@ -114,6 +114,7 @@ func harnessUserMessageForError(err error) string {
 
 type captureTransport struct {
 	replies []string
+	buttons [][][]telegram.Button
 }
 
 func (t *captureTransport) Poll(context.Context, func(context.Context, telegram.IncomingMessage) error) error {
@@ -122,11 +123,19 @@ func (t *captureTransport) Poll(context.Context, func(context.Context, telegram.
 
 func (t *captureTransport) SendText(_ context.Context, _ int64, text string) error {
 	t.replies = append(t.replies, text)
+	t.buttons = append(t.buttons, nil)
+	return nil
+}
+
+func (t *captureTransport) SendTextWithButtons(_ context.Context, _ int64, text string, buttons [][]telegram.Button) error {
+	t.replies = append(t.replies, text)
+	t.buttons = append(t.buttons, buttons)
 	return nil
 }
 
 func (t *captureTransport) reset() {
 	t.replies = nil
+	t.buttons = nil
 }
 
 func (t *captureTransport) output() string {

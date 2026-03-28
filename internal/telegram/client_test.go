@@ -160,6 +160,99 @@ func TestBotPollHandlesCallbackQueries(t *testing.T) {
 	}
 }
 
+func TestBotPollAcknowledgesCallbackBeforeHandlerCompletes(t *testing.T) {
+	t.Parallel()
+
+	var getUpdatesCalls int32
+	callbackAcked := make(chan struct{}, 1)
+	releaseHandler := make(chan struct{})
+	handlerStarted := make(chan struct{}, 1)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	bot := NewBot(Options{
+		Token:       "TOKEN",
+		BaseURL:     "https://telegram.invalid",
+		Mode:        "polling",
+		PollTimeout: time.Second,
+	})
+	bot.client = &http.Client{
+		Timeout: time.Second,
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			switch r.URL.Path {
+			case "/botTOKEN/deleteWebhook":
+				return jsonResponse(map[string]any{"ok": true, "result": true}), nil
+			case "/botTOKEN/getUpdates":
+				call := atomic.AddInt32(&getUpdatesCalls, 1)
+				if call == 1 {
+					return jsonResponse(map[string]any{
+						"ok": true,
+						"result": []map[string]any{
+							{
+								"update_id": 1,
+								"callback_query": map[string]any{
+									"id":   "cb-early",
+									"data": "watch:action:7:restart_service",
+									"from": map[string]any{"id": 100},
+									"message": map[string]any{
+										"message_id": 10,
+										"chat":       map[string]any{"id": 200},
+									},
+								},
+							},
+						},
+					}), nil
+				}
+				return jsonResponse(map[string]any{"ok": true, "result": []any{}}), nil
+			case "/botTOKEN/answerCallbackQuery":
+				select {
+				case callbackAcked <- struct{}{}:
+				default:
+				}
+				return jsonResponse(map[string]any{"ok": true, "result": true}), nil
+			default:
+				t.Fatalf("unexpected path: %s", r.URL.Path)
+				return nil, nil
+			}
+		}),
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- bot.Poll(ctx, func(_ context.Context, message IncomingMessage) error {
+			if message.CallbackID != "cb-early" {
+				t.Fatalf("unexpected callback message: %#v", message)
+			}
+			select {
+			case handlerStarted <- struct{}{}:
+			default:
+			}
+			<-releaseHandler
+			cancel()
+			return nil
+		})
+	}()
+
+	select {
+	case <-handlerStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for handler start")
+	}
+
+	select {
+	case <-callbackAcked:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected callback to be acknowledged before handler completion")
+	}
+
+	close(releaseHandler)
+
+	if err := <-errCh; err != nil && err != context.Canceled {
+		t.Fatalf("Poll returned error: %v", err)
+	}
+}
+
 func TestBotWebhookReceivesMessages(t *testing.T) {
 	t.Parallel()
 

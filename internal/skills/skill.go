@@ -1,6 +1,10 @@
 package skills
 
-import "context"
+import (
+	"context"
+
+	"openlight/internal/telegram"
+)
 
 type Definition struct {
 	Name        string
@@ -21,7 +25,8 @@ type Input struct {
 }
 
 type Result struct {
-	Text string
+	Text    string
+	Buttons [][]telegram.Button
 }
 
 type Skill interface {

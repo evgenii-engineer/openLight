@@ -22,6 +22,7 @@ var execCommandContext = exec.CommandContext
 type Info struct {
 	Name        string
 	Host        string
+	Backend     string
 	LoadState   string
 	ActiveState string
 	SubState    string
@@ -29,6 +30,7 @@ type Info struct {
 }
 
 type Manager interface {
+	Targets() []Info
 	List(ctx context.Context) ([]Info, error)
 	Status(ctx context.Context, service string) (Info, error)
 	Restart(ctx context.Context, service string) error
@@ -42,6 +44,12 @@ const (
 	backendSystemd serviceBackend = "systemd"
 	backendCompose serviceBackend = "compose"
 	backendDocker  serviceBackend = "docker"
+)
+
+const (
+	BackendSystemd = "systemd"
+	BackendCompose = "compose"
+	BackendDocker  = "docker"
 )
 
 type serviceTarget struct {
@@ -125,14 +133,10 @@ func AllowedServiceNames(allowed []string) ([]string, error) {
 }
 
 func (m *SystemdManager) List(ctx context.Context) ([]Info, error) {
-	names := make([]string, 0, len(m.services))
-	for name := range m.services {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-
-	results := make([]Info, 0, len(names))
-	for _, name := range names {
+	targets := m.Targets()
+	results := make([]Info, 0, len(targets))
+	for _, target := range targets {
+		name := target.Name
 		info, err := m.Status(ctx, name)
 		if err != nil {
 			if m.logger != nil {
@@ -140,6 +144,8 @@ func (m *SystemdManager) List(ctx context.Context) ([]Info, error) {
 			}
 			results = append(results, Info{
 				Name:        name,
+				Host:        target.Host,
+				Backend:     target.Backend,
 				ActiveState: "unknown",
 				Description: err.Error(),
 			})
@@ -149,6 +155,26 @@ func (m *SystemdManager) List(ctx context.Context) ([]Info, error) {
 	}
 
 	return results, nil
+}
+
+func (m *SystemdManager) Targets() []Info {
+	names := make([]string, 0, len(m.services))
+	for name := range m.services {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	results := make([]Info, 0, len(names))
+	for _, name := range names {
+		target := m.services[name]
+		results = append(results, Info{
+			Name:    target.Name,
+			Host:    target.Host,
+			Backend: string(target.Backend),
+		})
+	}
+
+	return results
 }
 
 func (m *SystemdManager) Status(ctx context.Context, service string) (Info, error) {
@@ -296,6 +322,7 @@ func (m *SystemdManager) systemdStatus(ctx context.Context, target serviceTarget
 	info := parseSystemctlShow(string(output))
 	info.Name = target.Name
 	info.Host = target.Host
+	info.Backend = string(target.Backend)
 	return info, nil
 }
 
@@ -369,6 +396,7 @@ func (m *SystemdManager) composeStatus(ctx context.Context, target serviceTarget
 	return Info{
 		Name:        target.Name,
 		Host:        target.Host,
+		Backend:     string(target.Backend),
 		LoadState:   "compose",
 		ActiveState: composeActiveState(record.State),
 		SubState:    composeSubState(record),
@@ -382,6 +410,7 @@ func (m *SystemdManager) composeStatusFromLegacyPS(ctx context.Context, executor
 		return Info{
 			Name:        target.Name,
 			Host:        target.Host,
+			Backend:     string(target.Backend),
 			LoadState:   "compose",
 			ActiveState: composeActiveState(record.State),
 			SubState:    composeSubState(record),
@@ -416,6 +445,7 @@ func (m *SystemdManager) composeStatusFromLegacyPS(ctx context.Context, executor
 	return Info{
 		Name:        target.Name,
 		Host:        target.Host,
+		Backend:     string(target.Backend),
 		LoadState:   "compose",
 		ActiveState: composeActiveState(record.State),
 		SubState:    composeSubState(record),
@@ -468,6 +498,7 @@ func (m *SystemdManager) dockerStatus(ctx context.Context, target serviceTarget)
 	return Info{
 		Name:        target.Name,
 		Host:        target.Host,
+		Backend:     string(target.Backend),
 		LoadState:   "docker",
 		ActiveState: composeActiveState(record.State),
 		SubState:    composeSubState(record),

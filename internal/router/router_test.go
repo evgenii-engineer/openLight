@@ -214,6 +214,24 @@ func TestRouterWatchAddCommand(t *testing.T) {
 	}
 }
 
+func TestRouterEnableCommand(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "watch_enable"})
+
+	decision, err := router.New(registry, nil).Route(context.Background(), "/enable docker")
+	if err != nil {
+		t.Fatalf("route returned error: %v", err)
+	}
+	if decision.Mode != router.ModeSlash || decision.SkillName != "watch_enable" {
+		t.Fatalf("unexpected decision: %#v", decision)
+	}
+	if got := decision.Args["pack"]; got != "docker" {
+		t.Fatalf("unexpected enable args: %#v", decision.Args)
+	}
+}
+
 func TestRouterWatchHistoryCommand(t *testing.T) {
 	t.Parallel()
 

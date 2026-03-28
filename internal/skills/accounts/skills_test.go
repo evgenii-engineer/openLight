@@ -17,6 +17,10 @@ type stubServicesManager struct {
 	execErr     error
 }
 
+func (s *stubServicesManager) Targets() []serviceskills.Info {
+	return nil
+}
+
 func (s *stubServicesManager) List(context.Context) ([]serviceskills.Info, error) {
 	return nil, nil
 }

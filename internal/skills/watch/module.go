@@ -8,6 +8,7 @@ import (
 func NewModule(service *watchengine.Service) skills.Module {
 	return skills.NewModule("watch", func(registry *skills.Registry) error {
 		for _, skill := range []skills.Skill{
+			NewEnableSkill(service),
 			NewAddSkill(service),
 			NewListSkill(service),
 			NewPauseSkill(service),

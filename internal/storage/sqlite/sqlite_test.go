@@ -77,6 +77,16 @@ func TestRepositoryCRUD(t *testing.T) {
 	if !ok || setting.Value != "42" {
 		t.Fatalf("unexpected setting: ok=%v setting=%#v", ok, setting)
 	}
+	if err := repo.DeleteSetting(ctx, "cursor"); err != nil {
+		t.Fatalf("DeleteSetting returned error: %v", err)
+	}
+	_, ok, err = repo.GetSetting(ctx, "cursor")
+	if err != nil {
+		t.Fatalf("GetSetting after delete returned error: %v", err)
+	}
+	if ok {
+		t.Fatal("expected setting to be deleted")
+	}
 
 	watch, err := repo.CreateWatch(ctx, models.Watch{
 		TelegramUserID: 1,

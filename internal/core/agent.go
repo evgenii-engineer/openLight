@@ -27,6 +27,10 @@ type Transport interface {
 	SendText(ctx context.Context, chatID int64, text string) error
 }
 
+type buttonTransport interface {
+	SendTextWithButtons(ctx context.Context, chatID int64, text string, buttons [][]telegram.Button) error
+}
+
 type Agent struct {
 	transport      Transport
 	authorizer     *auth.Authorizer
@@ -92,9 +96,9 @@ func (a *Agent) HandleMessage(ctx context.Context, message telegram.IncomingMess
 	}
 
 	if a.watchService != nil {
-		handled, err := a.watchService.HandleConfirmation(ctx, message.ChatID, message.UserID, message.Text)
+		handled, err := a.watchService.HandleAction(ctx, message.ChatID, message.UserID, message.Text)
 		if err != nil {
-			a.logError("handle watch confirmation", "error", err)
+			a.logError("handle watch action", "error", err)
 			return a.reply(ctx, message.ChatID, message.UserID, "internal error")
 		}
 		if handled {
@@ -230,11 +234,25 @@ func (a *Agent) HandleMessage(ctx context.Context, message telegram.IncomingMess
 		"duration_ms", durationMS,
 	)
 
-	return a.reply(ctx, message.ChatID, message.UserID, result.Text)
+	return a.replyResult(ctx, message.ChatID, message.UserID, result)
 }
 
 func (a *Agent) reply(ctx context.Context, chatID, userID int64, text string) error {
-	if err := a.transport.SendText(ctx, chatID, text); err != nil {
+	return a.replyResult(ctx, chatID, userID, skills.Result{Text: text})
+}
+
+func (a *Agent) replyResult(ctx context.Context, chatID, userID int64, result skills.Result) error {
+	var err error
+	if len(result.Buttons) > 0 {
+		if sender, ok := a.transport.(buttonTransport); ok {
+			err = sender.SendTextWithButtons(ctx, chatID, result.Text, result.Buttons)
+		} else {
+			err = a.transport.SendText(ctx, chatID, result.Text)
+		}
+	} else {
+		err = a.transport.SendText(ctx, chatID, result.Text)
+	}
+	if err != nil {
 		return fmt.Errorf("send reply: %w", err)
 	}
 
@@ -242,7 +260,7 @@ func (a *Agent) reply(ctx context.Context, chatID, userID int64, text string) er
 		TelegramUserID: userID,
 		TelegramChatID: chatID,
 		Role:           models.RoleAssistant,
-		Text:           text,
+		Text:           result.Text,
 	})
 
 	return nil

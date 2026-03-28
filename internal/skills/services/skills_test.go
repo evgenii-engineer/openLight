@@ -12,6 +12,10 @@ type stubManager struct {
 	logs   string
 }
 
+func (s stubManager) Targets() []Info {
+	return []Info{s.status}
+}
+
 func (s stubManager) List(context.Context) ([]Info, error) {
 	return []Info{s.status}, nil
 }

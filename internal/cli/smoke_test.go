@@ -11,8 +11,10 @@ import (
 
 	"openlight/internal/app"
 	"openlight/internal/config"
+	"openlight/internal/models"
 	"openlight/internal/router"
 	"openlight/internal/skills"
+	"openlight/internal/storage"
 	"openlight/internal/storage/sqlite"
 )
 
@@ -208,6 +210,28 @@ func TestAllAccountProvidersSorted(t *testing.T) {
 	}
 }
 
+func TestAllDockerPackTargets(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Config{
+		Services: config.ServicesConfig{
+			Allowed: []string{
+				"tailscale",
+				"api=docker:demo-api",
+				"web=compose:/srv/demo/docker-compose.yml:web",
+				"backup=host:pi:docker:backup-container",
+				"nginx=systemd:nginx",
+			},
+		},
+	}
+
+	got := allDockerPackTargets(cfg)
+	want := []string{"api", "backup", "web"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("unexpected docker pack targets: %#v", got)
+	}
+}
+
 func TestSmokeAccountUsername(t *testing.T) {
 	t.Parallel()
 
@@ -222,6 +246,105 @@ func TestExpectContainsAllFold(t *testing.T) {
 	validate := expectContainsAllFold("alert #", "memory")
 	if err := validate("Alert #2: Memory is 17.2%"); err != nil {
 		t.Fatalf("expectContainsAllFold returned error: %v", err)
+	}
+}
+
+func TestSmokePackSnapshotRestore(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	repo, err := sqlite.New(ctx, filepath.Join(t.TempDir(), "agent.db"), nil)
+	if err != nil {
+		t.Fatalf("sqlite.New returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = repo.Close()
+	})
+
+	original, err := repo.CreateWatch(ctx, models.Watch{
+		TelegramUserID:  11,
+		TelegramChatID:  7,
+		Name:            "memory custom",
+		Kind:            models.WatchKindMemoryHigh,
+		Target:          "memory",
+		Threshold:       70,
+		Duration:        2 * time.Minute,
+		ReactionMode:    models.WatchReactionNotify,
+		ActionType:      models.WatchActionNone,
+		Cooldown:        9 * time.Minute,
+		Enabled:         false,
+		IncidentState:   models.WatchIncidentStateClear,
+		ConditionSince:  time.Unix(10, 0).UTC(),
+		LastTriggeredAt: time.Unix(20, 0).UTC(),
+		LastCheckedAt:   time.Unix(30, 0).UTC(),
+	})
+	if err != nil {
+		t.Fatalf("CreateWatch returned error: %v", err)
+	}
+
+	keys := []smokeWatchKey{
+		{Kind: models.WatchKindCPUHigh, Target: "cpu"},
+		{Kind: models.WatchKindMemoryHigh, Target: "memory"},
+	}
+	snapshot, err := captureSmokePackSnapshot(ctx, repo, 7, keys, []string{packSettingKey(7, "system")})
+	if err != nil {
+		t.Fatalf("captureSmokePackSnapshot returned error: %v", err)
+	}
+
+	original.Name = "memory pack"
+	original.Threshold = 90
+	original.Duration = 5 * time.Minute
+	original.Cooldown = 15 * time.Minute
+	original.Enabled = true
+	original.ConditionSince = time.Time{}
+	original.LastTriggeredAt = time.Time{}
+	original.LastCheckedAt = time.Time{}
+	if err := repo.UpdateWatch(ctx, original); err != nil {
+		t.Fatalf("UpdateWatch returned error: %v", err)
+	}
+
+	if _, err := repo.CreateWatch(ctx, models.Watch{
+		TelegramUserID: 1,
+		TelegramChatID: 7,
+		Name:           "cpu pack",
+		Kind:           models.WatchKindCPUHigh,
+		Target:         "cpu",
+		Threshold:      90,
+		Duration:       5 * time.Minute,
+		ReactionMode:   models.WatchReactionNotify,
+		ActionType:     models.WatchActionNone,
+		Cooldown:       15 * time.Minute,
+		Enabled:        true,
+		IncidentState:  models.WatchIncidentStateClear,
+	}); err != nil {
+		t.Fatalf("CreateWatch cpu returned error: %v", err)
+	}
+
+	if err := repo.SetSetting(ctx, packSettingKey(7, "system"), "enabled"); err != nil {
+		t.Fatalf("SetSetting returned error: %v", err)
+	}
+
+	if err := snapshot.restore(ctx, repo); err != nil {
+		t.Fatalf("restore returned error: %v", err)
+	}
+
+	watches, err := repo.ListWatches(ctx, storage.WatchListOptions{ChatID: 7})
+	if err != nil {
+		t.Fatalf("ListWatches returned error: %v", err)
+	}
+	if len(watches) != 1 {
+		t.Fatalf("expected one restored watch, got %#v", watches)
+	}
+	if !smokeWatchEquals(watches[0], snapshot.Watches[watches[0].ID]) {
+		t.Fatalf("watch was not restored: got %#v want %#v", watches[0], snapshot.Watches[watches[0].ID])
+	}
+
+	_, ok, err := repo.GetSetting(ctx, packSettingKey(7, "system"))
+	if err != nil {
+		t.Fatalf("GetSetting returned error: %v", err)
+	}
+	if ok {
+		t.Fatal("expected pack setting to be removed after restore")
 	}
 }
 

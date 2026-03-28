@@ -77,3 +77,7 @@ func (t *Transport) SendText(_ context.Context, _ int64, text string) error {
 	_, err := fmt.Fprintln(t.out, text)
 	return err
 }
+
+func (t *Transport) SendTextWithButtons(ctx context.Context, chatID int64, text string, _ [][]telegram.Button) error {
+	return t.SendText(ctx, chatID, text)
+}

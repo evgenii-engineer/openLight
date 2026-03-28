@@ -34,6 +34,11 @@ type confirmationRequest struct {
 	Explicit   bool
 }
 
+type actionRequest struct {
+	ActionID   string
+	IncidentID int64
+}
+
 type Options struct {
 	PollInterval   time.Duration
 	AskTTL         time.Duration
@@ -104,7 +109,7 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 
 	if err := s.runCycle(ctx); err != nil {
-		return err
+		return normalizeWatchContextError(ctx, err)
 	}
 
 	ticker := time.NewTicker(s.pollInterval)
@@ -116,7 +121,7 @@ func (s *Service) Run(ctx context.Context) error {
 			return ctx.Err()
 		case <-ticker.C:
 			if err := s.runCycle(ctx); err != nil {
-				return err
+				return normalizeWatchContextError(ctx, err)
 			}
 		}
 	}
@@ -126,7 +131,17 @@ func (s *Service) RunOnce(ctx context.Context) error {
 	if s == nil {
 		return nil
 	}
-	return s.runCycle(ctx)
+	return normalizeWatchContextError(ctx, s.runCycle(ctx))
+}
+
+func normalizeWatchContextError(ctx context.Context, err error) error {
+	if err == nil {
+		return nil
+	}
+	if ctx != nil && ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return err
 }
 
 func (s *Service) AddWatch(ctx context.Context, chatID, userID int64, raw string) (models.Watch, error) {
@@ -247,7 +262,11 @@ func (s *Service) ProbeWatch(ctx context.Context, chatID, id int64) (ProbeResult
 	}, nil
 }
 
-func (s *Service) HandleConfirmation(ctx context.Context, chatID, userID int64, text string) (bool, error) {
+func (s *Service) HandleAction(ctx context.Context, chatID, userID int64, text string) (bool, error) {
+	if request, ok := parseActionRequest(text); ok {
+		return true, s.handleIncidentAction(ctx, chatID, userID, request)
+	}
+
 	request, ok := parseConfirmation(text)
 	if !ok {
 		return false, nil
@@ -270,43 +289,116 @@ func (s *Service) HandleConfirmation(ctx context.Context, chatID, userID int64, 
 		return true, s.sendAssistantMessage(ctx, chatID, userID, err.Error())
 	}
 
-	if request.Decision == "no" {
-		incident.ActionStatus = models.WatchActionStatusDeclined
-		incident.ActionCompletedAt = now
-		incident.Report = joinNonEmptyLines(incident.Report, "Action declined by user.")
-		if err := s.repository.UpdateWatchIncident(ctx, incident); err != nil {
-			return true, err
+	actionID := ActionIgnoreAlertID
+	if request.Decision != "no" {
+		watch, exists, getErr := s.repository.GetWatch(ctx, incident.WatchID)
+		if getErr != nil {
+			return true, getErr
 		}
-		return true, s.sendAssistantMessage(
-			ctx,
-			chatID,
-			userID,
-			fmt.Sprintf("Skipped alert #%d for %s.", incident.ID, incident.WatchName),
-		)
+		if !exists {
+			return true, s.sendAssistantMessage(ctx, chatID, userID, fmt.Sprintf("Watch for alert #%d no longer exists.", incident.ID))
+		}
+		actionID = s.defaultActionID(watch, incident)
+	}
+
+	return true, s.handleIncidentAction(ctx, chatID, userID, actionRequest{
+		ActionID:   actionID,
+		IncidentID: incident.ID,
+	})
+}
+
+func (s *Service) handleIncidentAction(ctx context.Context, chatID, userID int64, request actionRequest) error {
+	if request.IncidentID <= 0 {
+		return s.sendAssistantMessage(ctx, chatID, userID, "Alert id is required.")
+	}
+
+	now := time.Now().UTC()
+	incident, ok, err := s.repository.GetWatchIncident(ctx, request.IncidentID)
+	if err != nil {
+		return err
+	}
+	if !ok || incident.TelegramChatID != chatID {
+		return s.sendStaleConfirmationMessage(ctx, chatID, userID, request.IncidentID)
 	}
 
 	watch, exists, err := s.repository.GetWatch(ctx, incident.WatchID)
 	if err != nil {
-		return true, err
+		return err
 	}
 	if !exists {
-		return true, s.sendAssistantMessage(ctx, chatID, userID, fmt.Sprintf("Watch for alert #%d no longer exists.", incident.ID))
+		return s.sendAssistantMessage(ctx, chatID, userID, fmt.Sprintf("Watch for alert #%d no longer exists.", incident.ID))
 	}
 
-	report, actionStatus := s.executeAction(ctx, watch, incident, "confirmed by user")
-	incident.ActionStatus = actionStatus
-	incident.ActionCompletedAt = now
-	incident.Report = joinNonEmptyLines(incident.Report, report)
-	if err := s.repository.UpdateWatchIncident(ctx, incident); err != nil {
-		return true, err
+	action, ok := s.resolveAction(watch, incident, request.ActionID)
+	if !ok {
+		return s.sendAssistantMessage(ctx, chatID, userID, fmt.Sprintf("Alert #%d does not support that action.", incident.ID))
 	}
 
-	return true, s.sendAssistantMessage(
-		ctx,
-		chatID,
-		userID,
-		fmt.Sprintf("Alert #%d\n%s", incident.ID, incident.Report),
-	)
+	if incident.Status == models.WatchIncidentStatusResolved {
+		return s.sendAssistantMessage(ctx, chatID, userID, staleIncidentMessage(incident))
+	}
+	if mutatingActionExpired(incident, action, now) {
+		if incident.ActionStatus == models.WatchActionStatusPending {
+			incident.ActionStatus = models.WatchActionStatusExpired
+			incident.ActionCompletedAt = now
+			incident.Report = joinNonEmptyLines(incident.Report, "Action window expired.")
+			if err := s.repository.UpdateWatchIncident(ctx, incident); err != nil {
+				return err
+			}
+		}
+		return s.sendAssistantMessage(ctx, chatID, userID, staleIncidentMessage(incident))
+	}
+	if action.Mutating && incident.ActionStatus != "" &&
+		incident.ActionStatus != models.WatchActionStatusNone &&
+		incident.ActionStatus != models.WatchActionStatusPending {
+		return s.sendAssistantMessage(ctx, chatID, userID, staleIncidentMessage(incident))
+	}
+	if action.ID == ActionIgnoreAlertID && incident.ActionStatus == models.WatchActionStatusDeclined {
+		return s.sendAssistantMessage(ctx, chatID, userID, staleIncidentMessage(incident))
+	}
+	if action.Mutating && incident.ActionStatus == models.WatchActionStatusPending {
+		incident.ActionStatus = models.WatchActionStatusRunning
+		if err := s.repository.UpdateWatchIncident(ctx, incident); err != nil {
+			return err
+		}
+	}
+
+	if action.ProgressText != "" {
+		if err := s.sendAssistantMessage(ctx, chatID, userID, action.ProgressText); err != nil {
+			return err
+		}
+	}
+
+	result, err := s.executeIncidentAction(ctx, watch, incident, action.ID, "from Telegram")
+	if err != nil {
+		latestIncident, ok, getErr := s.repository.GetWatchIncident(ctx, incident.ID)
+		if getErr == nil && ok {
+			latestIncident.ActionStatus = models.WatchActionStatusFailed
+			latestIncident.ActionCompletedAt = now
+			latestIncident.Report = joinNonEmptyLines(latestIncident.Report, "Action failed: "+err.Error())
+			_ = s.repository.UpdateWatchIncident(ctx, latestIncident)
+		}
+		return err
+	}
+
+	switch action.ID {
+	case ActionRestartServiceID, ActionIgnoreAlertID:
+		latestIncident, ok, err := s.repository.GetWatchIncident(ctx, incident.ID)
+		if err != nil {
+			return err
+		}
+		if ok {
+			incident = latestIncident
+		}
+		incident.ActionStatus = result.Status
+		incident.ActionCompletedAt = now
+		incident.Report = joinNonEmptyLines(incident.Report, result.Text)
+		if err := s.repository.UpdateWatchIncident(ctx, incident); err != nil {
+			return err
+		}
+	}
+
+	return s.sendAssistantMessage(ctx, chatID, userID, result.Text)
 }
 
 func (s *Service) runCycle(ctx context.Context) error {
@@ -387,27 +479,33 @@ func (s *Service) processWatch(ctx context.Context, watch models.Watch, now time
 		}
 
 		text := s.renderTriggeredAlert(incident, watch)
+		actions := s.actionsForIncident(watch, incident)
 		if watch.ReactionMode == models.WatchReactionAsk {
 			incident.ActionPrompt = text
 			if err := s.repository.UpdateWatchIncident(evalCtx, incident); err != nil {
 				return err
 			}
-			buttons := s.confirmationButtons(incident.ID)
+			buttons := s.actionButtons(incident.ID, actions)
 			return s.sendAssistantMessage(ctx, watch.TelegramChatID, watch.TelegramUserID, text, buttons...)
 		}
 
 		if watch.ReactionMode == models.WatchReactionAuto {
-			report, actionStatus := s.executeAction(ctx, watch, incident, "auto reaction")
-			incident.ActionStatus = actionStatus
+			result, execErr := s.executeAction(ctx, watch, incident, "automatic recovery")
+			if execErr != nil {
+				return execErr
+			}
+			incident.ActionStatus = result.Status
 			incident.ActionCompletedAt = now
-			incident.Report = joinNonEmptyLines(incident.Report, report)
+			incident.Report = joinNonEmptyLines(incident.Report, result.Text)
 			if err := s.repository.UpdateWatchIncident(evalCtx, incident); err != nil {
 				return err
 			}
-			text = text + "\n" + report
+			text = text + "\n" + result.Text
+			return s.sendAssistantMessage(ctx, watch.TelegramChatID, watch.TelegramUserID, text)
 		}
 
-		return s.sendAssistantMessage(ctx, watch.TelegramChatID, watch.TelegramUserID, text)
+		buttons := s.actionButtons(incident.ID, actions)
+		return s.sendAssistantMessage(ctx, watch.TelegramChatID, watch.TelegramUserID, text, buttons...)
 	}
 
 	if !watch.ConditionSince.IsZero() {
@@ -419,10 +517,20 @@ func (s *Service) processWatch(ctx context.Context, watch models.Watch, now time
 			return getErr
 		}
 		if ok {
+			latestIncident, exists, latestErr := s.repository.GetWatchIncident(evalCtx, incident.ID)
+			if latestErr != nil {
+				return latestErr
+			}
+			if exists {
+				incident = latestIncident
+			}
 			incident.Status = models.WatchIncidentStatusResolved
 			incident.ResolvedAt = now
 			if incident.ActionStatus == models.WatchActionStatusPending {
 				incident.ActionStatus = models.WatchActionStatusExpired
+				if incident.ActionCompletedAt.IsZero() {
+					incident.ActionCompletedAt = now
+				}
 			}
 			incident.Report = joinNonEmptyLines(incident.Report, "Condition resolved.")
 			if err := s.repository.UpdateWatchIncident(evalCtx, incident); err != nil {
@@ -551,29 +659,25 @@ func (s *Service) evaluateWatch(ctx context.Context, watch models.Watch) (evalua
 	}
 }
 
-func (s *Service) executeAction(ctx context.Context, watch models.Watch, _ models.WatchIncident, reason string) (string, string) {
-	switch watch.ActionType {
-	case "", models.WatchActionNone:
-		return "No action configured.", models.WatchActionStatusNone
-	case models.WatchActionServiceRestart:
-		result, err := s.executeSkill(ctx, "service_restart", map[string]string{"service": watch.Target}, watch.TelegramUserID, watch.TelegramChatID, "[watch auto restart]")
-		if err != nil {
-			return fmt.Sprintf("Restart failed: %s", err.Error()), models.WatchActionStatusFailed
-		}
+func (s *Service) executeAction(ctx context.Context, watch models.Watch, incident models.WatchIncident, reason string) (ActionResult, error) {
+	actionID := s.defaultAutoActionID(watch)
+	if actionID == "" {
+		return ActionResult{
+			Text:   "No automatic action configured.",
+			Status: models.WatchActionStatusNone,
+		}, nil
+	}
+	return s.executeIncidentAction(ctx, watch, incident, actionID, reason)
+}
 
-		statusResult, statusErr := s.executeSkill(ctx, "service_status", map[string]string{"service": watch.Target}, watch.TelegramUserID, watch.TelegramChatID, "[watch status after restart]")
-		lines := []string{
-			fmt.Sprintf("Action: restarted %s (%s).", watch.Target, reason),
-			result.Text,
-		}
-		if statusErr != nil {
-			lines = append(lines, "Post-action status check failed: "+statusErr.Error())
-			return joinNonEmptyLines(lines...), models.WatchActionStatusFailed
-		}
-		lines = append(lines, statusResult.Text)
-		return joinNonEmptyLines(lines...), models.WatchActionStatusSucceeded
+func (s *Service) defaultAutoActionID(watch models.Watch) string {
+	switch strings.TrimSpace(strings.ToLower(watch.ActionType)) {
+	case "", models.WatchActionNone:
+		return ""
+	case models.WatchActionServiceRestart, ActionRestartServiceID:
+		return ActionRestartServiceID
 	default:
-		return fmt.Sprintf("Unsupported action: %s", watch.ActionType), models.WatchActionStatusFailed
+		return ""
 	}
 }
 
@@ -646,12 +750,8 @@ func (s *Service) saveSkillCall(ctx context.Context, call models.SkillCall) {
 	}
 }
 
-func (s *Service) validateServiceTarget(ctx context.Context, target string) error {
-	services, err := s.serviceManager.List(ctx)
-	if err != nil {
-		return nil
-	}
-	for _, service := range services {
+func (s *Service) validateServiceTarget(_ context.Context, target string) error {
+	for _, service := range s.serviceManager.Targets() {
 		if strings.EqualFold(service.Name, target) {
 			return nil
 		}
@@ -661,20 +761,26 @@ func (s *Service) validateServiceTarget(ctx context.Context, target string) erro
 
 func (s *Service) renderTriggeredAlert(incident models.WatchIncident, watch models.Watch) string {
 	lines := []string{
-		fmt.Sprintf("Alert #%d: %s", incident.ID, incident.Summary),
+		fmt.Sprintf("Alert #%d", incident.ID),
+		incident.Summary,
 	}
 	if incident.Details != "" {
 		lines = append(lines, incident.Details)
 	}
+	actions := s.actionsForIncident(watch, incident)
 	switch watch.ReactionMode {
 	case models.WatchReactionAsk:
 		if s.supportsButtons() {
-			lines = append(lines, fmt.Sprintf("Use the buttons below to act, or reply yes %d / no %d.", incident.ID, incident.ID))
+			lines = append(lines, "Choose an action below.")
 		} else {
-			lines = append(lines, fmt.Sprintf("Reply yes or yes %d to act. Reply no or no %d to ignore.", incident.ID, incident.ID))
+			lines = append(lines, fmt.Sprintf("Reply yes %d to act or no %d to ignore.", incident.ID, incident.ID))
+		}
+	case models.WatchReactionNotify:
+		if len(actions) > 0 && s.supportsButtons() {
+			lines = append(lines, "Quick actions are available below.")
 		}
 	case models.WatchReactionAuto:
-		lines = append(lines, "Auto action is allowed for this watch.")
+		lines = append(lines, "Automatic recovery is enabled for this alert.")
 	}
 	return joinNonEmptyLines(lines...)
 }
@@ -815,6 +921,33 @@ func parseCallbackConfirmation(text string) (confirmationRequest, bool) {
 	}, true
 }
 
+func parseActionRequest(text string) (actionRequest, bool) {
+	trimmed := strings.ToLower(strings.TrimSpace(text))
+	if !strings.HasPrefix(trimmed, "watch:action:") {
+		return actionRequest{}, false
+	}
+
+	parts := strings.Split(trimmed, ":")
+	if len(parts) != 4 {
+		return actionRequest{}, false
+	}
+
+	id, err := strconv.ParseInt(strings.TrimSpace(parts[2]), 10, 64)
+	if err != nil || id <= 0 {
+		return actionRequest{}, false
+	}
+
+	actionID := strings.TrimSpace(parts[3])
+	if actionID == "" {
+		return actionRequest{}, false
+	}
+
+	return actionRequest{
+		ActionID:   actionID,
+		IncidentID: id,
+	}, true
+}
+
 func parseOptionalID(fields []string) int64 {
 	if len(fields) == 0 {
 		return 0
@@ -855,18 +988,6 @@ func (s *Service) supportsButtons() bool {
 	return ok
 }
 
-func (s *Service) confirmationButtons(incidentID int64) [][]telegram.Button {
-	if incidentID <= 0 || !s.supportsButtons() {
-		return nil
-	}
-	return [][]telegram.Button{
-		{
-			{Text: "Restart", CallbackData: fmt.Sprintf("watch:yes:%d", incidentID)},
-			{Text: "Ignore", CallbackData: fmt.Sprintf("watch:no:%d", incidentID)},
-		},
-	}
-}
-
 func (s *Service) sendStaleConfirmationMessage(ctx context.Context, chatID, userID, incidentID int64) error {
 	if incidentID > 0 {
 		incident, ok, err := s.repository.GetWatchIncident(ctx, incidentID)
@@ -883,6 +1004,8 @@ func (s *Service) sendStaleConfirmationMessage(ctx context.Context, chatID, user
 
 func staleIncidentMessage(incident models.WatchIncident) string {
 	switch incident.ActionStatus {
+	case models.WatchActionStatusRunning:
+		return fmt.Sprintf("Alert #%d is already being handled.", incident.ID)
 	case models.WatchActionStatusSucceeded:
 		return fmt.Sprintf("Alert #%d was already completed.", incident.ID)
 	case models.WatchActionStatusDeclined:

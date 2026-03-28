@@ -21,7 +21,8 @@ import (
 )
 
 type fakeTransport struct {
-	sent []string
+	sent    []string
+	buttons [][][]telegram.Button
 }
 
 func (f *fakeTransport) Poll(context.Context, func(context.Context, telegram.IncomingMessage) error) error {
@@ -30,6 +31,13 @@ func (f *fakeTransport) Poll(context.Context, func(context.Context, telegram.Inc
 
 func (f *fakeTransport) SendText(_ context.Context, _ int64, text string) error {
 	f.sent = append(f.sent, text)
+	f.buttons = append(f.buttons, nil)
+	return nil
+}
+
+func (f *fakeTransport) SendTextWithButtons(_ context.Context, _ int64, text string, buttons [][]telegram.Button) error {
+	f.sent = append(f.sent, text)
+	f.buttons = append(f.buttons, buttons)
 	return nil
 }
 
@@ -205,6 +213,51 @@ func TestAgentHandleExplicitNoteAddWithoutSlash(t *testing.T) {
 	}
 	if len(notesList) != 1 || notesList[0].Text != "привет" {
 		t.Fatalf("unexpected notes: %#v", notesList)
+	}
+}
+
+func TestAgentSendsButtonsWhenSkillReturnsThem(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "agent.db")
+	repo, err := sqlite.New(ctx, dbPath, nil)
+	if err != nil {
+		t.Fatalf("sqlite.New returned error: %v", err)
+	}
+	defer repo.Close()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(skills.NewStartSkill())
+
+	transport := &fakeTransport{}
+	agent := NewAgent(
+		transport,
+		auth.New([]int64{100}, []int64{200}),
+		router.New(registry, nil),
+		registry,
+		repo,
+		nil,
+		nil,
+		time.Second,
+	)
+
+	if err := agent.HandleMessage(ctx, telegram.IncomingMessage{
+		ChatID: 200,
+		UserID: 100,
+		Text:   "/start",
+	}); err != nil {
+		t.Fatalf("HandleMessage returned error: %v", err)
+	}
+
+	if len(transport.sent) != 1 || !strings.Contains(transport.sent[0], "openLight is ready.") {
+		t.Fatalf("unexpected sent messages: %#v", transport.sent)
+	}
+	if len(transport.buttons) != 1 || len(transport.buttons[0]) != 2 {
+		t.Fatalf("expected buttons for start response, got %#v", transport.buttons)
+	}
+	if transport.buttons[0][0][0].CallbackData != "enable docker" || transport.buttons[0][1][0].CallbackData != "enable auto-heal" {
+		t.Fatalf("unexpected start buttons: %#v", transport.buttons)
 	}
 }
 

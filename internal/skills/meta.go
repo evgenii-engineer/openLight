@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"openlight/internal/telegram"
 )
 
 type StartSkill struct{}
@@ -25,7 +27,16 @@ func (StartSkill) Definition() Definition {
 
 func (StartSkill) Execute(_ context.Context, _ Input) (Result, error) {
 	return Result{
-		Text: "openLight is ready.\nYou can write normally and I will answer through the local LLM when chat mode is enabled.\nExamples: explain memory usage; show jellyfin logs; read /etc/hostname; run python: print(\"hello\").\nUse skills for built-in tools or help for examples.",
+		Text: "openLight is ready.\nEnable monitoring to get your first useful alert fast.\n- Docker: container or compose service goes down -> alert -> Restart / Logs / Status.\n- System: CPU, memory, and disk alerts with safe defaults.\n\nUse /enable docker, /enable system, or /enable auto-heal.",
+		Buttons: [][]telegram.Button{
+			{
+				{Text: "Docker", CallbackData: "enable docker"},
+				{Text: "System", CallbackData: "enable system"},
+			},
+			{
+				{Text: "Auto-heal", CallbackData: "enable auto-heal"},
+			},
+		},
 	}, nil
 }
 
@@ -245,18 +256,20 @@ func skillOrder(name string) int {
 		return 33
 	case "watch_add":
 		return 34
-	case "watch_list":
+	case "watch_enable":
 		return 35
-	case "watch_pause":
+	case "watch_list":
 		return 36
-	case "watch_remove":
+	case "watch_pause":
 		return 37
-	case "watch_history":
+	case "watch_remove":
 		return 38
-	case "watch_test":
+	case "watch_history":
 		return 39
-	case "user_providers":
+	case "watch_test":
 		return 40
+	case "user_providers":
+		return 41
 	case "user_list":
 		return 41
 	case "user_add":
