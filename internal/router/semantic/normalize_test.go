@@ -13,6 +13,7 @@ func TestNormalizePreservesWholeWordRewrites(t *testing.T) {
 		{input: "загрузка процессора", want: "usage cpu"},
 		{input: "оперативной памяти", want: "memory"},
 		{input: "покажи логи tailscale", want: "show logs tailscale"},
+		{input: "покажи общий статус", want: "show overall status"},
 	}
 
 	for _, tc := range cases {

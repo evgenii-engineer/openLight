@@ -6,10 +6,31 @@ This file tracks released tags and summarizes what each release added or changed
 
 ### What changed
 
-- Added `scripts/install.sh`, a one-command Docker installer that resolves the latest tagged release assets by default and supports pinning through `OPENLIGHT_REF`.
-- Reworked the README into a more aggressive landing page with a stronger quick start, earlier safety positioning, a clearer default path, and a tighter Telegram-plus-local-LLM focus.
-- Added a lightweight Telegram proof asset for the README and a release-notes draft for `v0.0.3`.
-- Added a new `watch` subsystem with SQLite-backed watch rules and incidents, background polling, `/watch add|list|pause|remove|history|test` commands, Telegram inline-button approvals for `ask` mode, and Telegram-first notify/ask/auto restart flows for allowlisted services plus local CPU, memory, disk, and temperature alerts.
+- Nothing yet.
+
+## v0.1.0 - 2026-04-12
+
+Compared with `v0.0.3`, this release turns `openLight` from a Telegram control surface into a Telegram-first monitoring loop: persistent watches, alert actions, built-in monitoring packs, a one-command installer, and faster, more resilient LLM routing.
+
+### What shipped
+
+- Added a new watch subsystem with SQLite-backed watch rules and incidents, background polling, `/watch add|list|pause|remove|history|test` commands, and local CPU, memory, disk, and temperature probes.
+- Added service-down alert workflows with `notify`, `ask`, and `auto` reaction modes, Telegram inline-button actions for `Restart`, `Logs`, `Status`, and `Ignore`, plus allowlisted auto-restart flows for services and containers.
+- Added `/enable docker`, `/enable system`, and `/enable auto-heal` packs that create or refresh watch rules with opinionated defaults for containers, host metrics, and one-shot service recovery.
+- Added `scripts/install.sh`, a one-command Docker installer that resolves the latest tagged release assets by default, downloads the published Compose stack, and supports pinning through `OPENLIGHT_REF`.
+- Added a top-level `openlight-compose.yaml` release asset so the tagged Docker plus Ollama stack can be started directly from the repository root.
+- Improved LLM routing with lower-latency route and skill limits, heuristic rescue before and after model calls, better argument extraction, more reliable Ollama and OpenAI parsing, and profile switching through `llm.profile` or `LLM_PROFILE`.
+- Improved the CLI smoke flows with streamed progress output, richer pass/fail summaries and latency stats, and dedicated Ollama/OpenAI profile runs for Raspberry Pi deployment checks.
+- Expanded automated coverage across watch parsing and execution, SQLite watch persistence, Telegram callback handling, LLM routing heuristics, provider parsing, config profile selection, and end-to-end agent flows.
+- Reworked the README and architecture docs around the monitoring workflow, the installer path, and the Docker plus Ollama quick start, and added a Telegram demo GIF.
+
+### Upgrade notes
+
+- Existing SQLite databases pick up the new `0002_watch.sql` migration automatically on startup; the agent now persists watches, incidents, and pack markers in addition to prior state.
+- Existing configs can keep working without new fields, but `watch.enabled`, `watch.poll_interval`, and `watch.ask_ttl` are now first-class settings with defaults.
+- The example configs now default `llm.decision_num_predict` to `48` instead of `128` to trim routing latency; raise it again if your chosen model needs longer classifier outputs.
+- You can now keep multiple LLM backends in one config and switch between them with `llm.profile` or `LLM_PROFILE` instead of editing provider fields in place.
+- Metric watches currently support `notify` only; `ask` and `auto` apply to service-down watches.
 
 ## v0.0.3 - 2026-03-20
 

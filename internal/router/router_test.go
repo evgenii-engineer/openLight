@@ -93,6 +93,21 @@ func TestRouterRuleBasedLogsParsing(t *testing.T) {
 	}
 }
 
+func TestRouterRuleBasedRussianOverallStatusParsing(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "status"})
+
+	decision, err := router.New(registry, nil).Route(context.Background(), "покажи общий статус")
+	if err != nil {
+		t.Fatalf("route returned error: %v", err)
+	}
+	if decision.Mode != router.ModeRule || decision.SkillName != "status" {
+		t.Fatalf("unexpected decision: %#v", decision)
+	}
+}
+
 func TestRouterDoesNotTreatGenericServicePhraseAsConcreteService(t *testing.T) {
 	t.Parallel()
 

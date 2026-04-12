@@ -500,7 +500,7 @@ func TestAgentUsesPendingClarificationContextOnFollowUp(t *testing.T) {
 	if err := agent.HandleMessage(ctx, telegram.IncomingMessage{
 		ChatID: 200,
 		UserID: 100,
-		Text:   "покажи общий статус",
+		Text:   "что там по системе",
 	}); err != nil {
 		t.Fatalf("HandleMessage returned error on clarification step: %v", err)
 	}
