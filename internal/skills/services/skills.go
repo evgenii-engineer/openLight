@@ -65,6 +65,14 @@ func (s *statusSkill) Definition() skills.Definition {
 	}
 }
 
+func (s *statusSkill) UI() skills.UIDescriptor {
+	return skills.UIDescriptor{
+		Inputs: []skills.InputField{
+			{Name: "service", Prompt: "Which service?", Placeholder: "tailscale"},
+		},
+	}
+}
+
 func (s *statusSkill) Execute(ctx context.Context, input skills.Input) (skills.Result, error) {
 	service, err := resolveOptionalService(ctx, s.manager, input.Args["service"])
 	if err != nil {
@@ -107,6 +115,14 @@ func (s *restartSkill) Definition() skills.Definition {
 	}
 }
 
+func (s *restartSkill) UI() skills.UIDescriptor {
+	return skills.UIDescriptor{
+		Inputs: []skills.InputField{
+			{Name: "service", Prompt: "Which service to restart?", Placeholder: "tailscale"},
+		},
+	}
+}
+
 func (s *restartSkill) Execute(ctx context.Context, input skills.Input) (skills.Result, error) {
 	service := strings.TrimSpace(input.Args["service"])
 	if service == "" {
@@ -141,6 +157,14 @@ func (s *logsSkill) Definition() skills.Definition {
 		Description: "Show recent logs for a whitelisted service.",
 		Aliases:     []string{"logs", "service logs"},
 		Usage:       "/logs [name]",
+	}
+}
+
+func (s *logsSkill) UI() skills.UIDescriptor {
+	return skills.UIDescriptor{
+		Inputs: []skills.InputField{
+			{Name: "service", Prompt: "Which service for logs?", Placeholder: "tailscale"},
+		},
 	}
 }
 

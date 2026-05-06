@@ -204,6 +204,60 @@ func (b *Bot) SendTextWithButtons(ctx context.Context, chatID int64, text string
 	return nil
 }
 
+func (b *Bot) EditMessageText(ctx context.Context, chatID, messageID int64, text string, buttons [][]Button) error {
+	chunks := splitTelegramMessage(text)
+	primary := chunks[0]
+	payload := map[string]any{
+		"chat_id":    chatID,
+		"message_id": messageID,
+		"text":       primary,
+	}
+	if markup := inlineKeyboardMarkup(buttons); markup != nil && len(chunks) == 1 {
+		payload["reply_markup"] = markup
+	}
+	if err := b.call(ctx, "/editMessageText", payload, nil); err != nil {
+		return fmt.Errorf("edit telegram message: %w", err)
+	}
+	if len(chunks) > 1 {
+		for idx, chunk := range chunks[1:] {
+			var kb [][]Button
+			if idx == len(chunks)-2 {
+				kb = buttons
+			}
+			if err := b.sendMessage(ctx, chatID, chunk, kb); err != nil {
+				return fmt.Errorf("send overflow telegram chunk: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
+func (b *Bot) SendTextWithReplyKeyboard(ctx context.Context, chatID int64, text string, rows [][]string, persistent bool) error {
+	payload := map[string]any{
+		"chat_id":      chatID,
+		"text":         text,
+		"reply_markup": replyKeyboardMarkup(rows, persistent),
+	}
+	if err := b.call(ctx, "/sendMessage", payload, nil); err != nil {
+		return fmt.Errorf("send telegram message with reply keyboard: %w", err)
+	}
+	return nil
+}
+
+func (b *Bot) RemoveReplyKeyboard(ctx context.Context, chatID int64, text string) error {
+	payload := map[string]any{
+		"chat_id": chatID,
+		"text":    text,
+		"reply_markup": map[string]any{
+			"remove_keyboard": true,
+		},
+	}
+	if err := b.call(ctx, "/sendMessage", payload, nil); err != nil {
+		return fmt.Errorf("remove telegram reply keyboard: %w", err)
+	}
+	return nil
+}
+
 type apiResponse struct {
 	OK          bool            `json:"ok"`
 	Description string          `json:"description"`
@@ -293,6 +347,61 @@ func (b *Bot) deleteWebhook(ctx context.Context, dropPendingUpdates bool) error 
 		return fmt.Errorf("delete telegram webhook: %w", err)
 	}
 	return nil
+}
+
+type BotCommand struct {
+	Command     string
+	Description string
+}
+
+func (b *Bot) SetMyCommands(ctx context.Context, commands []BotCommand) error {
+	payload := make([]map[string]string, 0, len(commands))
+	seen := make(map[string]struct{}, len(commands))
+	for _, c := range commands {
+		cmd := sanitizeCommandName(c.Command)
+		desc := strings.TrimSpace(c.Description)
+		if cmd == "" || desc == "" {
+			continue
+		}
+		if _, dup := seen[cmd]; dup {
+			continue
+		}
+		seen[cmd] = struct{}{}
+		if utf8.RuneCountInString(desc) > 256 {
+			desc = string([]rune(desc)[:256])
+		}
+		payload = append(payload, map[string]string{
+			"command":     cmd,
+			"description": desc,
+		})
+	}
+	if err := b.call(ctx, "/setMyCommands", map[string]any{"commands": payload}, nil); err != nil {
+		return fmt.Errorf("set telegram commands: %w", err)
+	}
+	return nil
+}
+
+func sanitizeCommandName(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.TrimPrefix(value, "/")
+	var b strings.Builder
+	for i, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z', r == '_':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			if i == 0 {
+				continue
+			}
+			b.WriteRune(r)
+		case r == '-', r == ' ', r == '.':
+			b.WriteRune('_')
+		}
+		if b.Len() == 32 {
+			break
+		}
+	}
+	return b.String()
 }
 
 func (b *Bot) call(ctx context.Context, method string, payload any, out any) error {
@@ -572,6 +681,30 @@ func (b *Bot) answerCallbackQuery(ctx context.Context, callbackID string) error 
 	return b.call(ctx, "/answerCallbackQuery", map[string]any{
 		"callback_query_id": callbackID,
 	}, nil)
+}
+
+func replyKeyboardMarkup(rows [][]string, persistent bool) map[string]any {
+	keyboard := make([][]map[string]string, 0, len(rows))
+	for _, row := range rows {
+		items := make([]map[string]string, 0, len(row))
+		for _, label := range row {
+			label = strings.TrimSpace(label)
+			if label == "" {
+				continue
+			}
+			items = append(items, map[string]string{"text": label})
+		}
+		if len(items) > 0 {
+			keyboard = append(keyboard, items)
+		}
+	}
+	markup := map[string]any{
+		"keyboard":          keyboard,
+		"resize_keyboard":   true,
+		"is_persistent":     persistent,
+		"input_field_placeholder": "Type or tap…",
+	}
+	return markup
 }
 
 func inlineKeyboardMarkup(buttons [][]Button) map[string]any {

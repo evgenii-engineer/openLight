@@ -77,6 +77,16 @@ func (s *addUserSkill) Definition() skills.Definition {
 	}
 }
 
+func (s *addUserSkill) UI() skills.UIDescriptor {
+	return skills.UIDescriptor{
+		Inputs: []skills.InputField{
+			{Name: "provider", Prompt: "Which provider?", Placeholder: "jitsi"},
+			{Name: "username", Prompt: "Username?", Placeholder: "anya"},
+			{Name: "password", Prompt: "Password?", Placeholder: "(will be sent to provider)"},
+		},
+	}
+}
+
 func (s *addUserSkill) Execute(ctx context.Context, input skills.Input) (skills.Result, error) {
 	provider := strings.TrimSpace(input.Args["provider"])
 	username := strings.TrimSpace(input.Args["username"])
@@ -150,6 +160,15 @@ func (s *deleteUserSkill) Definition() skills.Definition {
 			"user delete anya",
 		},
 		Mutating: true,
+	}
+}
+
+func (s *deleteUserSkill) UI() skills.UIDescriptor {
+	return skills.UIDescriptor{
+		Inputs: []skills.InputField{
+			{Name: "provider", Prompt: "Which provider?", Placeholder: "jitsi"},
+			{Name: "username", Prompt: "Username to delete?", Placeholder: "anya"},
+		},
 	}
 }
 

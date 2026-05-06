@@ -143,10 +143,12 @@ func (m *LocalManager) ExecCode(ctx context.Context, runtime, code string) (RunR
 
 	spec, ok := lookupRuntime(runtime)
 	if !ok {
-		return RunResult{}, fmt.Errorf("%w: unsupported runtime %q", skills.ErrInvalidArguments, strings.TrimSpace(runtime))
+		return RunResult{}, fmt.Errorf("%w: unsupported runtime %q. Allowed: %s",
+			skills.ErrInvalidArguments, strings.TrimSpace(runtime), strings.Join(m.allowedRuntimeList, ", "))
 	}
 	if _, allowed := m.allowedRuntimes[spec.Name]; !allowed {
-		return RunResult{}, fmt.Errorf("%w: runtime %s", skills.ErrAccessDenied, spec.Name)
+		return RunResult{}, fmt.Errorf("%w: runtime %s is not in allow-list. Allowed: %s",
+			skills.ErrAccessDenied, spec.Name, strings.Join(m.allowedRuntimeList, ", "))
 	}
 	if strings.TrimSpace(code) == "" {
 		return RunResult{}, fmt.Errorf("%w: code is required", skills.ErrInvalidArguments)

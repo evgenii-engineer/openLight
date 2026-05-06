@@ -198,7 +198,11 @@ func (m *LocalManager) prepareScreenshotPath(rawURL string) (string, error) {
 }
 
 func (m *LocalManager) validateURL(rawURL string) (string, error) {
-	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	trimmed := strings.TrimSpace(rawURL)
+	if trimmed != "" && !strings.Contains(trimmed, "://") {
+		trimmed = "https://" + trimmed
+	}
+	parsed, err := url.Parse(trimmed)
 	if err != nil {
 		return "", fmt.Errorf("%w: invalid url", skills.ErrInvalidArguments)
 	}

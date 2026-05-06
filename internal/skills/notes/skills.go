@@ -35,6 +35,14 @@ func (s *addSkill) Definition() skills.Definition {
 	}
 }
 
+func (s *addSkill) UI() skills.UIDescriptor {
+	return skills.UIDescriptor{
+		Inputs: []skills.InputField{
+			{Name: "text", Prompt: "What's the note?", Placeholder: "buy milk"},
+		},
+	}
+}
+
 func (s *addSkill) Execute(ctx context.Context, input skills.Input) (skills.Result, error) {
 	text := strings.TrimSpace(input.Args["text"])
 	if text == "" {
@@ -107,15 +115,25 @@ func (s *deleteSkill) Definition() skills.Definition {
 	}
 }
 
+func (s *deleteSkill) UI() skills.UIDescriptor {
+	return skills.UIDescriptor{
+		Inputs: []skills.InputField{
+			{Name: "id", Prompt: "Which note id to delete?", Placeholder: "42"},
+		},
+	}
+}
+
 func (s *deleteSkill) Execute(ctx context.Context, input skills.Input) (skills.Result, error) {
 	rawID := strings.TrimSpace(input.Args["id"])
+	rawID = strings.TrimPrefix(rawID, "#")
+	rawID = strings.TrimSpace(rawID)
 	if rawID == "" {
 		return skills.Result{}, fmt.Errorf("%w: note id is required", skills.ErrInvalidArguments)
 	}
 
 	id, err := strconv.ParseInt(rawID, 10, 64)
 	if err != nil || id <= 0 {
-		return skills.Result{}, fmt.Errorf("%w: note id must be a positive integer", skills.ErrInvalidArguments)
+		return skills.Result{}, fmt.Errorf("%w: note id must be a positive integer (e.g. 3 or #3)", skills.ErrInvalidArguments)
 	}
 
 	if err := s.store.DeleteNote(ctx, id); err != nil {

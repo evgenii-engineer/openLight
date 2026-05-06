@@ -80,6 +80,14 @@ func (s *Skill) Definition() skills.Definition {
 	}
 }
 
+func (s *Skill) UI() skills.UIDescriptor {
+	return skills.UIDescriptor{
+		Inputs: []skills.InputField{
+			{Name: "text", Prompt: "What do you want to ask?", Placeholder: "explain cpu load"},
+		},
+	}
+}
+
 func (s *Skill) Execute(ctx context.Context, input skills.Input) (skills.Result, error) {
 	text := strings.TrimSpace(input.Args["text"])
 	if text == "" {

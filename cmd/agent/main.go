@@ -11,13 +11,18 @@ import (
 	"strings"
 	"syscall"
 
+	"time"
+
 	"openlight/internal/app"
 	"openlight/internal/auth"
 	"openlight/internal/config"
 	"openlight/internal/core"
 	"openlight/internal/logging"
 	"openlight/internal/router"
+	"openlight/internal/skills"
 	"openlight/internal/telegram"
+	telegramui "openlight/internal/telegram/ui"
+	"openlight/internal/telegram/ui/sessions"
 	"openlight/internal/voice"
 )
 
@@ -77,6 +82,14 @@ func run() error {
 		logger.With("component", "agent"),
 		cfg.Agent.RequestTimeout,
 	)
+	ui := telegramui.New(telegramui.Config{
+		Registry:     runtime.Registry,
+		Transport:    bot,
+		Sessions:     sessions.NewStore(15 * time.Minute),
+		QuickActions: telegramui.DefaultQuickActions(),
+		Logger:       logger.With("component", "telegram-ui"),
+	})
+	agent.SetUI(ui)
 	if cfg.Voice.Enabled {
 		agent.SetVoiceProcessor(
 			voice.NewProcessor(
@@ -99,6 +112,12 @@ func run() error {
 		}()
 	}
 
+	publishCtx, publishCancel := context.WithTimeout(runCtx, 10*time.Second)
+	if err := bot.SetMyCommands(publishCtx, telegramCommandsFromRegistry(runtime.Registry)); err != nil {
+		logger.Warn("publish telegram commands", "error", err)
+	}
+	publishCancel()
+
 	logger.Info("agent starting", slog.String("sqlite_path", cfg.Storage.SQLitePath))
 	err = agent.Run(runCtx)
 	cancelRun()
@@ -117,6 +136,29 @@ func run() error {
 
 func isExpectedShutdown(err error) bool {
 	return err == nil || errors.Is(err, context.Canceled)
+}
+
+func telegramCommandsFromRegistry(registry *skills.Registry) []telegram.BotCommand {
+	commands := []telegram.BotCommand{
+		{Command: "menu", Description: "Open main menu"},
+	}
+	if registry == nil {
+		return commands
+	}
+	for _, def := range registry.List() {
+		if def.Hidden {
+			continue
+		}
+		desc := def.Description
+		if strings.TrimSpace(desc) == "" {
+			desc = def.Name
+		}
+		commands = append(commands, telegram.BotCommand{
+			Command:     def.Name,
+			Description: desc,
+		})
+	}
+	return commands
 }
 
 func resolveConfigPath(flagValue string) string {

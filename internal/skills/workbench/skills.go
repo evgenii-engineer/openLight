@@ -32,6 +32,15 @@ func (s *execCodeSkill) Definition() skills.Definition {
 	}
 }
 
+func (s *execCodeSkill) UI() skills.UIDescriptor {
+	return skills.UIDescriptor{
+		Inputs: []skills.InputField{
+			{Name: "runtime", Prompt: "Which runtime?", Placeholder: "python"},
+			{Name: "code", Prompt: "Paste the code to run.", Placeholder: "print(\"hi\")"},
+		},
+	}
+}
+
 func (s *execCodeSkill) Execute(ctx context.Context, input skills.Input) (skills.Result, error) {
 	result, err := s.manager.ExecCode(ctx, input.Args["runtime"], input.Args["code"])
 	if err != nil {
@@ -64,6 +73,14 @@ func (s *execFileSkill) Definition() skills.Definition {
 			"exec_file /usr/bin/uptime",
 		},
 		Mutating: true,
+	}
+}
+
+func (s *execFileSkill) UI() skills.UIDescriptor {
+	return skills.UIDescriptor{
+		Inputs: []skills.InputField{
+			{Name: "path", Prompt: "Which file to execute?", Placeholder: "/usr/bin/uptime"},
+		},
 	}
 }
 

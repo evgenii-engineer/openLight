@@ -35,6 +35,14 @@ func (s *addSkill) Definition() skills.Definition {
 	}
 }
 
+func (s *addSkill) UI() skills.UIDescriptor {
+	return skills.UIDescriptor{
+		Inputs: []skills.InputField{
+			{Name: "spec", Prompt: "Describe the watch rule.", Placeholder: "service tailscale ask for 30s"},
+		},
+	}
+}
+
 func (s *addSkill) Execute(ctx context.Context, input skills.Input) (skills.Result, error) {
 	watch, err := s.service.AddWatch(ctx, input.ChatID, input.UserID, input.Args["spec"])
 	if err != nil {
@@ -96,6 +104,14 @@ func (s *pauseSkill) Definition() skills.Definition {
 	}
 }
 
+func (s *pauseSkill) UI() skills.UIDescriptor {
+	return skills.UIDescriptor{
+		Inputs: []skills.InputField{
+			{Name: "id", Prompt: "Which watch id to toggle?", Placeholder: "3"},
+		},
+	}
+}
+
 func (s *pauseSkill) Execute(ctx context.Context, input skills.Input) (skills.Result, error) {
 	id, err := parseID(input.Args["id"])
 	if err != nil {
@@ -129,6 +145,15 @@ func (s *removeSkill) Definition() skills.Definition {
 		Aliases:     []string{"watch delete"},
 		Usage:       "/watch remove <id>",
 		Mutating:    true,
+	}
+}
+
+func (s *removeSkill) UI() skills.UIDescriptor {
+	return skills.UIDescriptor{
+		Inputs: []skills.InputField{
+			{Name: "id", Prompt: "Which watch id to remove?", Placeholder: "3"},
+		},
+		Confirm: "This will permanently delete the watch. Continue?",
 	}
 }
 
@@ -202,6 +227,14 @@ func (s *testSkill) Definition() skills.Definition {
 		Description: "Run one dry probe for a watch and show its current condition.",
 		Aliases:     []string{"watch probe"},
 		Usage:       "/watch test <id>",
+	}
+}
+
+func (s *testSkill) UI() skills.UIDescriptor {
+	return skills.UIDescriptor{
+		Inputs: []skills.InputField{
+			{Name: "id", Prompt: "Which watch id to probe?", Placeholder: "3"},
+		},
 	}
 }
 
@@ -300,9 +333,12 @@ func singleLineIncident(incident models.WatchIncident) string {
 }
 
 func parseID(value string) (int64, error) {
-	id, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	cleaned := strings.TrimSpace(value)
+	cleaned = strings.TrimPrefix(cleaned, "#")
+	cleaned = strings.TrimSpace(cleaned)
+	id, err := strconv.ParseInt(cleaned, 10, 64)
 	if err != nil || id <= 0 {
-		return 0, fmt.Errorf("%w: numeric id is required", skills.ErrInvalidArguments)
+		return 0, fmt.Errorf("%w: numeric id is required (e.g. 3 or #3)", skills.ErrInvalidArguments)
 	}
 	return id, nil
 }

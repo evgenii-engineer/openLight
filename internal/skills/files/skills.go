@@ -95,6 +95,14 @@ func (s *readSkill) Definition() skills.Definition {
 	}
 }
 
+func (s *readSkill) UI() skills.UIDescriptor {
+	return skills.UIDescriptor{
+		Inputs: []skills.InputField{
+			{Name: "path", Prompt: "Which file to read?", Placeholder: "./README.md"},
+		},
+	}
+}
+
 func (s *readSkill) Execute(ctx context.Context, input skills.Input) (skills.Result, error) {
 	result, err := s.manager.Read(ctx, input.Args["path"])
 	if err != nil {
@@ -135,6 +143,14 @@ func (s *searchSkill) Definition() skills.Definition {
 	}
 }
 
+func (s *searchSkill) UI() skills.UIDescriptor {
+	return skills.UIDescriptor{
+		Inputs: []skills.InputField{
+			{Name: "pattern", Prompt: "What text to search for?", Placeholder: "TODO"},
+		},
+	}
+}
+
 func (s *searchSkill) Execute(ctx context.Context, input skills.Input) (skills.Result, error) {
 	result, err := s.manager.Search(ctx, input.Args["pattern"], input.Args["path"])
 	if err != nil {
@@ -171,6 +187,14 @@ func (s *statSkill) Definition() skills.Definition {
 		Description: "Show metadata for a whitelisted file or directory.",
 		Aliases:     []string{"file info", "file stat", "metadata"},
 		Usage:       "/file_stat <path>",
+	}
+}
+
+func (s *statSkill) UI() skills.UIDescriptor {
+	return skills.UIDescriptor{
+		Inputs: []skills.InputField{
+			{Name: "path", Prompt: "Which file or directory to stat?", Placeholder: "./README.md"},
+		},
 	}
 }
 
@@ -219,6 +243,15 @@ func (s *writeSkill) Definition() skills.Definition {
 	}
 }
 
+func (s *writeSkill) UI() skills.UIDescriptor {
+	return skills.UIDescriptor{
+		Inputs: []skills.InputField{
+			{Name: "path", Prompt: "Path to write?", Placeholder: "/tmp/openlight/test.txt"},
+			{Name: "content", Prompt: "What should the file contain?", Placeholder: "hello"},
+		},
+	}
+}
+
 func (s *writeSkill) Execute(ctx context.Context, input skills.Input) (skills.Result, error) {
 	result, err := s.manager.Write(ctx, input.Args["path"], input.Args["content"])
 	if err != nil {
@@ -252,6 +285,16 @@ func (s *replaceSkill) Definition() skills.Definition {
 			"file_replace ./config.yaml :: 8080 => 8081",
 		},
 		Mutating: true,
+	}
+}
+
+func (s *replaceSkill) UI() skills.UIDescriptor {
+	return skills.UIDescriptor{
+		Inputs: []skills.InputField{
+			{Name: "path", Prompt: "Which file to edit?", Placeholder: "./config.yaml"},
+			{Name: "find", Prompt: "Text to find?", Placeholder: "8080"},
+			{Name: "replace", Prompt: "Replace with?", Placeholder: "8081"},
+		},
 	}
 }
 

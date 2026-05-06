@@ -26,6 +26,14 @@ func (s *titleSkill) Definition() skills.Definition {
 	}
 }
 
+func (s *titleSkill) UI() skills.UIDescriptor {
+	return skills.UIDescriptor{
+		Inputs: []skills.InputField{
+			{Name: "url", Prompt: "Which URL?", Placeholder: "https://example.com"},
+		},
+	}
+}
+
 func (s *titleSkill) Execute(ctx context.Context, input skills.Input) (skills.Result, error) {
 	response, err := s.manager.Title(ctx, input.Args["url"])
 	if err != nil {
@@ -49,6 +57,14 @@ func (s *textSkill) Definition() skills.Definition {
 		Description: "Open a whitelisted URL and extract visible text.",
 		Aliases:     []string{"browser text", "page text"},
 		Usage:       "/browse text <url>",
+	}
+}
+
+func (s *textSkill) UI() skills.UIDescriptor {
+	return skills.UIDescriptor{
+		Inputs: []skills.InputField{
+			{Name: "url", Prompt: "Which URL?", Placeholder: "https://example.com"},
+		},
 	}
 }
 
@@ -82,6 +98,14 @@ func (s *screenshotSkill) Definition() skills.Definition {
 	}
 }
 
+func (s *screenshotSkill) UI() skills.UIDescriptor {
+	return skills.UIDescriptor{
+		Inputs: []skills.InputField{
+			{Name: "url", Prompt: "Which URL?", Placeholder: "https://example.com"},
+		},
+	}
+}
+
 func (s *screenshotSkill) Execute(ctx context.Context, input skills.Input) (skills.Result, error) {
 	response, err := s.manager.Screenshot(ctx, input.Args["url"])
 	if err != nil {
@@ -109,6 +133,15 @@ func (s *checkSkill) Definition() skills.Definition {
 		Description: "Load a whitelisted URL and check whether expected text appears.",
 		Aliases:     []string{"browser check", "page check"},
 		Usage:       "/browse check <url> :: <expected text>",
+	}
+}
+
+func (s *checkSkill) UI() skills.UIDescriptor {
+	return skills.UIDescriptor{
+		Inputs: []skills.InputField{
+			{Name: "url", Prompt: "Which URL to check?", Placeholder: "https://example.com"},
+			{Name: "expected_text", Prompt: "Which text should appear on the page?", Placeholder: "Welcome"},
+		},
 	}
 }
 

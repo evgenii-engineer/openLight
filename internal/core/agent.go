@@ -40,9 +40,25 @@ type Agent struct {
 	repository      storage.Repository
 	watchService    *watchengine.Service
 	voiceProcessor  *voice.Processor
+	ui              UI
 	replyTranscript bool
 	logger          *slog.Logger
 	requestTimeout  time.Duration
+}
+
+// UI is the optional Telegram button-driven layer. Implemented by
+// internal/telegram/ui.UI; declared here as an interface so the core agent
+// stays free of Telegram-specific dependencies in tests.
+type UI interface {
+	HandleCallback(ctx context.Context, msg telegram.IncomingMessage) error
+	HandlePendingInput(ctx context.Context, msg telegram.IncomingMessage) (bool, error)
+	HasPendingInput(chatID int64) bool
+	CancelPending(chatID int64)
+	MapReplyKeyboard(text string) (string, bool)
+	OpenScreen(ctx context.Context, chatID int64, screen string) error
+	SendHome(ctx context.Context, chatID int64) error
+	IsFreeChat(chatID int64) bool
+	SetFreeChat(chatID int64, enabled bool)
 }
 
 const maxLoggedMessageChars = 160
@@ -78,6 +94,11 @@ func NewAgent(
 func (a *Agent) SetVoiceProcessor(processor *voice.Processor, replyTranscript bool) {
 	a.voiceProcessor = processor
 	a.replyTranscript = replyTranscript
+}
+
+// SetUI installs the optional Telegram button-driven UI layer.
+func (a *Agent) SetUI(ui UI) {
+	a.ui = ui
 }
 
 func (a *Agent) Run(ctx context.Context) error {
@@ -120,6 +141,50 @@ func (a *Agent) HandleMessage(ctx context.Context, message telegram.IncomingMess
 	if err := a.authorizer.Error(message.UserID, message.ChatID); err != nil {
 		a.logWarn("blocked unauthorized message", "error", err)
 		return a.reply(ctx, message.ChatID, message.UserID, withReplyPrefix(replyPrefix, "access denied"))
+	}
+
+	if a.ui != nil {
+		if message.IsCallback {
+			if err := a.ui.HandleCallback(ctx, message); err != nil {
+				a.logError("handle callback", "error", err)
+				return a.reply(ctx, message.ChatID, message.UserID, withReplyPrefix(replyPrefix, "internal error"))
+			}
+			return nil
+		}
+		// Reply-keyboard taps and /menu always take precedence over a pending
+		// input flow — they let the user escape if they got stuck.
+		if screen, ok := a.ui.MapReplyKeyboard(message.Text); ok {
+			a.ui.CancelPending(message.ChatID)
+			if err := a.ui.OpenScreen(ctx, message.ChatID, screen); err != nil {
+				a.logError("open ui screen", "screen", screen, "error", err)
+				return a.reply(ctx, message.ChatID, message.UserID, withReplyPrefix(replyPrefix, "internal error"))
+			}
+			return nil
+		}
+		if isMenuCommand(message.Text) {
+			a.ui.CancelPending(message.ChatID)
+			a.ui.SetFreeChat(message.ChatID, false)
+			if err := a.ui.SendHome(ctx, message.ChatID); err != nil {
+				a.logError("send ui home", "error", err)
+				return a.reply(ctx, message.ChatID, message.UserID, withReplyPrefix(replyPrefix, "internal error"))
+			}
+			return nil
+		}
+		if a.ui.HasPendingInput(message.ChatID) {
+			handled, err := a.ui.HandlePendingInput(ctx, message)
+			if err != nil {
+				a.logError("handle pending input", "error", err)
+				return a.reply(ctx, message.ChatID, message.UserID, withReplyPrefix(replyPrefix, "internal error"))
+			}
+			if handled {
+				return nil
+			}
+		}
+		if a.ui.IsFreeChat(message.ChatID) && !strings.HasPrefix(strings.TrimSpace(message.Text), "/") {
+			if _, ok := a.registry.Get("chat"); ok {
+				return a.runFreeChat(ctx, message, replyPrefix)
+			}
+		}
 	}
 
 	if a.watchService != nil {
@@ -261,6 +326,35 @@ func (a *Agent) HandleMessage(ctx context.Context, message telegram.IncomingMess
 		"args", sanitizedArgs(decision.Args),
 		"duration_ms", durationMS,
 	)
+
+	if replyPrefix != "" {
+		result.Text = withReplyPrefix(replyPrefix, result.Text)
+	}
+	return a.replyResult(ctx, message.ChatID, message.UserID, result)
+}
+
+// runFreeChat executes the chat skill directly with the user's text, skipping
+// the router. Used when the chat is in free-chat mode (toggled by tapping AI).
+func (a *Agent) runFreeChat(ctx context.Context, message telegram.IncomingMessage, replyPrefix string) error {
+	skill, ok := a.registry.Get("chat")
+	if !ok {
+		return a.reply(ctx, message.ChatID, message.UserID, withReplyPrefix(replyPrefix, "chat skill not registered"))
+	}
+
+	execCtx, cancel := context.WithTimeout(ctx, a.requestTimeout)
+	defer cancel()
+
+	result, execErr := skill.Execute(execCtx, skills.Input{
+		RawText: message.Text,
+		Args:    map[string]string{"text": message.Text},
+		UserID:  message.UserID,
+		ChatID:  message.ChatID,
+		Source:  message.Source,
+	})
+	if execErr != nil {
+		a.logError("execute free chat", "error", execErr)
+		return a.reply(ctx, message.ChatID, message.UserID, withReplyPrefix(replyPrefix, userMessageForError(execErr)))
+	}
 
 	if replyPrefix != "" {
 		result.Text = withReplyPrefix(replyPrefix, result.Text)
@@ -434,16 +528,12 @@ func userMessageForError(err error) string {
 	}
 
 	switch {
-	case errors.Is(err, skills.ErrInvalidArguments):
-		return "invalid arguments"
-	case errors.Is(err, skills.ErrSkillNotFound):
-		return "skill not found"
-	case errors.Is(err, skills.ErrNotFound):
-		return "not found"
-	case errors.Is(err, skills.ErrAccessDenied):
-		return "access denied"
-	case errors.Is(err, skills.ErrUnavailable):
-		return "unavailable"
+	case errors.Is(err, skills.ErrInvalidArguments),
+		errors.Is(err, skills.ErrSkillNotFound),
+		errors.Is(err, skills.ErrNotFound),
+		errors.Is(err, skills.ErrAccessDenied),
+		errors.Is(err, skills.ErrUnavailable):
+		return err.Error()
 	case errors.Is(err, context.DeadlineExceeded):
 		return "request timed out"
 	default:
@@ -517,6 +607,14 @@ func normalizeIncomingSource(source string, fromAudio bool) string {
 		return "telegram_voice"
 	}
 	return "telegram"
+}
+
+func isMenuCommand(text string) bool {
+	switch strings.ToLower(strings.TrimSpace(text)) {
+	case "/menu", "menu", "/home", "home":
+		return true
+	}
+	return false
 }
 
 func looksLikeClarificationAnswer(text string) bool {

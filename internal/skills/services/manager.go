@@ -273,7 +273,13 @@ func (m *SystemdManager) resolveTarget(service string) (serviceTarget, error) {
 
 	target, ok := m.services[name]
 	if !ok {
-		return serviceTarget{}, fmt.Errorf("%w: %s", skills.ErrAccessDenied, name)
+		allowed := make([]string, 0, len(m.services))
+		for n := range m.services {
+			allowed = append(allowed, n)
+		}
+		sort.Strings(allowed)
+		return serviceTarget{}, fmt.Errorf("%w: %s is not allowed. Allowed: %s",
+			skills.ErrAccessDenied, name, strings.Join(allowed, ", "))
 	}
 	return target, nil
 }

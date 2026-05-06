@@ -42,6 +42,14 @@ func (s *rememberSkill) Definition() skills.Definition {
 	}
 }
 
+func (s *rememberSkill) UI() skills.UIDescriptor {
+	return skills.UIDescriptor{
+		Inputs: []skills.InputField{
+			{Name: "text", Prompt: "What should I remember?", Placeholder: "synapse runs on mac mini"},
+		},
+	}
+}
+
 func (s *rememberSkill) Execute(ctx context.Context, input skills.Input) (skills.Result, error) {
 	if !s.enabled {
 		return skills.Result{}, skills.NewUserError(skills.ErrUnavailable, "memory is disabled")
@@ -146,6 +154,14 @@ func (s *forgetSkill) Definition() skills.Definition {
 		Aliases:     []string{"forget", "memory delete", "memory forget"},
 		Usage:       "/forget <id or text>",
 		Mutating:    true,
+	}
+}
+
+func (s *forgetSkill) UI() skills.UIDescriptor {
+	return skills.UIDescriptor{
+		Inputs: []skills.InputField{
+			{Name: "ref", Prompt: "Memory id or matching text to forget?", Placeholder: "42"},
+		},
 	}
 }
 
@@ -260,7 +276,10 @@ func extractHashtagTags(text string) []string {
 }
 
 func parsePositiveInt64(value string) (int64, bool) {
-	id, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	cleaned := strings.TrimSpace(value)
+	cleaned = strings.TrimPrefix(cleaned, "#")
+	cleaned = strings.TrimSpace(cleaned)
+	id, err := strconv.ParseInt(cleaned, 10, 64)
 	if err != nil || id <= 0 {
 		return 0, false
 	}
