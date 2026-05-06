@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -197,6 +198,120 @@ func (r *Repository) DeleteNote(ctx context.Context, id int64) error {
 	}
 	if rowsAffected == 0 {
 		return fmt.Errorf("%w: note #%d", skills.ErrNotFound, id)
+	}
+
+	return nil
+}
+
+func (r *Repository) AddMemory(ctx context.Context, memory models.Memory) (models.Memory, error) {
+	now := time.Now().UTC()
+	if memory.CreatedAt.IsZero() {
+		memory.CreatedAt = now
+	}
+	if memory.UpdatedAt.IsZero() {
+		memory.UpdatedAt = now
+	}
+	if strings.TrimSpace(memory.Kind) == "" {
+		memory.Kind = "fact"
+	}
+
+	result, err := r.db.ExecContext(
+		ctx,
+		`INSERT INTO memories (text, kind, tags, source, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		memory.Text,
+		memory.Kind,
+		joinMemoryTags(memory.Tags),
+		memory.Source,
+		memory.CreatedAt,
+		memory.UpdatedAt,
+	)
+	if err != nil {
+		return models.Memory{}, fmt.Errorf("insert memory: %w", err)
+	}
+
+	id, err := result.LastInsertId()
+	if err != nil {
+		return models.Memory{}, fmt.Errorf("fetch inserted memory id: %w", err)
+	}
+
+	memory.ID = id
+	memory.Tags = normalizeMemoryTags(memory.Tags)
+	return memory, nil
+}
+
+func (r *Repository) ListMemories(ctx context.Context, limit int) ([]models.Memory, error) {
+	rows, err := r.db.QueryContext(
+		ctx,
+		`SELECT id, text, kind, tags, source, created_at, updated_at
+		 FROM memories
+		 ORDER BY updated_at DESC, id DESC
+		 LIMIT ?`,
+		limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query memories: %w", err)
+	}
+	defer rows.Close()
+
+	var memories []models.Memory
+	for rows.Next() {
+		memory, err := scanMemory(rows)
+		if err != nil {
+			return nil, err
+		}
+		memories = append(memories, memory)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate memories: %w", err)
+	}
+
+	return memories, nil
+}
+
+func (r *Repository) SearchMemories(ctx context.Context, query string, limit int) ([]models.Memory, error) {
+	normalizedQuery := "%" + strings.ToLower(strings.TrimSpace(query)) + "%"
+	rows, err := r.db.QueryContext(
+		ctx,
+		`SELECT id, text, kind, tags, source, created_at, updated_at
+		 FROM memories
+		 WHERE lower(text) LIKE ?
+		 ORDER BY updated_at DESC, id DESC
+		 LIMIT ?`,
+		normalizedQuery,
+		limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("search memories: %w", err)
+	}
+	defer rows.Close()
+
+	var memories []models.Memory
+	for rows.Next() {
+		memory, err := scanMemory(rows)
+		if err != nil {
+			return nil, err
+		}
+		memories = append(memories, memory)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate memories: %w", err)
+	}
+
+	return memories, nil
+}
+
+func (r *Repository) DeleteMemory(ctx context.Context, id int64) error {
+	result, err := r.db.ExecContext(ctx, `DELETE FROM memories WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("delete memory: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("delete memory rows affected: %w", err)
+	}
+	if rowsAffected == 0 {
+		return fmt.Errorf("%w: memory #%d", skills.ErrNotFound, id)
 	}
 
 	return nil
@@ -805,6 +920,28 @@ func scanWatch(scanner interface {
 	return watch, nil
 }
 
+func scanMemory(scanner interface {
+	Scan(dest ...any) error
+}) (models.Memory, error) {
+	var memory models.Memory
+	var tags string
+
+	if err := scanner.Scan(
+		&memory.ID,
+		&memory.Text,
+		&memory.Kind,
+		&tags,
+		&memory.Source,
+		&memory.CreatedAt,
+		&memory.UpdatedAt,
+	); err != nil {
+		return models.Memory{}, fmt.Errorf("scan memory: %w", err)
+	}
+
+	memory.Tags = splitMemoryTags(tags)
+	return memory, nil
+}
+
 func scanWatchRow(row *sql.Row) (models.Watch, error) {
 	return scanWatch(row)
 }
@@ -866,6 +1003,42 @@ func nullableTime(value time.Time) any {
 		return nil
 	}
 	return value
+}
+
+func normalizeMemoryTags(tags []string) []string {
+	if len(tags) == 0 {
+		return nil
+	}
+
+	seen := make(map[string]struct{}, len(tags))
+	result := make([]string, 0, len(tags))
+	for _, tag := range tags {
+		tag = strings.ToLower(strings.TrimSpace(tag))
+		if tag == "" {
+			continue
+		}
+		if _, ok := seen[tag]; ok {
+			continue
+		}
+		seen[tag] = struct{}{}
+		result = append(result, tag)
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	sort.Strings(result)
+	return result
+}
+
+func joinMemoryTags(tags []string) string {
+	return strings.Join(normalizeMemoryTags(tags), ",")
+}
+
+func splitMemoryTags(value string) []string {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return normalizeMemoryTags(strings.Split(value, ","))
 }
 
 func nullTime(value sql.NullTime) time.Time {

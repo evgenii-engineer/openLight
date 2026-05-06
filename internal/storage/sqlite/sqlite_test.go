@@ -66,6 +66,50 @@ func TestRepositoryCRUD(t *testing.T) {
 		t.Fatalf("expected notes to be empty after delete, got %#v", notes)
 	}
 
+	memory, err := repo.AddMemory(ctx, models.Memory{
+		Text:   "Mac mini is the main inference node",
+		Kind:   "host",
+		Tags:   []string{"homelab", "mac-mini"},
+		Source: "telegram",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory returned error: %v", err)
+	}
+	if memory.ID == 0 {
+		t.Fatal("expected memory id to be assigned")
+	}
+
+	memories, err := repo.ListMemories(ctx, 10)
+	if err != nil {
+		t.Fatalf("ListMemories returned error: %v", err)
+	}
+	if len(memories) != 1 || memories[0].Text != memory.Text {
+		t.Fatalf("unexpected memories: %#v", memories)
+	}
+	if len(memories[0].Tags) != 2 {
+		t.Fatalf("expected memory tags to be stored, got %#v", memories[0].Tags)
+	}
+
+	searchResults, err := repo.SearchMemories(ctx, "inference", 10)
+	if err != nil {
+		t.Fatalf("SearchMemories returned error: %v", err)
+	}
+	if len(searchResults) != 1 || searchResults[0].ID != memory.ID {
+		t.Fatalf("unexpected memory search results: %#v", searchResults)
+	}
+
+	if err := repo.DeleteMemory(ctx, memory.ID); err != nil {
+		t.Fatalf("DeleteMemory returned error: %v", err)
+	}
+
+	memories, err = repo.ListMemories(ctx, 10)
+	if err != nil {
+		t.Fatalf("ListMemories after delete returned error: %v", err)
+	}
+	if len(memories) != 0 {
+		t.Fatalf("expected memories to be empty after delete, got %#v", memories)
+	}
+
 	if err := repo.SetSetting(ctx, "cursor", "42"); err != nil {
 		t.Fatalf("SetSetting returned error: %v", err)
 	}

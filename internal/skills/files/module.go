@@ -7,6 +7,8 @@ func NewModule(manager Manager) skills.Module {
 		for _, skill := range []skills.Skill{
 			NewListSkill(manager),
 			NewReadSkill(manager),
+			NewSearchSkill(manager),
+			NewStatSkill(manager),
 			NewWriteSkill(manager),
 			NewReplaceSkill(manager),
 		} {

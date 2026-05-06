@@ -6,7 +6,11 @@ This file tracks released tags and summarizes what each release added or changed
 
 ### What changed
 
-- Nothing yet.
+- Added a durable memory subsystem with SQLite-backed `memories`, `/remember`, `/memories`, `/forget`, and storage plus routing tests.
+- Expanded the filesystem skill with an explicit `filesystem` config, write gating, secret redaction, safe metadata and search commands, and stronger path validation.
+- Added Telegram voice-message handling through a local voice pipeline: Telegram download, ffmpeg conversion, pluggable transcription, transcript-aware replies, and mockable tests.
+- Added a read-only browser automation skill backed by a small Playwright helper, with allowlisted domains, private-network blocking by default, and screenshot artifact handling.
+- Added a Mac mini example config, `launchd` template, and deploy helpers for local-first `darwin/arm64` rollout.
 
 ## v0.1.0 - 2026-04-12
 

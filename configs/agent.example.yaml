@@ -31,11 +31,16 @@ access:
     #   known_hosts_path: "/home/pi/.ssh/known_hosts"
     #   sudo: false
 
-files:
-  allowed:
+# `filesystem` is the preferred name for the safe local file skill.
+# The legacy `files` key is still accepted for older configs.
+filesystem:
+  enabled: true
+  allowed_roots:
     - /tmp/openlight
     - /home/pi/scripts
     - /home/pi/openlight-work
+  allow_write: false
+  redact_secrets: true
   max_read_bytes: 4096
   list_limit: 40
 
@@ -151,6 +156,32 @@ chat:
 
 notes:
   list_limit: 20
+
+memory:
+  enabled: true
+  # Leave empty to reuse storage.sqlite_path. Set a separate path if you want
+  # memory in its own SQLite file.
+  db_path: ""
+  list_limit: 20
+
+voice:
+  enabled: false
+  provider: "whisper_cli"
+  whisper_cli_path: "/opt/homebrew/bin/whisper-cli"
+  model_path: "~/models/ggml-small.bin"
+  ffmpeg_path: "/opt/homebrew/bin/ffmpeg"
+  reply_with_transcript: true
+
+browser:
+  enabled: false
+  node_path: "/opt/homebrew/bin/node"
+  helper_path: "./tools/browser-agent/index.mjs"
+  allow_all_domains: false
+  allowed_domains:
+    - example.com
+  allow_private_network: false
+  artifacts_dir: "./data/browser-artifacts"
+  timeout_seconds: 20
 
 agent:
   request_timeout: 5s

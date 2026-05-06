@@ -240,10 +240,16 @@ func routeCommand(command, argsText string, mode Mode) (Decision, bool) {
 		return Decision{Mode: mode, SkillName: "user_delete", Args: parseUserDeleteArgs(argsText)}, true
 	case "note delete", "delete note", "remove note", "note remove", "note_delete":
 		return Decision{Mode: mode, SkillName: "note_delete", Args: map[string]string{"id": argsText}}, true
-	case "note", "note add", "add note", "remember":
+	case "note", "note add", "add note":
 		return Decision{Mode: mode, SkillName: "note_add", Args: map[string]string{"text": argsText}}, true
 	case "notes", "note list", "list notes":
 		return routeNoArgCommand(mode, "note_list", argsText)
+	case "remember", "memory add":
+		return Decision{Mode: mode, SkillName: "memory_add", Args: map[string]string{"text": argsText}}, true
+	case "memories", "memory list":
+		return Decision{Mode: mode, SkillName: "memory_list", Args: map[string]string{"query": strings.TrimSpace(argsText)}}, true
+	case "forget", "memory delete", "memory forget":
+		return Decision{Mode: mode, SkillName: "memory_delete", Args: map[string]string{"ref": strings.TrimSpace(argsText)}}, true
 	case "files", "file list", "list files", "file_list":
 		return Decision{Mode: mode, SkillName: "file_list", Args: filePathArgs(argsText)}, true
 	case "read", "show", "cat", "file read", "read file", "file_read":
@@ -252,6 +258,18 @@ func routeCommand(command, argsText string, mode Mode) (Decision, bool) {
 			return Decision{}, false
 		}
 		return Decision{Mode: mode, SkillName: "file_read", Args: args}, true
+	case "file search", "search files", "find in files", "grep", "file_search":
+		args, ok := parseFileSearchArgs(argsText)
+		if !ok {
+			return Decision{}, false
+		}
+		return Decision{Mode: mode, SkillName: "file_search", Args: args}, true
+	case "file info", "file stat", "metadata", "file_stat":
+		args, ok := parseFileStatArgs(argsText)
+		if !ok {
+			return Decision{}, false
+		}
+		return Decision{Mode: mode, SkillName: "file_stat", Args: args}, true
 	case "write", "file write", "write file", "create file", "file_write":
 		args, ok := parseFileWriteArgs(argsText)
 		if !ok {
@@ -284,6 +302,12 @@ func routeCommand(command, argsText string, mode Mode) (Decision, bool) {
 		return Decision{Mode: mode, SkillName: "exec_file", Args: args}, true
 	case "workspace clean", "workspace_clean", "clean workspace":
 		return routeNoArgCommand(mode, "workspace_clean", argsText)
+	case "browse", "browser":
+		args, skillName, ok := parseBrowserArgs(argsText)
+		if !ok {
+			return Decision{}, false
+		}
+		return Decision{Mode: mode, SkillName: skillName, Args: args}, true
 	case "chat", "ask":
 		return Decision{Mode: mode, SkillName: "chat", Args: map[string]string{"text": argsText}}, true
 	default:
@@ -392,6 +416,42 @@ func parseFileWriteArgs(argsText string) (map[string]string, bool) {
 	}, true
 }
 
+func parseFileSearchArgs(argsText string) (map[string]string, bool) {
+	argsText = strings.TrimSpace(argsText)
+	if argsText == "" {
+		return nil, false
+	}
+
+	if strings.Contains(argsText, "::") {
+		parts := strings.SplitN(argsText, "::", 2)
+		left := strings.TrimSpace(parts[0])
+		right := trimSingleLeadingSpace(parts[1])
+		if looksLikePath(left) && strings.TrimSpace(right) != "" {
+			return map[string]string{"path": left, "pattern": strings.TrimSpace(right)}, true
+		}
+	}
+
+	lowered := strings.ToLower(argsText)
+	inIdx := strings.LastIndex(lowered, " in ")
+	if inIdx > 0 {
+		pattern := strings.TrimSpace(argsText[:inIdx])
+		path := strings.TrimSpace(argsText[inIdx+len(" in "):])
+		if pattern != "" && looksLikePath(path) {
+			return map[string]string{"pattern": pattern, "path": path}, true
+		}
+	}
+
+	return map[string]string{"pattern": argsText}, true
+}
+
+func parseFileStatArgs(argsText string) (map[string]string, bool) {
+	path := strings.TrimSpace(argsText)
+	if !looksLikePath(path) {
+		return nil, false
+	}
+	return map[string]string{"path": path}, true
+}
+
 func parseFileReplaceArgs(argsText string) (map[string]string, bool) {
 	argsText = strings.TrimSpace(argsText)
 	if argsText == "" {
@@ -436,6 +496,52 @@ func parseFileReplaceArgs(argsText string) (map[string]string, bool) {
 		"find":    find,
 		"replace": replacement,
 	}, true
+}
+
+func parseBrowserArgs(argsText string) (map[string]string, string, bool) {
+	argsText = strings.TrimSpace(argsText)
+	if argsText == "" {
+		return nil, "", false
+	}
+
+	fields := strings.Fields(argsText)
+	if len(fields) < 2 {
+		return nil, "", false
+	}
+
+	action := strings.ToLower(strings.TrimSpace(fields[0]))
+	rest := strings.TrimSpace(strings.TrimPrefix(argsText, fields[0]))
+	switch action {
+	case "title":
+		url := firstToken(rest)
+		if !looksLikeURL(url) {
+			return nil, "", false
+		}
+		return map[string]string{"url": url}, "browser_title", true
+	case "text":
+		url := firstToken(rest)
+		if !looksLikeURL(url) {
+			return nil, "", false
+		}
+		return map[string]string{"url": url}, "browser_text", true
+	case "screenshot":
+		url := firstToken(rest)
+		if !looksLikeURL(url) {
+			return nil, "", false
+		}
+		return map[string]string{"url": url}, "browser_screenshot", true
+	case "check":
+		if strings.Contains(rest, "::") {
+			parts := strings.SplitN(rest, "::", 2)
+			url := strings.TrimSpace(parts[0])
+			expected := trimSingleLeadingSpace(parts[1])
+			if looksLikeURL(url) && strings.TrimSpace(expected) != "" {
+				return map[string]string{"url": url, "expected_text": expected}, "browser_check", true
+			}
+		}
+	}
+
+	return nil, "", false
 }
 
 func parseWorkbenchRunArgs(argsText string) (string, map[string]string, bool) {
@@ -575,6 +681,14 @@ func trimSingleLeadingSpace(value string) string {
 	return value
 }
 
+func firstToken(value string) string {
+	fields := strings.Fields(strings.TrimSpace(value))
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
+}
+
 func looksLikePath(value string) bool {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -604,4 +718,9 @@ func looksLikeRuntime(value string) bool {
 	default:
 		return false
 	}
+}
+
+func looksLikeURL(value string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	return strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://")
 }

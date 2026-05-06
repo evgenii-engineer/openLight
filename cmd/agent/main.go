@@ -18,6 +18,7 @@ import (
 	"openlight/internal/logging"
 	"openlight/internal/router"
 	"openlight/internal/telegram"
+	"openlight/internal/voice"
 )
 
 var defaultConfigPath = "/etc/openlight/agent.yaml"
@@ -76,6 +77,19 @@ func run() error {
 		logger.With("component", "agent"),
 		cfg.Agent.RequestTimeout,
 	)
+	if cfg.Voice.Enabled {
+		agent.SetVoiceProcessor(
+			voice.NewProcessor(
+				true,
+				voice.FFmpegConverter{BinaryPath: cfg.Voice.FFmpegPath},
+				voice.WhisperCLITranscriber{
+					BinaryPath: cfg.Voice.WhisperCLIPath,
+					ModelPath:  cfg.Voice.ModelPath,
+				},
+			),
+			cfg.Voice.ReplyWithTranscript,
+		)
+	}
 
 	var watchErrCh chan error
 	if cfg.Watch.Enabled && runtime.Watch != nil {

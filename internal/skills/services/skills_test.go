@@ -264,7 +264,7 @@ func TestSystemdManagerNormalizesGenericService(t *testing.T) {
 func TestSystemdManagerNormalizesComposeService(t *testing.T) {
 	t.Parallel()
 
-	manager, err := NewManager([]string{"synapse=compose:/home/damk/matrix/docker-compose.yml"}, nil, nil)
+	manager, err := NewManager([]string{"synapse=compose:/home/pi/matrix/docker-compose.yml"}, nil, nil)
 	if err != nil {
 		t.Fatalf("NewManager returned error: %v", err)
 	}
@@ -308,7 +308,7 @@ func TestAllowedServiceNamesUsesFriendlyComposeAlias(t *testing.T) {
 
 	names, err := AllowedServiceNames([]string{
 		"tailscale",
-		"synapse=compose:/home/damk/matrix/docker-compose.yml",
+		"synapse=compose:/home/pi/matrix/docker-compose.yml",
 		"jitsi-web=docker:docker-jitsi-meet_web_1",
 	})
 	if err != nil {

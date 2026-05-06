@@ -25,6 +25,10 @@ type Repository interface {
 	AddNote(ctx context.Context, text string) (models.Note, error)
 	ListNotes(ctx context.Context, limit int) ([]models.Note, error)
 	DeleteNote(ctx context.Context, id int64) error
+	AddMemory(ctx context.Context, memory models.Memory) (models.Memory, error)
+	ListMemories(ctx context.Context, limit int) ([]models.Memory, error)
+	SearchMemories(ctx context.Context, query string, limit int) ([]models.Memory, error)
+	DeleteMemory(ctx context.Context, id int64) error
 	CreateWatch(ctx context.Context, watch models.Watch) (models.Watch, error)
 	ListWatches(ctx context.Context, options WatchListOptions) ([]models.Watch, error)
 	GetWatch(ctx context.Context, id int64) (models.Watch, bool, error)

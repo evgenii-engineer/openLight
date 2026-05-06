@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"database/sql"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -15,14 +16,17 @@ import (
 	"openlight/internal/router"
 	"openlight/internal/skills"
 	chatskills "openlight/internal/skills/chat"
+	memoryskills "openlight/internal/skills/memory"
 	"openlight/internal/skills/notes"
 	"openlight/internal/storage/sqlite"
 	"openlight/internal/telegram"
+	"openlight/internal/voice"
 )
 
 type fakeTransport struct {
-	sent    []string
-	buttons [][][]telegram.Button
+	sent     []string
+	buttons  [][][]telegram.Button
+	filePath string
 }
 
 func (f *fakeTransport) Poll(context.Context, func(context.Context, telegram.IncomingMessage) error) error {
@@ -39,6 +43,14 @@ func (f *fakeTransport) SendTextWithButtons(_ context.Context, _ int64, text str
 	f.sent = append(f.sent, text)
 	f.buttons = append(f.buttons, buttons)
 	return nil
+}
+
+func (f *fakeTransport) DownloadFile(context.Context, string) (telegram.DownloadedFile, error) {
+	return telegram.DownloadedFile{
+		Path:     f.filePath,
+		FileName: filepath.Base(f.filePath),
+		Cleanup:  func() error { return nil },
+	}, nil
 }
 
 func TestAgentHandleMessagePersistsConversationAndNotes(t *testing.T) {
@@ -277,7 +289,7 @@ func TestAgentHandleExplicitNoteDeleteWithoutSlash(t *testing.T) {
 	}
 
 	registry := skills.NewRegistry()
-	registry.MustRegister(notes.NewAddSkill(repo))
+	registry.MustRegister(memoryskills.NewRememberSkill(repo, true))
 	registry.MustRegister(notes.NewListSkill(repo, 10))
 	registry.MustRegister(notes.NewDeleteSkill(repo))
 
@@ -543,4 +555,83 @@ func TestAgentUsesPendingClarificationContextOnFollowUp(t *testing.T) {
 	if strings.TrimSpace(setting.Value) != "" {
 		t.Fatalf("expected pending clarification to be cleared, got %#v", setting)
 	}
+}
+
+func TestAgentRoutesVoiceTranscriptLikeTypedText(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "agent.db")
+	repo, err := sqlite.New(ctx, dbPath, nil)
+	if err != nil {
+		t.Fatalf("sqlite.New returned error: %v", err)
+	}
+	defer repo.Close()
+
+	audioPath := filepath.Join(t.TempDir(), "voice.ogg")
+	wavPath := filepath.Join(t.TempDir(), "voice.wav")
+	if err := os.WriteFile(audioPath, []byte("voice"), 0o644); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+	if err := os.WriteFile(wavPath, []byte("voice"), 0o644); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(memoryskills.NewRememberSkill(repo, true))
+
+	transport := &fakeTransport{filePath: audioPath}
+	agent := NewAgent(
+		transport,
+		auth.New([]int64{100}, []int64{200}),
+		router.New(registry, nil),
+		registry,
+		repo,
+		nil,
+		nil,
+		time.Second,
+	)
+	agent.SetVoiceProcessor(
+		voice.NewProcessor(
+			true,
+			stubVoiceConverter{outputPath: wavPath},
+			stubVoiceTranscriber{transcript: "remember that the mac mini is the main inference node"},
+		),
+		true,
+	)
+
+	if err := agent.HandleMessage(ctx, telegram.IncomingMessage{
+		ChatID: 200,
+		UserID: 100,
+		Audio:  &telegram.AudioAttachment{FileID: "voice-1"},
+		Source: "telegram_voice",
+	}); err != nil {
+		t.Fatalf("HandleMessage returned error: %v", err)
+	}
+
+	if len(transport.sent) != 1 {
+		t.Fatalf("expected one sent message, got %#v", transport.sent)
+	}
+	if !strings.Contains(transport.sent[0], "Transcript: remember that the mac mini is the main inference node") {
+		t.Fatalf("expected transcript prefix, got %q", transport.sent[0])
+	}
+	if !strings.Contains(transport.sent[0], "Saved memory #1") {
+		t.Fatalf("expected memory result after routing transcript, got %q", transport.sent[0])
+	}
+}
+
+type stubVoiceConverter struct {
+	outputPath string
+}
+
+func (c stubVoiceConverter) ConvertToWAV(context.Context, string) (string, func() error, error) {
+	return c.outputPath, func() error { return nil }, nil
+}
+
+type stubVoiceTranscriber struct {
+	transcript string
+}
+
+func (t stubVoiceTranscriber) Transcribe(context.Context, string) (string, error) {
+	return t.transcript, nil
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 
 	"openlight/internal/config"
 	basellm "openlight/internal/llm"
@@ -12,8 +13,10 @@ import (
 	routerllm "openlight/internal/router/llm"
 	"openlight/internal/skills"
 	accountskills "openlight/internal/skills/accounts"
+	browserskills "openlight/internal/skills/browser"
 	chatskills "openlight/internal/skills/chat"
 	fileskills "openlight/internal/skills/files"
+	memoryskills "openlight/internal/skills/memory"
 	"openlight/internal/skills/notes"
 	serviceskills "openlight/internal/skills/services"
 	systemskills "openlight/internal/skills/system"
@@ -38,11 +41,23 @@ func BuildRuntime(ctx context.Context, cfg config.Config, logger *slog.Logger) (
 		return Runtime{}, err
 	}
 
+	closers := multiCloser{repository}
+	memoryStore := repository
+	if memoryDBPath := strings.TrimSpace(cfg.Memory.DBPath); memoryDBPath != "" && memoryDBPath != cfg.Storage.SQLitePath {
+		memoryRepository, err := sqlite.New(ctx, memoryDBPath, logger.With("component", "memory-sqlite"))
+		if err != nil {
+			_ = repository.Close()
+			return Runtime{}, err
+		}
+		closers = append(closers, memoryRepository)
+		memoryStore = memoryRepository
+	}
+
 	var llmProvider basellm.Provider
 	if cfg.LLM.Enabled {
 		llmProvider, err = buildLLMProvider(cfg, logger)
 		if err != nil {
-			_ = repository.Close()
+			_ = closers.Close()
 			return Runtime{}, err
 		}
 	}
@@ -50,13 +65,13 @@ func BuildRuntime(ctx context.Context, cfg config.Config, logger *slog.Logger) (
 	systemProvider := systemskills.NewLocalProvider()
 	serviceManager, err := serviceskills.NewManager(cfg.Services.Allowed, cfg.Access.Hosts, logger.With("component", "services"))
 	if err != nil {
-		_ = repository.Close()
+		_ = closers.Close()
 		return Runtime{}, err
 	}
 
-	registry, watchService, allowedServiceNames, err := BuildRegistryWithWatch(cfg, repository, logger, llmProvider, systemProvider, serviceManager)
+	registry, watchService, allowedServiceNames, err := BuildRegistryWithWatch(cfg, repository, memoryStore, logger, llmProvider, systemProvider, serviceManager)
 	if err != nil {
-		_ = repository.Close()
+		_ = closers.Close()
 		return Runtime{}, err
 	}
 
@@ -77,7 +92,7 @@ func BuildRuntime(ctx context.Context, cfg config.Config, logger *slog.Logger) (
 		Classifier: classifier,
 		Repository: repository,
 		Watch:      watchService,
-		Closer:     repository,
+		Closer:     closers,
 	}, nil
 }
 
@@ -93,7 +108,7 @@ func BuildRegistry(
 		return nil, nil, err
 	}
 
-	registry, _, allowedServiceNames, err := BuildRegistryWithWatch(cfg, repository, logger, llmProvider, systemProvider, serviceManager)
+	registry, _, allowedServiceNames, err := BuildRegistryWithWatch(cfg, repository, repository, logger, llmProvider, systemProvider, serviceManager)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -103,6 +118,7 @@ func BuildRegistry(
 func BuildRegistryWithWatch(
 	cfg config.Config,
 	repository storage.Repository,
+	memoryStore memoryskills.Store,
 	logger *slog.Logger,
 	llmProvider basellm.Provider,
 	systemProvider systemskills.Provider,
@@ -114,10 +130,27 @@ func BuildRegistryWithWatch(
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	fileManager, err := fileskills.NewLocalManager(cfg.Files.Allowed, cfg.Files.MaxReadBytes, cfg.Files.ListLimit)
+	fileManager, err := fileskills.NewLocalManager(
+		cfg.Files.Enabled,
+		cfg.Files.Allowed,
+		cfg.Files.MaxReadBytes,
+		cfg.Files.ListLimit,
+		cfg.Files.AllowWrite,
+		cfg.Files.RedactSecrets,
+		cfg.Files.AllowSensitiveRead,
+	)
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	browserManager := browserskills.NewLocalManager(
+		cfg.Browser.Enabled,
+		cfg.Browser.AllowedDomains,
+		cfg.Browser.AllowAllDomains,
+		cfg.Browser.AllowPrivateNetwork,
+		cfg.Browser.ArtifactsDir,
+		cfg.Browser.TimeoutSeconds,
+		browserskills.NewCommandRunner(cfg.Browser.NodePath, cfg.Browser.HelperPath),
+	)
 	watchService := watchengine.NewService(
 		repository,
 		registry,
@@ -135,7 +168,9 @@ func BuildRegistryWithWatch(
 	modules := []skills.Module{
 		systemskills.NewModule(systemProvider),
 		fileskills.NewModule(fileManager),
+		browserskills.NewModule(browserManager),
 		serviceskills.NewModule(serviceManager, cfg.Services.LogLines, cfg.Services.MaxLogChars),
+		memoryskills.NewModule(memoryStore, cfg.Memory.ListLimit, cfg.Memory.Enabled),
 		notes.NewModule(repository, cfg.Notes.ListLimit),
 		watchskills.NewModule(watchService),
 	}
@@ -192,4 +227,19 @@ func CloseRuntime(runtime Runtime) error {
 		return fmt.Errorf("close runtime: %w", err)
 	}
 	return nil
+}
+
+type multiCloser []io.Closer
+
+func (c multiCloser) Close() error {
+	var firstErr error
+	for _, closer := range c {
+		if closer == nil {
+			continue
+		}
+		if err := closer.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }

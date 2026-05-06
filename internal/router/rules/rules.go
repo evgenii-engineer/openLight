@@ -12,6 +12,30 @@ type Match struct {
 }
 
 func Parse(text string) (Match, bool) {
+	trimmed := strings.TrimSpace(text)
+	loweredRaw := strings.ToLower(trimmed)
+
+	if memory := extractMemoryText(trimmed, loweredRaw); memory != "" {
+		return Match{
+			SkillName: "memory_add",
+			Args:      map[string]string{"text": memory},
+		}, true
+	}
+
+	if ref := extractMemoryDeleteRef(trimmed, loweredRaw); ref != "" {
+		return Match{
+			SkillName: "memory_delete",
+			Args:      map[string]string{"ref": ref},
+		}, true
+	}
+
+	if query, ok := extractMemoryQuery(trimmed, loweredRaw); ok {
+		return Match{
+			SkillName: "memory_list",
+			Args:      map[string]string{"query": query},
+		}, true
+	}
+
 	normalized := normalize(text)
 	if normalized == "" {
 		return Match{}, false
@@ -161,6 +185,36 @@ func extractNoteText(text string) string {
 		}
 	}
 	return ""
+}
+
+func extractMemoryText(rawText, loweredRaw string) string {
+	for _, prefix := range []string{"remember that ", "remember this note: ", "remember note: ", "remember "} {
+		if strings.HasPrefix(loweredRaw, prefix) {
+			return strings.TrimSpace(rawText[len(prefix):])
+		}
+	}
+	return ""
+}
+
+func extractMemoryDeleteRef(rawText, loweredRaw string) string {
+	for _, prefix := range []string{"forget that ", "forget "} {
+		if strings.HasPrefix(loweredRaw, prefix) {
+			return strings.TrimSpace(rawText[len(prefix):])
+		}
+	}
+	return ""
+}
+
+func extractMemoryQuery(rawText, loweredRaw string) (string, bool) {
+	switch {
+	case loweredRaw == "what do you remember":
+		return "", true
+	case strings.HasPrefix(loweredRaw, "what do you remember about "):
+		return strings.TrimSpace(rawText[len("what do you remember about "):]), true
+	case strings.HasPrefix(loweredRaw, "what do you remember on "):
+		return strings.TrimSpace(rawText[len("what do you remember on "):]), true
+	}
+	return "", false
 }
 
 func extractHelpTopic(text string) string {

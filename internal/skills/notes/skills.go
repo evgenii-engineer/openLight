@@ -29,7 +29,7 @@ func (s *addSkill) Definition() skills.Definition {
 		Name:        "note_add",
 		Group:       skills.GroupNotes,
 		Description: "Add a short note to SQLite storage.",
-		Aliases:     []string{"add note", "remember"},
+		Aliases:     []string{"add note"},
 		Usage:       "/note <text>",
 		Mutating:    true,
 	}

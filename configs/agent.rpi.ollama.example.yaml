@@ -19,7 +19,7 @@ auth:
     - 111111111
 
 storage:
-  sqlite_path: "/home/damk/openlight/data/agent.db"
+  sqlite_path: "/home/pi/openlight/data/agent.db"
 
 access:
   hosts:

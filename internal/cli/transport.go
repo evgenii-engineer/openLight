@@ -57,6 +57,7 @@ func (t *Transport) Poll(ctx context.Context, handler func(context.Context, tele
 			ChatID:    t.chatID,
 			UserID:    t.userID,
 			Text:      text,
+			Source:    "cli",
 		}); err != nil {
 			return err
 		}

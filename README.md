@@ -173,6 +173,7 @@ Start from the closest example config:
 
 - [configs/agent.example.yaml](./configs/agent.example.yaml): deterministic baseline
 - [configs/agent.rpi.ollama.example.yaml](./configs/agent.rpi.ollama.example.yaml): Raspberry Pi plus Ollama
+- [configs/agent.macmini.example.yaml](./configs/agent.macmini.example.yaml): Mac mini local-first
 - [configs/agent.openai.example.yaml](./configs/agent.openai.example.yaml): OpenAI-backed
 
 Example local run:
@@ -209,6 +210,23 @@ make smoke-rpi-cli-ollama PI_HOST=raspberrypi.local PI_USER=pi SMOKE_FLAGS='-smo
 ```
 
 The systemd unit template is [deployments/systemd/openlight-agent.service](./deployments/systemd/openlight-agent.service).
+
+## Mac mini M1 setup
+
+For Mac mini deployment, the repo includes local `darwin/arm64` build and SSH deploy helpers:
+
+```bash
+cp configs/agent.macmini.example.yaml configs/agent.macmini.yaml
+# edit ./configs/agent.macmini.yaml
+
+make install-macmini-deps
+make bootstrap-macmini SSH_HOST=100.x.y.z
+make deploy-macmini SSH_HOST=100.x.y.z
+make status-macmini SSH_HOST=100.x.y.z
+make logs-macmini SSH_HOST=100.x.y.z
+```
+
+The macOS `launchd` template is [deployments/launchd/openlight-agent.plist](./deployments/launchd/openlight-agent.plist).
 
 ## Configuration
 

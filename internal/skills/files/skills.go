@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"openlight/internal/skills"
 )
@@ -110,6 +111,89 @@ func (s *readSkill) Execute(ctx context.Context, input skills.Input) (skills.Res
 		text += "\n\n(truncated)"
 	}
 	return skills.Result{Text: text}, nil
+}
+
+type searchSkill struct {
+	manager Manager
+}
+
+func NewSearchSkill(manager Manager) skills.Skill {
+	return &searchSkill{manager: manager}
+}
+
+func (s *searchSkill) Definition() skills.Definition {
+	return skills.Definition{
+		Name:        "file_search",
+		Group:       skills.GroupFiles,
+		Description: "Search text across whitelisted files.",
+		Aliases:     []string{"search files", "find in files", "grep"},
+		Usage:       "/file_search <pattern> [in <path>]",
+		Examples: []string{
+			"file_search OPENAI_API_KEY",
+			"search files tailscale in ./logs",
+		},
+	}
+}
+
+func (s *searchSkill) Execute(ctx context.Context, input skills.Input) (skills.Result, error) {
+	result, err := s.manager.Search(ctx, input.Args["pattern"], input.Args["path"])
+	if err != nil {
+		return skills.Result{}, err
+	}
+	if len(result.Matches) == 0 {
+		return skills.Result{Text: "No matches found."}, nil
+	}
+
+	lines := make([]string, 0, len(result.Matches))
+	for _, match := range result.Matches {
+		lines = append(lines, fmt.Sprintf("- %s:%d %s", match.Path, match.Line, match.Preview))
+	}
+
+	text := "Matches:\n" + strings.Join(lines, "\n")
+	if result.Truncated {
+		text += fmt.Sprintf("\n\nShowing first %d matches.", len(result.Matches))
+	}
+	return skills.Result{Text: text}, nil
+}
+
+type statSkill struct {
+	manager Manager
+}
+
+func NewStatSkill(manager Manager) skills.Skill {
+	return &statSkill{manager: manager}
+}
+
+func (s *statSkill) Definition() skills.Definition {
+	return skills.Definition{
+		Name:        "file_stat",
+		Group:       skills.GroupFiles,
+		Description: "Show metadata for a whitelisted file or directory.",
+		Aliases:     []string{"file info", "file stat", "metadata"},
+		Usage:       "/file_stat <path>",
+	}
+}
+
+func (s *statSkill) Execute(ctx context.Context, input skills.Input) (skills.Result, error) {
+	result, err := s.manager.Stat(ctx, input.Args["path"])
+	if err != nil {
+		return skills.Result{}, err
+	}
+
+	kindLabel := "File"
+	if result.IsDir {
+		kindLabel = "Directory"
+	}
+	return skills.Result{
+		Text: fmt.Sprintf(
+			"%s: %s\nSize: %s\nMode: %s\nModified: %s",
+			kindLabel,
+			result.Path,
+			formatSize(result.Size),
+			result.Mode,
+			result.ModifiedAt.Format(time.RFC3339),
+		),
+	}, nil
 }
 
 type writeSkill struct {

@@ -19,6 +19,7 @@ import (
 	"openlight/internal/storage"
 	"openlight/internal/telegram"
 	"openlight/internal/utils"
+	"openlight/internal/voice"
 	watchengine "openlight/internal/watch"
 )
 
@@ -32,14 +33,16 @@ type buttonTransport interface {
 }
 
 type Agent struct {
-	transport      Transport
-	authorizer     *auth.Authorizer
-	router         *router.Router
-	registry       *skills.Registry
-	repository     storage.Repository
-	watchService   *watchengine.Service
-	logger         *slog.Logger
-	requestTimeout time.Duration
+	transport       Transport
+	authorizer      *auth.Authorizer
+	router          *router.Router
+	registry        *skills.Registry
+	repository      storage.Repository
+	watchService    *watchengine.Service
+	voiceProcessor  *voice.Processor
+	replyTranscript bool
+	logger          *slog.Logger
+	requestTimeout  time.Duration
 }
 
 const maxLoggedMessageChars = 160
@@ -72,14 +75,38 @@ func NewAgent(
 	}
 }
 
+func (a *Agent) SetVoiceProcessor(processor *voice.Processor, replyTranscript bool) {
+	a.voiceProcessor = processor
+	a.replyTranscript = replyTranscript
+}
+
 func (a *Agent) Run(ctx context.Context) error {
 	return a.transport.Poll(ctx, a.HandleMessage)
 }
 
 func (a *Agent) HandleMessage(ctx context.Context, message telegram.IncomingMessage) error {
+	replyPrefix := ""
+
+	if strings.TrimSpace(message.Text) == "" && message.Audio != nil {
+		if a.voiceProcessor == nil {
+			return a.reply(ctx, message.ChatID, message.UserID, "voice is disabled")
+		}
+		downloader, _ := a.transport.(voice.Downloader)
+		result, err := a.voiceProcessor.Process(ctx, message, downloader)
+		if err != nil {
+			return a.reply(ctx, message.ChatID, message.UserID, userMessageForError(err))
+		}
+		message.Text = result.RoutedText
+		if a.replyTranscript {
+			replyPrefix = "Transcript: " + result.Transcript
+		}
+	}
+
 	if strings.TrimSpace(message.Text) == "" {
 		return nil
 	}
+
+	message.Source = normalizeIncomingSource(message.Source, message.Audio != nil)
 
 	sanitizedMessageText := utils.RedactSensitiveText(message.Text)
 
@@ -92,14 +119,14 @@ func (a *Agent) HandleMessage(ctx context.Context, message telegram.IncomingMess
 
 	if err := a.authorizer.Error(message.UserID, message.ChatID); err != nil {
 		a.logWarn("blocked unauthorized message", "error", err)
-		return a.reply(ctx, message.ChatID, message.UserID, "access denied")
+		return a.reply(ctx, message.ChatID, message.UserID, withReplyPrefix(replyPrefix, "access denied"))
 	}
 
 	if a.watchService != nil {
 		handled, err := a.watchService.HandleAction(ctx, message.ChatID, message.UserID, message.Text)
 		if err != nil {
 			a.logError("handle watch action", "error", err)
-			return a.reply(ctx, message.ChatID, message.UserID, "internal error")
+			return a.reply(ctx, message.ChatID, message.UserID, withReplyPrefix(replyPrefix, "internal error"))
 		}
 		if handled {
 			return nil
@@ -110,7 +137,7 @@ func (a *Agent) HandleMessage(ctx context.Context, message telegram.IncomingMess
 	decision, err := a.router.Route(ctx, decisionText)
 	if err != nil {
 		a.logError("route message", "error", err)
-		return a.reply(ctx, message.ChatID, message.UserID, "internal error")
+		return a.reply(ctx, message.ChatID, message.UserID, withReplyPrefix(replyPrefix, "internal error"))
 	}
 
 	pending, hasPending := a.loadPendingClarification(ctx, message.ChatID)
@@ -150,7 +177,7 @@ func (a *Agent) HandleMessage(ctx context.Context, message telegram.IncomingMess
 			"confidence", decision.Confidence,
 			"question", decision.ClarificationQuestion,
 		)
-		return a.reply(ctx, message.ChatID, message.UserID, decision.ClarificationQuestion)
+		return a.reply(ctx, message.ChatID, message.UserID, withReplyPrefix(replyPrefix, decision.ClarificationQuestion))
 	}
 
 	if !decision.Matched() {
@@ -173,13 +200,13 @@ func (a *Agent) HandleMessage(ctx context.Context, message telegram.IncomingMess
 			"chat_id", message.ChatID,
 			"user_id", message.UserID,
 		)
-		return a.reply(ctx, message.ChatID, message.UserID, "skill not found. Try /help or /skills.")
+		return a.reply(ctx, message.ChatID, message.UserID, withReplyPrefix(replyPrefix, "skill not found. Try /help or /skills."))
 	}
 
 	skill, ok := a.registry.Get(decision.SkillName)
 	if !ok {
 		a.logWarn("router returned unknown skill", "skill", decision.SkillName)
-		return a.reply(ctx, message.ChatID, message.UserID, "skill not found")
+		return a.reply(ctx, message.ChatID, message.UserID, withReplyPrefix(replyPrefix, "skill not found"))
 	}
 
 	startedAt := time.Now()
@@ -201,6 +228,7 @@ func (a *Agent) HandleMessage(ctx context.Context, message telegram.IncomingMess
 		Args:    decision.Args,
 		UserID:  message.UserID,
 		ChatID:  message.ChatID,
+		Source:  message.Source,
 	})
 
 	durationMS := time.Since(startedAt).Milliseconds()
@@ -223,7 +251,7 @@ func (a *Agent) HandleMessage(ctx context.Context, message telegram.IncomingMess
 			"duration_ms", durationMS,
 			"error", execErr,
 		)
-		return a.reply(ctx, message.ChatID, message.UserID, userMessageForError(execErr))
+		return a.reply(ctx, message.ChatID, message.UserID, withReplyPrefix(replyPrefix, userMessageForError(execErr)))
 	}
 
 	a.logDebug(
@@ -234,6 +262,9 @@ func (a *Agent) HandleMessage(ctx context.Context, message telegram.IncomingMess
 		"duration_ms", durationMS,
 	)
 
+	if replyPrefix != "" {
+		result.Text = withReplyPrefix(replyPrefix, result.Text)
+	}
 	return a.replyResult(ctx, message.ChatID, message.UserID, result)
 }
 
@@ -397,6 +428,11 @@ func errorText(err error) string {
 }
 
 func userMessageForError(err error) string {
+	var userFacing skills.UserFacingError
+	if errors.As(err, &userFacing) {
+		return userFacing.UserMessage()
+	}
+
 	switch {
 	case errors.Is(err, skills.ErrInvalidArguments):
 		return "invalid arguments"
@@ -457,6 +493,30 @@ func shouldUsePendingClarification(text string, decision router.Decision) bool {
 	}
 
 	return looksLikeClarificationAnswer(trimmed)
+}
+
+func withReplyPrefix(prefix, text string) string {
+	prefix = strings.TrimSpace(prefix)
+	text = strings.TrimSpace(text)
+	switch {
+	case prefix == "":
+		return text
+	case text == "":
+		return prefix
+	default:
+		return prefix + "\n\n" + text
+	}
+}
+
+func normalizeIncomingSource(source string, fromAudio bool) string {
+	source = strings.ToLower(strings.TrimSpace(source))
+	if source != "" {
+		return source
+	}
+	if fromAudio {
+		return "telegram_voice"
+	}
+	return "telegram"
 }
 
 func looksLikeClarificationAnswer(text string) bool {

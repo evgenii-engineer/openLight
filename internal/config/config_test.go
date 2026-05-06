@@ -32,7 +32,10 @@ storage:
   sqlite_path: "./agent.db"
 
 files:
+  enabled: true
   allowed: ["/tmp/openlight", "/home/pi/scripts", "/tmp/openlight"]
+  allow_write: true
+  redact_secrets: false
   max_read_bytes: 8192
   list_limit: 25
 
@@ -71,6 +74,29 @@ chat:
 notes:
   list_limit: 9
 
+memory:
+  enabled: true
+  db_path: "./memory.db"
+  list_limit: 12
+
+voice:
+  enabled: true
+  provider: "whisper_cli"
+  whisper_cli_path: "/opt/homebrew/bin/whisper-cli"
+  model_path: "~/models/ggml-small.bin"
+  ffmpeg_path: "/opt/homebrew/bin/ffmpeg"
+  reply_with_transcript: true
+
+browser:
+  enabled: true
+  node_path: "/opt/homebrew/bin/node"
+  helper_path: "./tools/browser-agent/index.mjs"
+  allowed_domains: ["example.com", "github.com"]
+  allow_all_domains: true
+  allow_private_network: false
+  artifacts_dir: "./data/browser"
+  timeout_seconds: 18
+
 agent:
   request_timeout: 15s
 
@@ -104,7 +130,7 @@ log:
 	if got := cfg.Files.Allowed; len(got) != 2 || got[0] != "/tmp/openlight" || got[1] != "/home/pi/scripts" {
 		t.Fatalf("unexpected allowed file roots: %#v", got)
 	}
-	if cfg.Files.MaxReadBytes != 8192 || cfg.Files.ListLimit != 25 {
+	if !cfg.Files.Enabled || !cfg.Files.AllowWrite || cfg.Files.RedactSecrets || cfg.Files.MaxReadBytes != 8192 || cfg.Files.ListLimit != 25 {
 		t.Fatalf("unexpected files config: %#v", cfg.Files)
 	}
 	if !cfg.Workbench.Enabled {
@@ -148,6 +174,18 @@ log:
 	}
 	if cfg.Notes.ListLimit != 9 {
 		t.Fatalf("unexpected notes limit: %d", cfg.Notes.ListLimit)
+	}
+	if !cfg.Memory.Enabled || cfg.Memory.DBPath != "./memory.db" || cfg.Memory.ListLimit != 12 {
+		t.Fatalf("unexpected memory config: %#v", cfg.Memory)
+	}
+	if !cfg.Voice.Enabled || cfg.Voice.Provider != "whisper_cli" || cfg.Voice.ModelPath != "~/models/ggml-small.bin" || !cfg.Voice.ReplyWithTranscript {
+		t.Fatalf("unexpected voice config: %#v", cfg.Voice)
+	}
+	if !cfg.Browser.Enabled || !cfg.Browser.AllowAllDomains || cfg.Browser.NodePath != "/opt/homebrew/bin/node" || cfg.Browser.TimeoutSeconds != 18 {
+		t.Fatalf("unexpected browser config: %#v", cfg.Browser)
+	}
+	if got := cfg.Browser.AllowedDomains; len(got) != 2 || got[0] != "example.com" || got[1] != "github.com" {
+		t.Fatalf("unexpected allowed browser domains: %#v", got)
 	}
 	if cfg.Agent.RequestTimeout != 15*time.Second {
 		t.Fatalf("unexpected request timeout: %v", cfg.Agent.RequestTimeout)
@@ -219,6 +257,15 @@ storage:
 	if cfg.Notes.ListLimit != 20 {
 		t.Fatalf("unexpected notes list limit: %d", cfg.Notes.ListLimit)
 	}
+	if !cfg.Memory.Enabled || cfg.Memory.ListLimit != 20 {
+		t.Fatalf("unexpected memory defaults: %#v", cfg.Memory)
+	}
+	if cfg.Voice.Provider != "whisper_cli" || cfg.Voice.WhisperCLIPath != "whisper-cli" || cfg.Voice.FFmpegPath != "ffmpeg" {
+		t.Fatalf("unexpected voice defaults: %#v", cfg.Voice)
+	}
+	if cfg.Browser.NodePath != "node" || cfg.Browser.TimeoutSeconds != 20 {
+		t.Fatalf("unexpected browser defaults: %#v", cfg.Browser)
+	}
 	if cfg.Agent.RequestTimeout != 5*time.Second {
 		t.Fatalf("unexpected request timeout: %v", cfg.Agent.RequestTimeout)
 	}
@@ -261,6 +308,37 @@ llm:
 	}
 	if cfg.LLM.Endpoint != defaultOpenAIAPIBaseURL {
 		t.Fatalf("unexpected llm endpoint default: %q", cfg.LLM.Endpoint)
+	}
+}
+
+func TestLoadBrowserAllowAllDomainsWithoutList(t *testing.T) {
+	clearConfigEnv(t)
+
+	configPath := filepath.Join(t.TempDir(), "agent.yaml")
+	writeConfig(t, configPath, `
+telegram:
+  bot_token: "token"
+
+auth:
+  allowed_user_ids: [1]
+
+storage:
+  sqlite_path: "./agent.db"
+
+browser:
+  enabled: true
+  allow_all_domains: true
+`)
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if !cfg.Browser.Enabled || !cfg.Browser.AllowAllDomains {
+		t.Fatalf("unexpected browser config: %#v", cfg.Browser)
+	}
+	if len(cfg.Browser.AllowedDomains) != 0 {
+		t.Fatalf("expected allowed domains to stay empty, got %#v", cfg.Browser.AllowedDomains)
 	}
 }
 
@@ -492,7 +570,7 @@ storage:
 
 services:
   allowed:
-    - "synapse=compose:/home/damk/Matrix/docker-compose.yml"
+    - "synapse=compose:/home/pi/Matrix/docker-compose.yml"
 `)
 
 	cfg, err := Load(configPath)
@@ -500,7 +578,7 @@ services:
 		t.Fatalf("Load returned error: %v", err)
 	}
 
-	if got := cfg.Services.Allowed; len(got) != 1 || got[0] != "synapse=compose:/home/damk/Matrix/docker-compose.yml" {
+	if got := cfg.Services.Allowed; len(got) != 1 || got[0] != "synapse=compose:/home/pi/Matrix/docker-compose.yml" {
 		t.Fatalf("unexpected allowed services: %#v", got)
 	}
 }

@@ -22,6 +22,7 @@ type Input struct {
 	Args    map[string]string
 	UserID  int64
 	ChatID  int64
+	Source  string
 }
 
 type Result struct {

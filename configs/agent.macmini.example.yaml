@@ -1,0 +1,92 @@
+# Mac mini M1 local-first example configuration.
+# This profile keeps the main runtime deterministic-first, enables the new
+# memory/filesystem/browser/voice surfaces, and stays safe by default.
+
+telegram:
+  bot_token: "123456:replace-me"
+  api_base_url: "https://api.telegram.org"
+  mode: "polling"
+  poll_timeout: 25s
+
+auth:
+  allowed_user_ids:
+    - 111111111
+  allowed_chat_ids:
+    - 111111111
+
+storage:
+  sqlite_path: "./data/agent.db"
+
+filesystem:
+  enabled: true
+  allowed_roots:
+    - ~/openlight
+    - ~/homelab
+    - ~/notes
+  allow_write: false
+  redact_secrets: true
+  max_read_bytes: 4096
+  list_limit: 40
+
+services:
+  allowed:
+    - tailscale
+    - jellyfin
+  log_lines: 100
+  max_log_chars: 3000
+
+watch:
+  enabled: true
+  poll_interval: 15s
+  ask_ttl: 10m
+
+llm:
+  enabled: false
+  provider: "generic"
+  endpoint: "http://127.0.0.1:11434"
+  model: "qwen2.5:0.5b"
+  execute_threshold: 0.80
+  clarify_threshold: 0.60
+  decision_input_chars: 160
+  decision_num_predict: 48
+
+chat:
+  history_limit: 6
+  history_chars: 900
+  max_response_chars: 400
+
+notes:
+  list_limit: 20
+
+memory:
+  enabled: true
+  db_path: ""
+  list_limit: 20
+
+voice:
+  enabled: true
+  provider: "whisper_cli"
+  whisper_cli_path: "/opt/homebrew/bin/whisper-cli"
+  model_path: "~/models/ggml-small.bin"
+  ffmpeg_path: "/opt/homebrew/bin/ffmpeg"
+  reply_with_transcript: true
+
+browser:
+  enabled: true
+  node_path: "/opt/homebrew/bin/node"
+  helper_path: "./tools/browser-agent/index.mjs"
+  # When true, browser skill can access any public domain.
+  # `allow_private_network` still controls localhost/LAN access.
+  allow_all_domains: true
+  allowed_domains:
+    - example.com
+    - github.com
+  allow_private_network: false
+  artifacts_dir: "./data/browser-artifacts"
+  timeout_seconds: 20
+
+agent:
+  request_timeout: 10s
+
+log:
+  level: "info"

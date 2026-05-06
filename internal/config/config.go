@@ -16,20 +16,24 @@ const defaultTelegramAPIBaseURL = "https://api.telegram.org"
 const defaultOpenAIAPIBaseURL = "https://api.openai.com/v1"
 
 type Config struct {
-	Telegram  TelegramConfig  `yaml:"telegram"`
-	Auth      AuthConfig      `yaml:"auth"`
-	Storage   StorageConfig   `yaml:"storage"`
-	Access    AccessConfig    `yaml:"access"`
-	Accounts  AccountsConfig  `yaml:"accounts"`
-	Files     FilesConfig     `yaml:"files"`
-	Workbench WorkbenchConfig `yaml:"workbench"`
-	Services  ServicesConfig  `yaml:"services"`
-	Watch     WatchConfig     `yaml:"watch"`
-	LLM       LLMConfig       `yaml:"llm"`
-	Chat      ChatConfig      `yaml:"chat"`
-	Notes     NotesConfig     `yaml:"notes"`
-	Agent     AgentConfig     `yaml:"agent"`
-	Log       LogConfig       `yaml:"log"`
+	Telegram   TelegramConfig  `yaml:"telegram"`
+	Auth       AuthConfig      `yaml:"auth"`
+	Storage    StorageConfig   `yaml:"storage"`
+	Access     AccessConfig    `yaml:"access"`
+	Accounts   AccountsConfig  `yaml:"accounts"`
+	Files      FilesConfig     `yaml:"files"`
+	Filesystem FilesConfig     `yaml:"filesystem"`
+	Workbench  WorkbenchConfig `yaml:"workbench"`
+	Services   ServicesConfig  `yaml:"services"`
+	Watch      WatchConfig     `yaml:"watch"`
+	LLM        LLMConfig       `yaml:"llm"`
+	Chat       ChatConfig      `yaml:"chat"`
+	Notes      NotesConfig     `yaml:"notes"`
+	Memory     MemoryConfig    `yaml:"memory"`
+	Voice      VoiceConfig     `yaml:"voice"`
+	Browser    BrowserConfig   `yaml:"browser"`
+	Agent      AgentConfig     `yaml:"agent"`
+	Log        LogConfig       `yaml:"log"`
 }
 
 type TelegramConfig struct {
@@ -87,9 +91,14 @@ type AccountProviderConfig struct {
 }
 
 type FilesConfig struct {
-	Allowed      []string `yaml:"allowed"`
-	MaxReadBytes int      `yaml:"max_read_bytes"`
-	ListLimit    int      `yaml:"list_limit"`
+	Enabled            bool     `yaml:"enabled"`
+	Allowed            []string `yaml:"allowed"`
+	AllowedRoots       []string `yaml:"allowed_roots"`
+	MaxReadBytes       int      `yaml:"max_read_bytes"`
+	ListLimit          int      `yaml:"list_limit"`
+	AllowWrite         bool     `yaml:"allow_write"`
+	RedactSecrets      bool     `yaml:"redact_secrets"`
+	AllowSensitiveRead bool     `yaml:"allow_sensitive_read"`
 }
 
 type WorkbenchConfig struct {
@@ -147,6 +156,32 @@ type NotesConfig struct {
 	ListLimit int `yaml:"list_limit"`
 }
 
+type MemoryConfig struct {
+	Enabled   bool   `yaml:"enabled"`
+	DBPath    string `yaml:"db_path"`
+	ListLimit int    `yaml:"list_limit"`
+}
+
+type VoiceConfig struct {
+	Enabled             bool   `yaml:"enabled"`
+	Provider            string `yaml:"provider"`
+	WhisperCLIPath      string `yaml:"whisper_cli_path"`
+	ModelPath           string `yaml:"model_path"`
+	FFmpegPath          string `yaml:"ffmpeg_path"`
+	ReplyWithTranscript bool   `yaml:"reply_with_transcript"`
+}
+
+type BrowserConfig struct {
+	Enabled             bool     `yaml:"enabled"`
+	NodePath            string   `yaml:"node_path"`
+	HelperPath          string   `yaml:"helper_path"`
+	AllowedDomains      []string `yaml:"allowed_domains"`
+	AllowAllDomains     bool     `yaml:"allow_all_domains"`
+	AllowPrivateNetwork bool     `yaml:"allow_private_network"`
+	ArtifactsDir        string   `yaml:"artifacts_dir"`
+	TimeoutSeconds      int      `yaml:"timeout_seconds"`
+}
+
 type AgentConfig struct {
 	RequestTimeout time.Duration `yaml:"request_timeout"`
 }
@@ -196,8 +231,9 @@ func defaultConfig() Config {
 			},
 		},
 		Files: FilesConfig{
-			MaxReadBytes: 4096,
-			ListLimit:    40,
+			MaxReadBytes:  4096,
+			ListLimit:     40,
+			RedactSecrets: true,
 		},
 		Workbench: WorkbenchConfig{
 			WorkspaceDir:   "/tmp/openlight",
@@ -226,6 +262,21 @@ func defaultConfig() Config {
 		},
 		Notes: NotesConfig{
 			ListLimit: 20,
+		},
+		Memory: MemoryConfig{
+			Enabled:   true,
+			ListLimit: 20,
+		},
+		Voice: VoiceConfig{
+			Provider:       "whisper_cli",
+			WhisperCLIPath: "whisper-cli",
+			FFmpegPath:     "ffmpeg",
+		},
+		Browser: BrowserConfig{
+			NodePath:       "node",
+			HelperPath:     "./tools/browser-agent/index.mjs",
+			ArtifactsDir:   "./data/browser-artifacts",
+			TimeoutSeconds: 20,
 		},
 		Agent: AgentConfig{
 			RequestTimeout: 5 * time.Second,
@@ -270,6 +321,16 @@ func (c Config) Validate() error {
 		return errors.New("files.max_read_bytes must be greater than zero")
 	case c.Files.ListLimit <= 0:
 		return errors.New("files.list_limit must be greater than zero")
+	case c.Memory.ListLimit <= 0:
+		return errors.New("memory.list_limit must be greater than zero")
+	case c.Voice.Enabled && strings.TrimSpace(c.Voice.Provider) == "":
+		return errors.New("voice.provider is required when voice.enabled is true")
+	case c.Voice.Enabled && strings.EqualFold(strings.TrimSpace(c.Voice.Provider), "whisper_cli") && strings.TrimSpace(c.Voice.ModelPath) == "":
+		return errors.New("voice.model_path is required when voice.enabled is true")
+	case c.Browser.TimeoutSeconds <= 0:
+		return errors.New("browser.timeout_seconds must be greater than zero")
+	case c.Browser.Enabled && !c.Browser.AllowAllDomains && len(c.Browser.AllowedDomains) == 0:
+		return errors.New("browser.allowed_domains must not be empty when browser.enabled is true unless browser.allow_all_domains is true")
 	case c.Workbench.Enabled && strings.TrimSpace(c.Workbench.WorkspaceDir) == "":
 		return errors.New("workbench.workspace_dir is required when workbench.enabled is true")
 	case c.Workbench.MaxOutputBytes <= 0:
@@ -380,6 +441,21 @@ func overrideFromEnv(cfg *Config) {
 	if value := parseStringListEnv("ALLOWED_FILE_ROOTS"); value != nil {
 		cfg.Files.Allowed = value
 	}
+	if value := strings.TrimSpace(os.Getenv("FILESYSTEM_ENABLED")); value != "" {
+		cfg.Files.Enabled = parseBool(value)
+	}
+	if value := parseStringListEnv("FILESYSTEM_ALLOWED_ROOTS"); value != nil {
+		cfg.Files.AllowedRoots = value
+	}
+	if value := strings.TrimSpace(os.Getenv("FILESYSTEM_ALLOW_WRITE")); value != "" {
+		cfg.Files.AllowWrite = parseBool(value)
+	}
+	if value := strings.TrimSpace(os.Getenv("FILESYSTEM_REDACT_SECRETS")); value != "" {
+		cfg.Files.RedactSecrets = parseBool(value)
+	}
+	if value := strings.TrimSpace(os.Getenv("FILESYSTEM_ALLOW_SENSITIVE_READ")); value != "" {
+		cfg.Files.AllowSensitiveRead = parseBool(value)
+	}
 	if value := strings.TrimSpace(os.Getenv("WORKBENCH_ENABLED")); value != "" {
 		cfg.Workbench.Enabled = parseBool(value)
 	}
@@ -470,6 +546,57 @@ func overrideFromEnv(cfg *Config) {
 	if value := strings.TrimSpace(os.Getenv("NOTES_LIST_LIMIT")); value != "" {
 		cfg.Notes.ListLimit = parseInt(value, cfg.Notes.ListLimit)
 	}
+	if value := strings.TrimSpace(os.Getenv("MEMORY_ENABLED")); value != "" {
+		cfg.Memory.Enabled = parseBool(value)
+	}
+	if value := strings.TrimSpace(os.Getenv("MEMORY_DB_PATH")); value != "" {
+		cfg.Memory.DBPath = value
+	}
+	if value := strings.TrimSpace(os.Getenv("MEMORY_LIST_LIMIT")); value != "" {
+		cfg.Memory.ListLimit = parseInt(value, cfg.Memory.ListLimit)
+	}
+	if value := strings.TrimSpace(os.Getenv("VOICE_ENABLED")); value != "" {
+		cfg.Voice.Enabled = parseBool(value)
+	}
+	if value := strings.TrimSpace(os.Getenv("VOICE_PROVIDER")); value != "" {
+		cfg.Voice.Provider = value
+	}
+	if value := strings.TrimSpace(os.Getenv("VOICE_WHISPER_CLI_PATH")); value != "" {
+		cfg.Voice.WhisperCLIPath = value
+	}
+	if value := strings.TrimSpace(os.Getenv("VOICE_MODEL_PATH")); value != "" {
+		cfg.Voice.ModelPath = value
+	}
+	if value := strings.TrimSpace(os.Getenv("VOICE_FFMPEG_PATH")); value != "" {
+		cfg.Voice.FFmpegPath = value
+	}
+	if value := strings.TrimSpace(os.Getenv("VOICE_REPLY_WITH_TRANSCRIPT")); value != "" {
+		cfg.Voice.ReplyWithTranscript = parseBool(value)
+	}
+	if value := strings.TrimSpace(os.Getenv("BROWSER_ENABLED")); value != "" {
+		cfg.Browser.Enabled = parseBool(value)
+	}
+	if value := strings.TrimSpace(os.Getenv("BROWSER_NODE_PATH")); value != "" {
+		cfg.Browser.NodePath = value
+	}
+	if value := strings.TrimSpace(os.Getenv("BROWSER_HELPER_PATH")); value != "" {
+		cfg.Browser.HelperPath = value
+	}
+	if value := parseStringListEnv("BROWSER_ALLOWED_DOMAINS"); value != nil {
+		cfg.Browser.AllowedDomains = value
+	}
+	if value := strings.TrimSpace(os.Getenv("BROWSER_ALLOW_ALL_DOMAINS")); value != "" {
+		cfg.Browser.AllowAllDomains = parseBool(value)
+	}
+	if value := strings.TrimSpace(os.Getenv("BROWSER_ALLOW_PRIVATE_NETWORK")); value != "" {
+		cfg.Browser.AllowPrivateNetwork = parseBool(value)
+	}
+	if value := strings.TrimSpace(os.Getenv("BROWSER_ARTIFACTS_DIR")); value != "" {
+		cfg.Browser.ArtifactsDir = value
+	}
+	if value := strings.TrimSpace(os.Getenv("BROWSER_TIMEOUT_SECONDS")); value != "" {
+		cfg.Browser.TimeoutSeconds = parseInt(value, cfg.Browser.TimeoutSeconds)
+	}
 	if value := strings.TrimSpace(os.Getenv("CHAT_HISTORY_LIMIT")); value != "" {
 		cfg.Chat.HistoryLimit = parseInt(value, cfg.Chat.HistoryLimit)
 	}
@@ -501,7 +628,16 @@ func normalize(cfg *Config) {
 	cfg.Storage.SQLitePath = strings.TrimSpace(cfg.Storage.SQLitePath)
 	cfg.Access.Hosts = normalizeRemoteHosts(cfg.Access.Hosts)
 	cfg.Accounts.Providers = normalizeAccountProviders(cfg.Accounts.Providers)
+	cfg.Files = mergeFilesConfig(cfg.Files, cfg.Filesystem)
+	cfg.Files.Enabled = normalizeFilesEnabled(cfg.Files)
 	cfg.Files.Allowed = normalizePaths(cfg.Files.Allowed)
+	cfg.Files.AllowedRoots = normalizePaths(cfg.Files.AllowedRoots)
+	if len(cfg.Files.AllowedRoots) > 0 {
+		cfg.Files.Allowed = cfg.Files.AllowedRoots
+	}
+	if !cfg.Files.RedactSecrets {
+		cfg.Files.AllowSensitiveRead = true
+	}
 	cfg.Workbench.WorkspaceDir = strings.TrimSpace(cfg.Workbench.WorkspaceDir)
 	if cfg.Workbench.WorkspaceDir == "" {
 		cfg.Workbench.WorkspaceDir = "/tmp/openlight"
@@ -514,6 +650,39 @@ func normalize(cfg *Config) {
 	}
 	if cfg.Watch.AskTTL <= 0 {
 		cfg.Watch.AskTTL = 10 * time.Minute
+	}
+	cfg.Memory.DBPath = strings.TrimSpace(cfg.Memory.DBPath)
+	if cfg.Memory.ListLimit <= 0 {
+		cfg.Memory.ListLimit = 20
+	}
+	cfg.Voice.Provider = strings.ToLower(strings.TrimSpace(cfg.Voice.Provider))
+	if cfg.Voice.Provider == "" {
+		cfg.Voice.Provider = "whisper_cli"
+	}
+	cfg.Voice.WhisperCLIPath = strings.TrimSpace(cfg.Voice.WhisperCLIPath)
+	if cfg.Voice.WhisperCLIPath == "" {
+		cfg.Voice.WhisperCLIPath = "whisper-cli"
+	}
+	cfg.Voice.ModelPath = strings.TrimSpace(cfg.Voice.ModelPath)
+	cfg.Voice.FFmpegPath = strings.TrimSpace(cfg.Voice.FFmpegPath)
+	if cfg.Voice.FFmpegPath == "" {
+		cfg.Voice.FFmpegPath = "ffmpeg"
+	}
+	cfg.Browser.NodePath = strings.TrimSpace(cfg.Browser.NodePath)
+	if cfg.Browser.NodePath == "" {
+		cfg.Browser.NodePath = "node"
+	}
+	cfg.Browser.HelperPath = strings.TrimSpace(cfg.Browser.HelperPath)
+	if cfg.Browser.HelperPath == "" {
+		cfg.Browser.HelperPath = "./tools/browser-agent/index.mjs"
+	}
+	cfg.Browser.AllowedDomains = normalizeStrings(cfg.Browser.AllowedDomains)
+	cfg.Browser.ArtifactsDir = strings.TrimSpace(cfg.Browser.ArtifactsDir)
+	if cfg.Browser.ArtifactsDir == "" {
+		cfg.Browser.ArtifactsDir = "./data/browser-artifacts"
+	}
+	if cfg.Browser.TimeoutSeconds <= 0 {
+		cfg.Browser.TimeoutSeconds = 20
 	}
 
 	cfg.LLM.Profile = strings.ToLower(strings.TrimSpace(cfg.LLM.Profile))
@@ -822,6 +991,41 @@ func normalizePaths(values []string) []string {
 		result = append(result, trimmed)
 	}
 	return result
+}
+
+func mergeFilesConfig(base FilesConfig, override FilesConfig) FilesConfig {
+	if override.Enabled {
+		base.Enabled = true
+	}
+	if len(override.Allowed) > 0 {
+		base.Allowed = override.Allowed
+	}
+	if len(override.AllowedRoots) > 0 {
+		base.AllowedRoots = override.AllowedRoots
+	}
+	if override.MaxReadBytes > 0 {
+		base.MaxReadBytes = override.MaxReadBytes
+	}
+	if override.ListLimit > 0 {
+		base.ListLimit = override.ListLimit
+	}
+	if override.AllowWrite {
+		base.AllowWrite = true
+	}
+	if override.RedactSecrets {
+		base.RedactSecrets = true
+	}
+	if override.AllowSensitiveRead {
+		base.AllowSensitiveRead = true
+	}
+	return base
+}
+
+func normalizeFilesEnabled(cfg FilesConfig) bool {
+	if cfg.Enabled {
+		return true
+	}
+	return len(cfg.Allowed) > 0 || len(cfg.AllowedRoots) > 0
 }
 
 func parseInt64ListEnv(key string) []int64 {

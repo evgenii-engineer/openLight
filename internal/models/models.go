@@ -63,6 +63,16 @@ type Note struct {
 	CreatedAt time.Time
 }
 
+type Memory struct {
+	ID        int64
+	Text      string
+	Kind      string
+	Tags      []string
+	Source    string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
 type Setting struct {
 	Key       string
 	Value     string

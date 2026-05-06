@@ -10,6 +10,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -20,8 +22,23 @@ type IncomingMessage struct {
 	ChatID     int64
 	UserID     int64
 	Text       string
+	Source     string
+	Audio      *AudioAttachment
 	CallbackID string
 	IsCallback bool
+}
+
+type AudioAttachment struct {
+	Kind     string
+	FileID   string
+	FileName string
+	MimeType string
+}
+
+type DownloadedFile struct {
+	Path     string
+	FileName string
+	Cleanup  func() error
 }
 
 type Button struct {
@@ -200,10 +217,13 @@ type update struct {
 }
 
 type tgMessage struct {
-	MessageID int64  `json:"message_id"`
-	Text      string `json:"text"`
-	Chat      tgChat `json:"chat"`
-	From      tgUser `json:"from"`
+	MessageID int64   `json:"message_id"`
+	Text      string  `json:"text"`
+	Caption   string  `json:"caption"`
+	Chat      tgChat  `json:"chat"`
+	From      tgUser  `json:"from"`
+	Voice     *tgFile `json:"voice"`
+	Audio     *tgFile `json:"audio"`
 }
 
 type tgChat struct {
@@ -221,6 +241,16 @@ type tgCallbackQuery struct {
 	Message *tgMessage `json:"message"`
 }
 
+type tgFile struct {
+	FileID   string `json:"file_id"`
+	FileName string `json:"file_name"`
+	MimeType string `json:"mime_type"`
+}
+
+type tgRemoteFile struct {
+	FilePath string `json:"file_path"`
+}
+
 func (b *Bot) getUpdates(ctx context.Context, offset int64) ([]update, error) {
 	var updates []update
 	err := b.call(ctx, "/getUpdates", map[string]any{
@@ -236,6 +266,10 @@ func (b *Bot) getUpdates(ctx context.Context, offset int64) ([]update, error) {
 
 func (b *Bot) apiURL(method string) string {
 	return fmt.Sprintf("%s/bot%s%s", b.baseURL, b.token, method)
+}
+
+func (b *Bot) fileURL(path string) string {
+	return fmt.Sprintf("%s/file/bot%s/%s", b.baseURL, b.token, strings.TrimLeft(path, "/"))
 }
 
 func (b *Bot) setWebhook(ctx context.Context) error {
@@ -358,7 +392,20 @@ func (u update) incomingMessage() (IncomingMessage, bool) {
 			ChatID:    u.Message.Chat.ID,
 			UserID:    u.Message.From.ID,
 			Text:      u.Message.Text,
+			Source:    "telegram",
 		}, true
+	}
+
+	if u.Message != nil {
+		if audio := u.Message.audioAttachment(); audio != nil {
+			return IncomingMessage{
+				MessageID: u.Message.MessageID,
+				ChatID:    u.Message.Chat.ID,
+				UserID:    u.Message.From.ID,
+				Source:    "telegram_voice",
+				Audio:     audio,
+			}, true
+		}
 	}
 
 	if u.CallbackQuery == nil || u.CallbackQuery.Message == nil || strings.TrimSpace(u.CallbackQuery.Data) == "" {
@@ -370,9 +417,89 @@ func (u update) incomingMessage() (IncomingMessage, bool) {
 		ChatID:     u.CallbackQuery.Message.Chat.ID,
 		UserID:     u.CallbackQuery.From.ID,
 		Text:       u.CallbackQuery.Data,
+		Source:     "telegram_callback",
 		CallbackID: strings.TrimSpace(u.CallbackQuery.ID),
 		IsCallback: true,
 	}, true
+}
+
+func (m *tgMessage) audioAttachment() *AudioAttachment {
+	if m == nil {
+		return nil
+	}
+	if m.Voice != nil && strings.TrimSpace(m.Voice.FileID) != "" {
+		return &AudioAttachment{
+			Kind:     "voice",
+			FileID:   strings.TrimSpace(m.Voice.FileID),
+			FileName: "voice.ogg",
+			MimeType: strings.TrimSpace(m.Voice.MimeType),
+		}
+	}
+	if m.Audio != nil && strings.TrimSpace(m.Audio.FileID) != "" {
+		name := strings.TrimSpace(m.Audio.FileName)
+		if name == "" {
+			name = "audio"
+		}
+		return &AudioAttachment{
+			Kind:     "audio",
+			FileID:   strings.TrimSpace(m.Audio.FileID),
+			FileName: name,
+			MimeType: strings.TrimSpace(m.Audio.MimeType),
+		}
+	}
+	return nil
+}
+
+func (b *Bot) DownloadFile(ctx context.Context, fileID string) (DownloadedFile, error) {
+	var remote tgRemoteFile
+	if err := b.call(ctx, "/getFile", map[string]any{"file_id": strings.TrimSpace(fileID)}, &remote); err != nil {
+		return DownloadedFile{}, fmt.Errorf("get telegram file: %w", err)
+	}
+	if strings.TrimSpace(remote.FilePath) == "" {
+		return DownloadedFile{}, fmt.Errorf("get telegram file: empty file path")
+	}
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, b.fileURL(remote.FilePath), nil)
+	if err != nil {
+		return DownloadedFile{}, fmt.Errorf("create telegram file request: %w", err)
+	}
+
+	response, err := b.client.Do(request)
+	if err != nil {
+		return DownloadedFile{}, fmt.Errorf("download telegram file: %w", err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode >= http.StatusBadRequest {
+		content, _ := io.ReadAll(io.LimitReader(response.Body, 2048))
+		return DownloadedFile{}, fmt.Errorf("download telegram file returned %d: %s", response.StatusCode, strings.TrimSpace(string(content)))
+	}
+
+	suffix := filepath.Ext(remote.FilePath)
+	tempFile, err := os.CreateTemp("", "openlight-telegram-*"+suffix)
+	if err != nil {
+		return DownloadedFile{}, fmt.Errorf("create temp telegram file: %w", err)
+	}
+
+	cleanup := func() error {
+		return os.Remove(tempFile.Name())
+	}
+
+	if _, err := io.Copy(tempFile, response.Body); err != nil {
+		_ = tempFile.Close()
+		_ = cleanup()
+		return DownloadedFile{}, fmt.Errorf("write temp telegram file: %w", err)
+	}
+	if err := tempFile.Close(); err != nil {
+		_ = cleanup()
+		return DownloadedFile{}, fmt.Errorf("close temp telegram file: %w", err)
+	}
+
+	return DownloadedFile{
+		Path:     tempFile.Name(),
+		FileName: filepath.Base(remote.FilePath),
+		Cleanup:  cleanup,
+	}, nil
 }
 
 func webhookPath(rawURL string) (string, error) {

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -250,6 +251,114 @@ func TestBotPollAcknowledgesCallbackBeforeHandlerCompletes(t *testing.T) {
 
 	if err := <-errCh; err != nil && err != context.Canceled {
 		t.Fatalf("Poll returned error: %v", err)
+	}
+}
+
+func TestBotPollHandlesVoiceMessages(t *testing.T) {
+	t.Parallel()
+
+	var getUpdatesCalls int32
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	bot := NewBot(Options{
+		Token:       "TOKEN",
+		BaseURL:     "https://telegram.invalid",
+		Mode:        "polling",
+		PollTimeout: time.Second,
+	})
+	bot.client = &http.Client{
+		Timeout: time.Second,
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			switch r.URL.Path {
+			case "/botTOKEN/deleteWebhook":
+				return jsonResponse(map[string]any{"ok": true, "result": true}), nil
+			case "/botTOKEN/getUpdates":
+				call := atomic.AddInt32(&getUpdatesCalls, 1)
+				if call == 1 {
+					return jsonResponse(map[string]any{
+						"ok": true,
+						"result": []map[string]any{
+							{
+								"update_id": 1,
+								"message": map[string]any{
+									"message_id": 10,
+									"chat":       map[string]any{"id": 200},
+									"from":       map[string]any{"id": 100},
+									"voice": map[string]any{
+										"file_id":   "voice-1",
+										"mime_type": "audio/ogg",
+									},
+								},
+							},
+						},
+					}), nil
+				}
+				return jsonResponse(map[string]any{"ok": true, "result": []any{}}), nil
+			default:
+				t.Fatalf("unexpected path: %s", r.URL.Path)
+				return nil, nil
+			}
+		}),
+	}
+
+	err := bot.Poll(ctx, func(_ context.Context, message IncomingMessage) error {
+		if message.Audio == nil || message.Audio.FileID != "voice-1" {
+			t.Fatalf("unexpected voice message: %#v", message)
+		}
+		cancel()
+		return nil
+	})
+	if err != nil && err != context.Canceled {
+		t.Fatalf("Poll returned error: %v", err)
+	}
+}
+
+func TestBotDownloadFile(t *testing.T) {
+	t.Parallel()
+
+	bot := NewBot(Options{
+		Token:       "TOKEN",
+		BaseURL:     "https://telegram.invalid",
+		Mode:        "polling",
+		PollTimeout: time.Second,
+	})
+	bot.client = &http.Client{
+		Timeout: time.Second,
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			switch r.URL.Path {
+			case "/botTOKEN/getFile":
+				return jsonResponse(map[string]any{
+					"ok": true,
+					"result": map[string]any{
+						"file_path": "voice/file.ogg",
+					},
+				}), nil
+			case "/file/botTOKEN/voice/file.ogg":
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       io.NopCloser(strings.NewReader("voice-bytes")),
+					Header:     make(http.Header),
+				}, nil
+			default:
+				t.Fatalf("unexpected path: %s", r.URL.Path)
+				return nil, nil
+			}
+		}),
+	}
+
+	file, err := bot.DownloadFile(context.Background(), "voice-1")
+	if err != nil {
+		t.Fatalf("DownloadFile returned error: %v", err)
+	}
+	defer file.Cleanup()
+
+	content, err := os.ReadFile(file.Path)
+	if err != nil {
+		t.Fatalf("ReadFile returned error: %v", err)
+	}
+	if string(content) != "voice-bytes" {
+		t.Fatalf("unexpected downloaded content: %q", string(content))
 	}
 }
 

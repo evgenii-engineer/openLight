@@ -3,5 +3,7 @@ data/
 /openlight-agent
 /build/
 Makefile.local
+/agent.yaml
 configs/agent.rpi.yaml
+configs/agent.macmini.yaml
 configs/*.local.yaml

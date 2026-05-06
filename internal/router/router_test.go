@@ -319,6 +319,69 @@ func TestRouterExplicitNoteDeleteCommand(t *testing.T) {
 	}
 }
 
+func TestRouterRememberCommandRoutesToMemory(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "memory_add"})
+
+	decision, err := router.New(registry, nil).Route(context.Background(), "/remember that the Mac mini is primary")
+	if err != nil {
+		t.Fatalf("route returned error: %v", err)
+	}
+	if decision.SkillName != "memory_add" || decision.Args["text"] != "that the Mac mini is primary" {
+		t.Fatalf("unexpected decision: %#v", decision)
+	}
+}
+
+func TestRouterRuleBasedMemoryQueryParsing(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "memory_list"})
+
+	decision, err := router.New(registry, nil).Route(context.Background(), "what do you remember about my homelab")
+	if err != nil {
+		t.Fatalf("route returned error: %v", err)
+	}
+	if decision.Mode != router.ModeRule || decision.SkillName != "memory_list" {
+		t.Fatalf("unexpected decision: %#v", decision)
+	}
+	if decision.Args["query"] != "my homelab" {
+		t.Fatalf("unexpected memory query args: %#v", decision.Args)
+	}
+}
+
+func TestRouterFileSearchCommand(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "file_search"})
+
+	decision, err := router.New(registry, nil).Route(context.Background(), "/file_search OPENAI_API_KEY in ./configs")
+	if err != nil {
+		t.Fatalf("route returned error: %v", err)
+	}
+	if decision.SkillName != "file_search" || decision.Args["pattern"] != "OPENAI_API_KEY" || decision.Args["path"] != "./configs" {
+		t.Fatalf("unexpected decision: %#v", decision)
+	}
+}
+
+func TestRouterBrowserCommand(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "browser_title"})
+
+	decision, err := router.New(registry, nil).Route(context.Background(), "/browse title https://example.com")
+	if err != nil {
+		t.Fatalf("route returned error: %v", err)
+	}
+	if decision.SkillName != "browser_title" || decision.Args["url"] != "https://example.com" {
+		t.Fatalf("unexpected decision: %#v", decision)
+	}
+}
+
 func TestRouterExplicitUserAddCommand(t *testing.T) {
 	t.Parallel()
 

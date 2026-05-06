@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"openlight/internal/skills"
 )
@@ -35,6 +37,27 @@ type ReadResult struct {
 	Truncated bool
 }
 
+type SearchMatch struct {
+	Path    string
+	Line    int
+	Preview string
+}
+
+type SearchResult struct {
+	Query     string
+	Path      string
+	Matches   []SearchMatch
+	Truncated bool
+}
+
+type StatResult struct {
+	Path       string
+	Size       int64
+	IsDir      bool
+	Mode       string
+	ModifiedAt time.Time
+}
+
 type WriteResult struct {
 	Path    string
 	Bytes   int
@@ -47,20 +70,27 @@ type ReplaceResult struct {
 }
 
 type Manager interface {
+	Enabled() bool
 	Roots() []string
 	List(ctx context.Context, path string) (ListResult, error)
 	Read(ctx context.Context, path string) (ReadResult, error)
+	Search(ctx context.Context, pattern, path string) (SearchResult, error)
+	Stat(ctx context.Context, path string) (StatResult, error)
 	Write(ctx context.Context, path, content string) (WriteResult, error)
 	Replace(ctx context.Context, path, oldText, newText string) (ReplaceResult, error)
 }
 
 type LocalManager struct {
-	roots        []string
-	maxReadBytes int
-	listLimit    int
+	enabled            bool
+	roots              []string
+	maxReadBytes       int
+	listLimit          int
+	allowWrite         bool
+	redactSecrets      bool
+	allowSensitiveRead bool
 }
 
-func NewLocalManager(allowed []string, maxReadBytes, listLimit int) (*LocalManager, error) {
+func NewLocalManager(enabled bool, allowed []string, maxReadBytes, listLimit int, allowWrite, redactSecrets, allowSensitiveRead bool) (*LocalManager, error) {
 	roots := make([]string, 0, len(allowed))
 	for _, root := range allowed {
 		normalized, err := normalizeRoot(root)
@@ -76,10 +106,18 @@ func NewLocalManager(allowed []string, maxReadBytes, listLimit int) (*LocalManag
 	sort.Strings(roots)
 
 	return &LocalManager{
-		roots:        dedupeStrings(roots),
-		maxReadBytes: maxReadBytes,
-		listLimit:    listLimit,
+		enabled:            enabled,
+		roots:              dedupeStrings(roots),
+		maxReadBytes:       maxReadBytes,
+		listLimit:          listLimit,
+		allowWrite:         allowWrite,
+		redactSecrets:      redactSecrets,
+		allowSensitiveRead: allowSensitiveRead,
 	}, nil
+}
+
+func (m *LocalManager) Enabled() bool {
+	return m.enabled
 }
 
 func (m *LocalManager) Roots() []string {
@@ -87,6 +125,9 @@ func (m *LocalManager) Roots() []string {
 }
 
 func (m *LocalManager) List(ctx context.Context, path string) (ListResult, error) {
+	if err := m.ensureEnabled(); err != nil {
+		return ListResult{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		return ListResult{}, err
 	}
@@ -150,12 +191,18 @@ func (m *LocalManager) List(ctx context.Context, path string) (ListResult, error
 }
 
 func (m *LocalManager) Read(ctx context.Context, path string) (ReadResult, error) {
+	if err := m.ensureEnabled(); err != nil {
+		return ReadResult{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		return ReadResult{}, err
 	}
 
 	target, err := m.resolveExistingPath(path)
 	if err != nil {
+		return ReadResult{}, err
+	}
+	if err := m.ensureReadableFile(target); err != nil {
 		return ReadResult{}, err
 	}
 
@@ -188,14 +235,133 @@ func (m *LocalManager) Read(ctx context.Context, path string) (ReadResult, error
 		truncated = true
 	}
 
+	text := string(content)
+	if m.redactSecrets {
+		text = redactSecrets(text)
+	}
+
 	return ReadResult{
 		Path:      target,
-		Content:   string(content),
+		Content:   text,
 		Truncated: truncated,
 	}, nil
 }
 
+func (m *LocalManager) Search(ctx context.Context, pattern, path string) (SearchResult, error) {
+	if err := m.ensureEnabled(); err != nil {
+		return SearchResult{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return SearchResult{}, err
+	}
+
+	pattern = strings.TrimSpace(pattern)
+	if pattern == "" {
+		return SearchResult{}, fmt.Errorf("%w: search pattern is required", skills.ErrInvalidArguments)
+	}
+
+	roots, resultPath, err := m.searchRoots(path)
+	if err != nil {
+		return SearchResult{}, err
+	}
+
+	loweredPattern := strings.ToLower(pattern)
+	result := SearchResult{
+		Query: pattern,
+		Path:  resultPath,
+	}
+
+	for _, root := range roots {
+		walkErr := filepath.WalkDir(root, func(current string, entry fs.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return nil
+			}
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if len(result.Matches) >= m.listLimit {
+				result.Truncated = true
+				return fs.SkipAll
+			}
+			if entry.IsDir() {
+				return nil
+			}
+			if m.redactSecrets && !m.allowSensitiveRead && isSensitivePath(current) {
+				return nil
+			}
+
+			content, err := os.ReadFile(current)
+			if err != nil || bytes.IndexByte(content, 0) >= 0 {
+				return nil
+			}
+
+			lines := strings.Split(string(content), "\n")
+			for idx, line := range lines {
+				if !strings.Contains(strings.ToLower(line), loweredPattern) {
+					continue
+				}
+				preview := line
+				if m.redactSecrets {
+					preview = redactSecrets(preview)
+				}
+				result.Matches = append(result.Matches, SearchMatch{
+					Path:    current,
+					Line:    idx + 1,
+					Preview: truncatePreview(preview, m.maxReadBytes),
+				})
+				if len(result.Matches) >= m.listLimit {
+					result.Truncated = true
+					return fs.SkipAll
+				}
+			}
+
+			return nil
+		})
+		if walkErr != nil && !errors.Is(walkErr, fs.SkipAll) {
+			return SearchResult{}, fmt.Errorf("%w: %v", skills.ErrUnavailable, walkErr)
+		}
+		if result.Truncated {
+			break
+		}
+	}
+
+	return result, nil
+}
+
+func (m *LocalManager) Stat(ctx context.Context, path string) (StatResult, error) {
+	if err := m.ensureEnabled(); err != nil {
+		return StatResult{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return StatResult{}, err
+	}
+
+	target, err := m.resolveExistingPath(path)
+	if err != nil {
+		return StatResult{}, err
+	}
+
+	info, err := os.Stat(target)
+	if err != nil {
+		return StatResult{}, normalizePathError(path, err)
+	}
+
+	return StatResult{
+		Path:       target,
+		Size:       info.Size(),
+		IsDir:      info.IsDir(),
+		Mode:       info.Mode().String(),
+		ModifiedAt: info.ModTime(),
+	}, nil
+}
+
 func (m *LocalManager) Write(ctx context.Context, path, content string) (WriteResult, error) {
+	if err := m.ensureEnabled(); err != nil {
+		return WriteResult{}, err
+	}
+	if err := m.ensureWriteAllowed(); err != nil {
+		return WriteResult{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		return WriteResult{}, err
 	}
@@ -217,6 +383,12 @@ func (m *LocalManager) Write(ctx context.Context, path, content string) (WriteRe
 }
 
 func (m *LocalManager) Replace(ctx context.Context, path, oldText, newText string) (ReplaceResult, error) {
+	if err := m.ensureEnabled(); err != nil {
+		return ReplaceResult{}, err
+	}
+	if err := m.ensureWriteAllowed(); err != nil {
+		return ReplaceResult{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		return ReplaceResult{}, err
 	}
@@ -227,6 +399,9 @@ func (m *LocalManager) Replace(ctx context.Context, path, oldText, newText strin
 
 	target, err := m.resolveExistingPath(path)
 	if err != nil {
+		return ReplaceResult{}, err
+	}
+	if err := m.ensureReadableFile(target); err != nil {
 		return ReplaceResult{}, err
 	}
 
@@ -266,6 +441,51 @@ func (m *LocalManager) Replace(ctx context.Context, path, oldText, newText strin
 		Path:         target,
 		Replacements: replacements,
 	}, nil
+}
+
+func (m *LocalManager) ensureEnabled() error {
+	if m.enabled {
+		return nil
+	}
+	return skills.NewUserError(skills.ErrUnavailable, "filesystem is disabled")
+}
+
+func (m *LocalManager) ensureWriteAllowed() error {
+	if m.allowWrite {
+		return nil
+	}
+	return skills.NewUserError(skills.ErrAccessDenied, "filesystem write is disabled")
+}
+
+func (m *LocalManager) ensureReadableFile(path string) error {
+	if m.redactSecrets && !m.allowSensitiveRead && isSensitivePath(path) {
+		return skills.NewUserError(skills.ErrAccessDenied, "reading sensitive files is disabled")
+	}
+	return nil
+}
+
+func (m *LocalManager) searchRoots(path string) ([]string, string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		if len(m.roots) == 0 {
+			return nil, "", fmt.Errorf("%w: no allowed roots configured", skills.ErrNotFound)
+		}
+		return append([]string(nil), m.roots...), strings.Join(m.roots, ", "), nil
+	}
+
+	target, err := m.resolveExistingPath(path)
+	if err != nil {
+		return nil, "", err
+	}
+
+	info, err := os.Stat(target)
+	if err != nil {
+		return nil, "", normalizePathError(path, err)
+	}
+	if !info.IsDir() {
+		return []string{target}, target, nil
+	}
+	return []string{target}, target, nil
 }
 
 func (m *LocalManager) resolveExistingPath(path string) (string, error) {
@@ -359,7 +579,12 @@ func normalizeRoot(root string) (string, error) {
 		return "", nil
 	}
 
-	absolute, err := filepath.Abs(root)
+	expanded, err := expandPath(root)
+	if err != nil {
+		return "", fmt.Errorf("resolve file root %q: %w", root, err)
+	}
+
+	absolute, err := filepath.Abs(expanded)
 	if err != nil {
 		return "", fmt.Errorf("resolve file root %q: %w", root, err)
 	}
@@ -381,11 +606,33 @@ func resolveInputPath(path string) (string, error) {
 		return "", fmt.Errorf("%w: file path is required", skills.ErrInvalidArguments)
 	}
 
-	absolute, err := filepath.Abs(path)
+	expanded, err := expandPath(path)
+	if err != nil {
+		return "", fmt.Errorf("%w: resolve path %q: %v", skills.ErrInvalidArguments, path, err)
+	}
+
+	absolute, err := filepath.Abs(expanded)
 	if err != nil {
 		return "", fmt.Errorf("%w: resolve path %q: %v", skills.ErrInvalidArguments, path, err)
 	}
 	return filepath.Clean(absolute), nil
+}
+
+func expandPath(path string) (string, error) {
+	if path == "" || path[0] != '~' {
+		return path, nil
+	}
+	if path == "~" || strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		if path == "~" {
+			return home, nil
+		}
+		return filepath.Join(home, strings.TrimPrefix(path, "~/")), nil
+	}
+	return "", fmt.Errorf("unsupported home path %q", path)
 }
 
 func normalizePathError(path string, err error) error {
@@ -410,4 +657,12 @@ func dedupeStrings(values []string) []string {
 		result = append(result, value)
 	}
 	return result
+}
+
+func truncatePreview(value string, max int) string {
+	value = strings.TrimSpace(value)
+	if max <= 0 || len(value) <= max {
+		return value
+	}
+	return strings.TrimSpace(value[:max]) + "..."
 }
