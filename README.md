@@ -401,6 +401,23 @@ go run ./cmd/cli -config ./agent.yaml -smoke-all
 - Running inside Docker does not automatically expose host services or files. You need an explicit config plus the right mounts or sockets.
 - The bundled Docker path is optimized for local Ollama. If you want OpenAI or another remote provider in Docker, use a mounted config and, if needed, extend the Compose environment.
 
+## Regression and smoke checks
+
+openLight uses a risk-based regression matrix instead of trying to test every
+feature in every possible combination. The full matrix lives in
+[docs/REGRESSION.md](./docs/REGRESSION.md).
+
+| Level | When to run | Command | What it covers |
+|---|---|---|---|
+| P0 | Every commit | `make test` | Fast deterministic unit/router/skill/config/storage/LLM-safety checks |
+| P0 smoke | Every commit or before push | `make smoke-cli` | Local CLI flows against `configs/agent.test.yaml` (no real Telegram, no LLM, no Docker) |
+| P1 | Before release or large feature merge | `make regression` | `make test` + `make smoke-cli` |
+| P2 | On a real host, opt-in | `make smoke-macmini SSH_HOST=…` or `make smoke-rpi PI_HOST=…` | Host dependencies, service manager, Telegram, Ollama/browser/voice |
+| Manual | After deployment | 5-minute Telegram sanity check | `/start`, `/skills`, `/status`, service logs, browser check, voice if enabled |
+
+CI runs `make test`. CI does **not** run P2 (those targets SSH into a real
+host).
+
 ## Contributing
 
 Small, focused contributions are the best fit here.
@@ -408,16 +425,9 @@ Small, focused contributions are the best fit here.
 Before opening a PR:
 
 ```bash
-make test
-```
-
-Optional real Ollama end-to-end run:
-
-```bash
-make ollama-up
-make ollama-pull
-make test-e2e-ollama
-make ollama-down
+make test          # P0
+make smoke-cli     # P0 deterministic CLI smoke
+make regression    # P1: both of the above, before release-shaped changes
 ```
 
 For deeper project details, see [ARCHITECTURE.md](./ARCHITECTURE.md) and [CHANGELOG.md](./CHANGELOG.md).

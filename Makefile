@@ -42,7 +42,7 @@ GOOS ?= linux
 GOARCH ?= arm64
 CGO_ENABLED ?= 0
 
-.PHONY: build build-rpi build-cli build-rpi-cli build-macmini build-macmini-cli init-rpi-config init-macmini-config check-config remote-prepare remote-sync-repo push-config push-browser-agent remote-build remote-install-launchd remote-restart remote-stop remote-status remote-health deploy-rpi-config deploy-rpi deploy-rpi-cli deploy-rpi-service deploy-rpi-all deploy-rpi-full deploy-macmini-agent deploy-macmini-config deploy-macmini deploy-macmini-cli deploy-macmini-service deploy-macmini-all deploy-macmini-full deploy-macmini-deps-host bootstrap-macmini deploy-and-smoke-rpi deploy-and-smoke-rpi-ollama deploy-and-smoke-rpi-openai deploy-and-smoke-macmini deploy-and-smoke-macmini-ollama deploy-and-smoke-macmini-openai smoke-rpi-cli smoke-rpi-cli-ollama smoke-rpi-cli-openai smoke-macmini-cli smoke-macmini-cli-ollama smoke-macmini-cli-openai logs-macmini restart-macmini status-macmini stop-macmini test test-e2e-ollama clean ollama-up ollama-pull ollama-down docker-build docker-buildx docker-push install-macmini-deps install-voice-deps install-browser-deps install-playwright install-vision-deps install-ocr-deps
+.PHONY: build build-rpi build-cli build-rpi-cli build-macmini build-macmini-cli init-rpi-config init-macmini-config check-config remote-prepare remote-sync-repo push-config push-browser-agent remote-build remote-install-launchd remote-restart remote-stop remote-status remote-health deploy-rpi-config deploy-rpi deploy-rpi-cli deploy-rpi-service deploy-rpi-all deploy-rpi-full deploy-macmini-agent deploy-macmini-config deploy-macmini deploy-macmini-cli deploy-macmini-service deploy-macmini-all deploy-macmini-full deploy-macmini-deps-host bootstrap-macmini deploy-and-smoke-rpi deploy-and-smoke-rpi-ollama deploy-and-smoke-rpi-openai deploy-and-smoke-macmini deploy-and-smoke-macmini-ollama deploy-and-smoke-macmini-openai smoke-rpi-cli smoke-rpi-cli-ollama smoke-rpi-cli-openai smoke-macmini-cli smoke-macmini-cli-ollama smoke-macmini-cli-openai logs-macmini restart-macmini status-macmini stop-macmini test smoke-cli regression smoke-macmini smoke-rpi clean ollama-up ollama-pull ollama-down docker-build docker-buildx docker-push install-macmini-deps install-voice-deps install-browser-deps install-playwright install-vision-deps install-ocr-deps
 
 OLLAMA_COMPOSE_FILE ?= deployments/docker/ollama-compose.yaml
 OLLAMA_ENDPOINT ?= http://127.0.0.1:11434
@@ -356,8 +356,26 @@ deploy-and-smoke-macmini-openai:
 test:
 	GOCACHE=/tmp/go-build GOSUMDB=off go test ./...
 
-test-e2e-ollama:
-	OPENLIGHT_E2E_OLLAMA=1 OPENLIGHT_E2E_OLLAMA_ENDPOINT=$(OLLAMA_ENDPOINT) OPENLIGHT_E2E_OLLAMA_MODEL=$(OLLAMA_MODEL) GOCACHE=/tmp/go-build GOSUMDB=off go test ./internal/core -run 'TestAgentRunPollingEndToEndWithRealOllama' -count=1 -v
+# P0 smoke: deterministic CLI checks against configs/agent.test.yaml. No real
+# Telegram, no LLM, no Docker, no host integrations. Safe to run on every
+# commit. Writes a sandboxed sqlite DB under ./data/.
+smoke-cli:
+	@mkdir -p ./data
+	GOCACHE=/tmp/go-build GOSUMDB=off go run ./cmd/cli -config ./configs/agent.test.yaml -exec "skills"
+	GOCACHE=/tmp/go-build GOSUMDB=off go run ./cmd/cli -config ./configs/agent.test.yaml -exec "watch list"
+	GOCACHE=/tmp/go-build GOSUMDB=off go run ./cmd/cli -config ./configs/agent.test.yaml -exec "notes"
+
+# P1 regression: full unit/integration suite plus deterministic CLI smoke.
+# Run before release or large feature merges. Still requires no external
+# services.
+regression: test smoke-cli
+
+# P2 real-host smoke targets. These are opt-in: they SSH into a real Mac mini
+# or Raspberry Pi and exercise the deployed CLI binary. They are NOT run by
+# `make test` or `make regression`. Set SSH_HOST / PI_HOST appropriately.
+smoke-macmini: smoke-macmini-cli
+
+smoke-rpi: smoke-rpi-cli
 
 ollama-up:
 	docker compose -f $(OLLAMA_COMPOSE_FILE) up -d ollama

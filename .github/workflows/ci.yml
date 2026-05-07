@@ -3,7 +3,7 @@ name: ci
 on:
   push:
     branches:
-      - "**"
+      - master
   pull_request:
 
 permissions:
@@ -24,8 +24,11 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Run unit tests
+      - name: Run unit tests (P0)
         run: make test
+
+      - name: Run CLI smoke (P0)
+        run: make smoke-cli
 
   docker-build:
     runs-on: ubuntu-latest
