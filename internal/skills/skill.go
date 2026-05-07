@@ -25,9 +25,30 @@ type Input struct {
 	Source  string
 }
 
+// AttachmentKind enumerates the supported transport-level attachment shapes.
+// "photo" gets rendered inline by clients that support it (Telegram squashes
+// non-image files); "document" is used for arbitrary binaries we still want to
+// deliver alongside the text.
+type AttachmentKind string
+
+const (
+	AttachmentPhoto    AttachmentKind = "photo"
+	AttachmentDocument AttachmentKind = "document"
+)
+
+// Attachment is a file the skill wants delivered alongside its text reply.
+// The path must point at a file readable by the agent process; the caller is
+// responsible for not deleting it before delivery completes.
+type Attachment struct {
+	Path    string
+	Caption string
+	Kind    AttachmentKind
+}
+
 type Result struct {
-	Text    string
-	Buttons [][]telegram.Button
+	Text        string
+	Buttons     [][]telegram.Button
+	Attachments []Attachment
 }
 
 type Skill interface {

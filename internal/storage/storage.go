@@ -18,6 +18,11 @@ type WatchIncidentListOptions struct {
 	Limit   int
 }
 
+type VisualWatchListOptions struct {
+	ChatID      int64
+	EnabledOnly bool
+}
+
 type Repository interface {
 	SaveMessage(ctx context.Context, message models.Message) error
 	ListMessagesByChat(ctx context.Context, chatID int64, limit int) ([]models.Message, error)
@@ -43,5 +48,10 @@ type Repository interface {
 	UpdateWatchIncident(ctx context.Context, incident models.WatchIncident) error
 	SetSetting(ctx context.Context, key, value string) error
 	GetSetting(ctx context.Context, key string) (models.Setting, bool, error)
+	CreateVisualWatch(ctx context.Context, watch models.VisualWatch) (models.VisualWatch, error)
+	GetVisualWatch(ctx context.Context, id int64) (models.VisualWatch, bool, error)
+	ListVisualWatches(ctx context.Context, options VisualWatchListOptions) ([]models.VisualWatch, error)
+	UpdateVisualWatch(ctx context.Context, watch models.VisualWatch) error
+	DeleteVisualWatch(ctx context.Context, id int64) error
 	Close() error
 }

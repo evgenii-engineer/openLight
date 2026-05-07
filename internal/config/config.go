@@ -32,6 +32,9 @@ type Config struct {
 	Memory     MemoryConfig    `yaml:"memory"`
 	Voice      VoiceConfig     `yaml:"voice"`
 	Browser    BrowserConfig   `yaml:"browser"`
+	Vision      VisionConfig      `yaml:"vision"`
+	OCR         OCRConfig         `yaml:"ocr"`
+	VisualWatch VisualWatchConfig `yaml:"visual_watch"`
 	Agent      AgentConfig     `yaml:"agent"`
 	Log        LogConfig       `yaml:"log"`
 }
@@ -182,6 +185,37 @@ type BrowserConfig struct {
 	TimeoutSeconds      int      `yaml:"timeout_seconds"`
 }
 
+type VisionConfig struct {
+	Enabled         bool          `yaml:"enabled"`
+	Provider        string        `yaml:"provider"`
+	Endpoint        string        `yaml:"endpoint"`
+	Model           string        `yaml:"model"`
+	APIKey          string        `yaml:"api_key"`
+	MaxImageSizeMB  int           `yaml:"max_image_size_mb"`
+	Timeout         time.Duration `yaml:"timeout"`
+	DefaultPrompt   string        `yaml:"default_prompt"`
+	MaxResponseChars int          `yaml:"max_response_chars"`
+}
+
+type OCRConfig struct {
+	Enabled        bool          `yaml:"enabled"`
+	Provider       string        `yaml:"provider"`
+	BinaryPath     string        `yaml:"binary_path"`
+	Languages      []string      `yaml:"languages"`
+	Timeout        time.Duration `yaml:"timeout"`
+	MaxImageSizeMB int           `yaml:"max_image_size_mb"`
+}
+
+type VisualWatchConfig struct {
+	Enabled          bool          `yaml:"enabled"`
+	BaselinesDir     string        `yaml:"baselines_dir"`
+	PollInterval     time.Duration `yaml:"poll_interval"`
+	DefaultInterval  time.Duration `yaml:"default_interval"`
+	DefaultThreshold float64       `yaml:"default_threshold"`
+	DefaultCooldown  time.Duration `yaml:"default_cooldown"`
+	RequestTimeout   time.Duration `yaml:"request_timeout"`
+}
+
 type AgentConfig struct {
 	RequestTimeout time.Duration `yaml:"request_timeout"`
 }
@@ -278,6 +312,29 @@ func defaultConfig() Config {
 			ArtifactsDir:   "./data/browser-artifacts",
 			TimeoutSeconds: 20,
 		},
+		Vision: VisionConfig{
+			Provider:         "ollama",
+			Model:            "qwen2.5vl:3b",
+			MaxImageSizeMB:   10,
+			Timeout:          30 * time.Second,
+			DefaultPrompt:    "Describe this image in concise plain English.",
+			MaxResponseChars: 1500,
+		},
+		OCR: OCRConfig{
+			Provider:       "tesseract",
+			BinaryPath:     "tesseract",
+			Languages:      []string{"eng"},
+			Timeout:        20 * time.Second,
+			MaxImageSizeMB: 10,
+		},
+		VisualWatch: VisualWatchConfig{
+			BaselinesDir:     "./data/visual-watch",
+			PollInterval:     30 * time.Second,
+			DefaultInterval:  15 * time.Minute,
+			DefaultThreshold: 0.15,
+			DefaultCooldown:  30 * time.Minute,
+			RequestTimeout:   60 * time.Second,
+		},
 		Agent: AgentConfig{
 			RequestTimeout: 5 * time.Second,
 		},
@@ -331,6 +388,16 @@ func (c Config) Validate() error {
 		return errors.New("browser.timeout_seconds must be greater than zero")
 	case c.Browser.Enabled && !c.Browser.AllowAllDomains && len(c.Browser.AllowedDomains) == 0:
 		return errors.New("browser.allowed_domains must not be empty when browser.enabled is true unless browser.allow_all_domains is true")
+	case c.Vision.Enabled && strings.TrimSpace(c.Vision.Provider) == "":
+		return errors.New("vision.provider is required when vision.enabled is true")
+	case c.Vision.Enabled && c.Vision.MaxImageSizeMB <= 0:
+		return errors.New("vision.max_image_size_mb must be greater than zero when vision.enabled is true")
+	case c.Vision.Enabled && c.Vision.Timeout <= 0:
+		return errors.New("vision.timeout must be greater than zero when vision.enabled is true")
+	case c.OCR.Enabled && strings.TrimSpace(c.OCR.Provider) == "":
+		return errors.New("ocr.provider is required when ocr.enabled is true")
+	case c.OCR.Enabled && c.OCR.Timeout <= 0:
+		return errors.New("ocr.timeout must be greater than zero when ocr.enabled is true")
 	case c.Workbench.Enabled && strings.TrimSpace(c.Workbench.WorkspaceDir) == "":
 		return errors.New("workbench.workspace_dir is required when workbench.enabled is true")
 	case c.Workbench.MaxOutputBytes <= 0:
@@ -597,6 +664,60 @@ func overrideFromEnv(cfg *Config) {
 	if value := strings.TrimSpace(os.Getenv("BROWSER_TIMEOUT_SECONDS")); value != "" {
 		cfg.Browser.TimeoutSeconds = parseInt(value, cfg.Browser.TimeoutSeconds)
 	}
+	if value := strings.TrimSpace(os.Getenv("VISION_ENABLED")); value != "" {
+		cfg.Vision.Enabled = parseBool(value)
+	}
+	if value := strings.TrimSpace(os.Getenv("VISION_PROVIDER")); value != "" {
+		cfg.Vision.Provider = value
+	}
+	if value := strings.TrimSpace(os.Getenv("VISION_ENDPOINT")); value != "" {
+		cfg.Vision.Endpoint = value
+	}
+	if value := strings.TrimSpace(os.Getenv("VISION_MODEL")); value != "" {
+		cfg.Vision.Model = value
+	}
+	if value := strings.TrimSpace(os.Getenv("VISION_API_KEY")); value != "" {
+		cfg.Vision.APIKey = value
+	}
+	if value := strings.TrimSpace(os.Getenv("VISION_TIMEOUT")); value != "" {
+		cfg.Vision.Timeout = parseDuration(value, cfg.Vision.Timeout)
+	}
+	if value := strings.TrimSpace(os.Getenv("VISION_MAX_IMAGE_MB")); value != "" {
+		cfg.Vision.MaxImageSizeMB = parseInt(value, cfg.Vision.MaxImageSizeMB)
+	}
+	if value := strings.TrimSpace(os.Getenv("OCR_ENABLED")); value != "" {
+		cfg.OCR.Enabled = parseBool(value)
+	}
+	if value := strings.TrimSpace(os.Getenv("OCR_PROVIDER")); value != "" {
+		cfg.OCR.Provider = value
+	}
+	if value := strings.TrimSpace(os.Getenv("OCR_BINARY_PATH")); value != "" {
+		cfg.OCR.BinaryPath = value
+	}
+	if value := parseStringListEnv("OCR_LANGUAGES"); value != nil {
+		cfg.OCR.Languages = value
+	}
+	if value := strings.TrimSpace(os.Getenv("OCR_TIMEOUT")); value != "" {
+		cfg.OCR.Timeout = parseDuration(value, cfg.OCR.Timeout)
+	}
+	if value := strings.TrimSpace(os.Getenv("VISUAL_WATCH_ENABLED")); value != "" {
+		cfg.VisualWatch.Enabled = parseBool(value)
+	}
+	if value := strings.TrimSpace(os.Getenv("VISUAL_WATCH_BASELINES_DIR")); value != "" {
+		cfg.VisualWatch.BaselinesDir = value
+	}
+	if value := strings.TrimSpace(os.Getenv("VISUAL_WATCH_POLL_INTERVAL")); value != "" {
+		cfg.VisualWatch.PollInterval = parseDuration(value, cfg.VisualWatch.PollInterval)
+	}
+	if value := strings.TrimSpace(os.Getenv("VISUAL_WATCH_DEFAULT_INTERVAL")); value != "" {
+		cfg.VisualWatch.DefaultInterval = parseDuration(value, cfg.VisualWatch.DefaultInterval)
+	}
+	if value := strings.TrimSpace(os.Getenv("VISUAL_WATCH_DEFAULT_THRESHOLD")); value != "" {
+		cfg.VisualWatch.DefaultThreshold = parseFloat(value, cfg.VisualWatch.DefaultThreshold)
+	}
+	if value := strings.TrimSpace(os.Getenv("VISUAL_WATCH_DEFAULT_COOLDOWN")); value != "" {
+		cfg.VisualWatch.DefaultCooldown = parseDuration(value, cfg.VisualWatch.DefaultCooldown)
+	}
 	if value := strings.TrimSpace(os.Getenv("CHAT_HISTORY_LIMIT")); value != "" {
 		cfg.Chat.HistoryLimit = parseInt(value, cfg.Chat.HistoryLimit)
 	}
@@ -683,6 +804,71 @@ func normalize(cfg *Config) {
 	}
 	if cfg.Browser.TimeoutSeconds <= 0 {
 		cfg.Browser.TimeoutSeconds = 20
+	}
+
+	cfg.Vision.Provider = strings.ToLower(strings.TrimSpace(cfg.Vision.Provider))
+	if cfg.Vision.Provider == "" {
+		cfg.Vision.Provider = "ollama"
+	}
+	cfg.Vision.Endpoint = strings.TrimSpace(cfg.Vision.Endpoint)
+	cfg.Vision.Model = strings.TrimSpace(cfg.Vision.Model)
+	cfg.Vision.APIKey = strings.TrimSpace(cfg.Vision.APIKey)
+	cfg.Vision.DefaultPrompt = strings.TrimSpace(cfg.Vision.DefaultPrompt)
+	if cfg.Vision.DefaultPrompt == "" {
+		cfg.Vision.DefaultPrompt = "Describe this image in concise plain English."
+	}
+	if cfg.Vision.MaxImageSizeMB <= 0 {
+		cfg.Vision.MaxImageSizeMB = 10
+	}
+	if cfg.Vision.Timeout <= 0 {
+		cfg.Vision.Timeout = 30 * time.Second
+	}
+	if cfg.Vision.MaxResponseChars <= 0 {
+		cfg.Vision.MaxResponseChars = 1500
+	}
+
+	cfg.OCR.Provider = strings.ToLower(strings.TrimSpace(cfg.OCR.Provider))
+	if cfg.OCR.Provider == "" {
+		cfg.OCR.Provider = "tesseract"
+	}
+	cfg.OCR.BinaryPath = strings.TrimSpace(cfg.OCR.BinaryPath)
+	if cfg.OCR.BinaryPath == "" {
+		switch cfg.OCR.Provider {
+		case "tesseract":
+			cfg.OCR.BinaryPath = "tesseract"
+		case "apple_vision":
+			cfg.OCR.BinaryPath = "shortcuts"
+		}
+	}
+	cfg.OCR.Languages = normalizeStrings(cfg.OCR.Languages)
+	if len(cfg.OCR.Languages) == 0 && cfg.OCR.Provider == "tesseract" {
+		cfg.OCR.Languages = []string{"eng"}
+	}
+	if cfg.OCR.Timeout <= 0 {
+		cfg.OCR.Timeout = 20 * time.Second
+	}
+	if cfg.OCR.MaxImageSizeMB <= 0 {
+		cfg.OCR.MaxImageSizeMB = 10
+	}
+
+	cfg.VisualWatch.BaselinesDir = strings.TrimSpace(cfg.VisualWatch.BaselinesDir)
+	if cfg.VisualWatch.BaselinesDir == "" {
+		cfg.VisualWatch.BaselinesDir = "./data/visual-watch"
+	}
+	if cfg.VisualWatch.PollInterval <= 0 {
+		cfg.VisualWatch.PollInterval = 30 * time.Second
+	}
+	if cfg.VisualWatch.DefaultInterval <= 0 {
+		cfg.VisualWatch.DefaultInterval = 15 * time.Minute
+	}
+	if cfg.VisualWatch.DefaultThreshold <= 0 {
+		cfg.VisualWatch.DefaultThreshold = 0.15
+	}
+	if cfg.VisualWatch.DefaultCooldown <= 0 {
+		cfg.VisualWatch.DefaultCooldown = 30 * time.Minute
+	}
+	if cfg.VisualWatch.RequestTimeout <= 0 {
+		cfg.VisualWatch.RequestTimeout = 60 * time.Second
 	}
 
 	cfg.LLM.Profile = strings.ToLower(strings.TrimSpace(cfg.LLM.Profile))

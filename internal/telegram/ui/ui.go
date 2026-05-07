@@ -114,6 +114,57 @@ func (u *UI) HasPendingInput(chatID int64) bool {
 	return ok
 }
 
+// StartSkillInput starts a conversational input flow for skills whose
+// UIDescriptor has fields that aren't filled by the supplied args. Used
+// by the agent when the user types a bare slash command (`/vision_analyze`)
+// — instead of the skill failing with "argument required", the agent hands
+// off here and the user gets the same "Image path?" prompt with Cancel
+// button as when tapping the skill in the menu.
+//
+// Returns (true, nil) when the UI took over (caller must NOT execute the
+// skill); (false, nil) when there's nothing to ask the user (caller should
+// execute as usual).
+func (u *UI) StartSkillInput(ctx context.Context, chatID, userID int64, skill skills.Skill, args map[string]string) (bool, error) {
+	if skill == nil {
+		return false, nil
+	}
+	hints := skills.DescribeUI(skill)
+	if len(hints.Inputs) == 0 {
+		return false, nil
+	}
+	if len(missingInputs(hints, args)) == 0 {
+		return false, nil
+	}
+
+	def := skill.Definition()
+	flow := u.sessions.StartInput(chatID, def.Name, "g:"+def.Group.Key)
+	flow.Collected = copyArgs(args)
+	flow.StepIndex = 0
+	for _, field := range hints.Inputs {
+		if value, ok := flow.Collected[field.Name]; ok && strings.TrimSpace(value) != "" {
+			flow.StepIndex++
+			continue
+		}
+		break
+	}
+	if flow.StepIndex >= len(hints.Inputs) {
+		// All fields are present after all (mismatch between zero-value
+		// and missingInputs accounting). Caller should run the skill.
+		u.sessions.ClearInput(chatID)
+		return false, nil
+	}
+	field := hints.Inputs[flow.StepIndex]
+	cancel := keyboards.CancelOnly(callback.Action{
+		Kind:   callback.KindBack,
+		Target: "g",
+		Extra:  def.Group.Key,
+	})
+	if err := u.transport.SendTextWithButtons(ctx, chatID, prompt(field), cancel); err != nil {
+		return true, fmt.Errorf("send skill input prompt: %w", err)
+	}
+	return true, nil
+}
+
 // CancelPending clears any in-progress conversational input flow for the chat.
 // Used when the user taps a reply-keyboard label or sends /menu — those should
 // always escape an active flow, not be consumed as field values.

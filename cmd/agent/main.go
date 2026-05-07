@@ -72,6 +72,9 @@ func run() error {
 	if runtime.Watch != nil {
 		runtime.Watch.SetNotifier(bot)
 	}
+	if runtime.VisualWatch != nil {
+		runtime.VisualWatch.SetNotifier(visualWatchNotifier{bot: bot})
+	}
 	agent := core.NewAgent(
 		bot,
 		auth.New(cfg.Auth.AllowedUserIDs, cfg.Auth.AllowedChatIDs),
@@ -103,12 +106,27 @@ func run() error {
 			cfg.Voice.ReplyWithTranscript,
 		)
 	}
+	if cfg.Vision.Enabled || cfg.OCR.Enabled {
+		agent.SetImageInbox(core.NewImageInbox(runtime.Registry, core.ImageInboxOptions{
+			VisionEnabled: cfg.Vision.Enabled,
+			OCREnabled:    cfg.OCR.Enabled,
+			DefaultPrompt: cfg.Vision.DefaultPrompt,
+		}))
+	}
 
 	var watchErrCh chan error
 	if cfg.Watch.Enabled && runtime.Watch != nil {
 		watchErrCh = make(chan error, 1)
 		go func() {
 			watchErrCh <- runtime.Watch.Run(runCtx)
+		}()
+	}
+
+	var visualWatchErrCh chan error
+	if cfg.VisualWatch.Enabled && runtime.VisualWatch != nil {
+		visualWatchErrCh = make(chan error, 1)
+		go func() {
+			visualWatchErrCh <- runtime.VisualWatch.Run(runCtx)
 		}()
 	}
 
@@ -129,9 +147,31 @@ func run() error {
 			return watchErr
 		}
 	}
+	if visualWatchErrCh != nil {
+		if vwErr := <-visualWatchErrCh; !isExpectedShutdown(vwErr) {
+			return vwErr
+		}
+	}
 
 	logger.Info("agent stopped")
 	return nil
+}
+
+// visualWatchNotifier adapts the Telegram bot to the visualwatch.Notifier
+// interface. It sends the screenshot as a photo with the alert text as the
+// caption and falls back to a plain text reply if the file is missing.
+type visualWatchNotifier struct {
+	bot *telegram.Bot
+}
+
+func (n visualWatchNotifier) SendVisualAlert(ctx context.Context, chatID int64, text, screenshotPath string) error {
+	if strings.TrimSpace(screenshotPath) == "" {
+		return n.bot.SendText(ctx, chatID, text)
+	}
+	if _, err := os.Stat(screenshotPath); err != nil {
+		return n.bot.SendText(ctx, chatID, text)
+	}
+	return n.bot.SendPhoto(ctx, chatID, screenshotPath, text)
 }
 
 func isExpectedShutdown(err error) bool {

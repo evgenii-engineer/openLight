@@ -7,11 +7,14 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -24,6 +27,7 @@ type IncomingMessage struct {
 	Text       string
 	Source     string
 	Audio      *AudioAttachment
+	Image      *ImageAttachment
 	CallbackID string
 	IsCallback bool
 }
@@ -33,6 +37,17 @@ type AudioAttachment struct {
 	FileID   string
 	FileName string
 	MimeType string
+}
+
+// ImageAttachment captures the metadata we need to download a photo or image
+// document the user sent. Captions are surfaced separately on
+// IncomingMessage.Text so existing routing keeps working.
+type ImageAttachment struct {
+	Kind     string // "photo" for inline photos, "document" for image attachments
+	FileID   string
+	FileName string
+	MimeType string
+	Caption  string
 }
 
 type DownloadedFile struct {
@@ -190,6 +205,111 @@ func (b *Bot) SendText(ctx context.Context, chatID int64, text string) error {
 	return nil
 }
 
+// SendPhoto uploads the file at path as an inline photo. Caption is optional
+// and will be truncated to Telegram's 1024-character limit.
+func (b *Bot) SendPhoto(ctx context.Context, chatID int64, path, caption string) error {
+	return b.uploadFile(ctx, "/sendPhoto", "photo", chatID, path, caption)
+}
+
+// SendDocument uploads the file at path as a generic document. Useful when
+// the file is not an image or when the caller wants Telegram to preserve the
+// original filename.
+func (b *Bot) SendDocument(ctx context.Context, chatID int64, path, caption string) error {
+	return b.uploadFile(ctx, "/sendDocument", "document", chatID, path, caption)
+}
+
+func (b *Bot) uploadFile(ctx context.Context, method, field string, chatID int64, path, caption string) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return fmt.Errorf("telegram %s: file path is required", method)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("telegram %s: open %s: %w", method, path, err)
+	}
+	defer file.Close()
+
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+	if err := writer.WriteField("chat_id", strconv.FormatInt(chatID, 10)); err != nil {
+		return fmt.Errorf("telegram %s: write chat_id: %w", method, err)
+	}
+	if trimmed := strings.TrimSpace(caption); trimmed != "" {
+		if err := writer.WriteField("caption", truncateCaption(trimmed)); err != nil {
+			return fmt.Errorf("telegram %s: write caption: %w", method, err)
+		}
+	}
+
+	header := make(textproto.MIMEHeader)
+	header.Set("Content-Disposition", fmt.Sprintf(`form-data; name=%q; filename=%q`, field, filepath.Base(path)))
+	if mimeType := guessFileMime(path); mimeType != "" {
+		header.Set("Content-Type", mimeType)
+	}
+	part, err := writer.CreatePart(header)
+	if err != nil {
+		return fmt.Errorf("telegram %s: create part: %w", method, err)
+	}
+	if _, err := io.Copy(part, file); err != nil {
+		return fmt.Errorf("telegram %s: copy file: %w", method, err)
+	}
+	if err := writer.Close(); err != nil {
+		return fmt.Errorf("telegram %s: close writer: %w", method, err)
+	}
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, b.apiURL(method), &buf)
+	if err != nil {
+		return fmt.Errorf("telegram %s: build request: %w", method, err)
+	}
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+
+	response, err := b.client.Do(request)
+	if err != nil {
+		return fmt.Errorf("telegram %s: %w", method, err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode >= http.StatusBadRequest {
+		text, _ := io.ReadAll(io.LimitReader(response.Body, 2048))
+		return fmt.Errorf("telegram %s returned %d: %s", method, response.StatusCode, strings.TrimSpace(string(text)))
+	}
+	var decoded apiResponse
+	if err := json.NewDecoder(response.Body).Decode(&decoded); err != nil {
+		return fmt.Errorf("telegram %s: decode response: %w", method, err)
+	}
+	if !decoded.OK {
+		if strings.TrimSpace(decoded.Description) == "" {
+			return fmt.Errorf("telegram %s returned ok=false", method)
+		}
+		return fmt.Errorf("telegram %s returned ok=false: %s", method, strings.TrimSpace(decoded.Description))
+	}
+	return nil
+}
+
+func truncateCaption(caption string) string {
+	const maxCaptionRunes = 1024
+	runes := []rune(caption)
+	if len(runes) <= maxCaptionRunes {
+		return caption
+	}
+	return string(runes[:maxCaptionRunes-1]) + "…"
+}
+
+func guessFileMime(path string) string {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".png":
+		return "image/png"
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".gif":
+		return "image/gif"
+	case ".webp":
+		return "image/webp"
+	case ".pdf":
+		return "application/pdf"
+	default:
+		return ""
+	}
+}
+
 func (b *Bot) SendTextWithButtons(ctx context.Context, chatID int64, text string, buttons [][]Button) error {
 	chunks := splitTelegramMessage(text)
 	for idx, chunk := range chunks {
@@ -271,13 +391,22 @@ type update struct {
 }
 
 type tgMessage struct {
-	MessageID int64   `json:"message_id"`
-	Text      string  `json:"text"`
-	Caption   string  `json:"caption"`
-	Chat      tgChat  `json:"chat"`
-	From      tgUser  `json:"from"`
-	Voice     *tgFile `json:"voice"`
-	Audio     *tgFile `json:"audio"`
+	MessageID int64        `json:"message_id"`
+	Text      string       `json:"text"`
+	Caption   string       `json:"caption"`
+	Chat      tgChat       `json:"chat"`
+	From      tgUser       `json:"from"`
+	Voice     *tgFile      `json:"voice"`
+	Audio     *tgFile      `json:"audio"`
+	Photo     []tgPhotoSize `json:"photo"`
+	Document  *tgFile      `json:"document"`
+}
+
+type tgPhotoSize struct {
+	FileID   string `json:"file_id"`
+	Width    int    `json:"width"`
+	Height   int    `json:"height"`
+	FileSize int    `json:"file_size"`
 }
 
 type tgChat struct {
@@ -495,6 +624,24 @@ func (b *Bot) acknowledgeCallback(ctx context.Context, message IncomingMessage) 
 }
 
 func (u update) incomingMessage() (IncomingMessage, bool) {
+	if u.Message != nil {
+		if image := u.Message.imageAttachment(); image != nil {
+			caption := strings.TrimSpace(u.Message.Caption)
+			text := caption
+			if text == "" {
+				text = strings.TrimSpace(u.Message.Text)
+			}
+			return IncomingMessage{
+				MessageID: u.Message.MessageID,
+				ChatID:    u.Message.Chat.ID,
+				UserID:    u.Message.From.ID,
+				Text:      text,
+				Source:    "telegram_image",
+				Image:     image,
+			}, true
+		}
+	}
+
 	if u.Message != nil && strings.TrimSpace(u.Message.Text) != "" {
 		return IncomingMessage{
 			MessageID: u.Message.MessageID,
@@ -530,6 +677,45 @@ func (u update) incomingMessage() (IncomingMessage, bool) {
 		CallbackID: strings.TrimSpace(u.CallbackQuery.ID),
 		IsCallback: true,
 	}, true
+}
+
+func (m *tgMessage) imageAttachment() *ImageAttachment {
+	if m == nil {
+		return nil
+	}
+	caption := strings.TrimSpace(m.Caption)
+	if len(m.Photo) > 0 {
+		// Telegram returns multiple photo sizes; use the largest (last).
+		largest := m.Photo[len(m.Photo)-1]
+		if strings.TrimSpace(largest.FileID) == "" {
+			return nil
+		}
+		return &ImageAttachment{
+			Kind:     "photo",
+			FileID:   strings.TrimSpace(largest.FileID),
+			FileName: "photo.jpg",
+			MimeType: "image/jpeg",
+			Caption:  caption,
+		}
+	}
+	if m.Document != nil && strings.TrimSpace(m.Document.FileID) != "" {
+		mime := strings.ToLower(strings.TrimSpace(m.Document.MimeType))
+		if !strings.HasPrefix(mime, "image/") {
+			return nil
+		}
+		name := strings.TrimSpace(m.Document.FileName)
+		if name == "" {
+			name = "image"
+		}
+		return &ImageAttachment{
+			Kind:     "document",
+			FileID:   strings.TrimSpace(m.Document.FileID),
+			FileName: name,
+			MimeType: mime,
+			Caption:  caption,
+		}
+	}
+	return nil
 }
 
 func (m *tgMessage) audioAttachment() *AudioAttachment {

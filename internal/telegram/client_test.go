@@ -552,6 +552,98 @@ func TestBotSendTextWithButtons(t *testing.T) {
 	}
 }
 
+func TestBotSendPhotoUploadsMultipart(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	imagePath := dir + "/photo.png"
+	if err := os.WriteFile(imagePath, []byte("PNG-DATA"), 0o644); err != nil {
+		t.Fatalf("write photo: %v", err)
+	}
+
+	var receivedContentType string
+	var receivedBody []byte
+
+	bot := NewBot(Options{
+		Token:       "TOKEN",
+		BaseURL:     "https://telegram.invalid",
+		Mode:        "polling",
+		PollTimeout: time.Second,
+	})
+	bot.client = &http.Client{
+		Timeout: time.Second,
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			if r.URL.Path != "/botTOKEN/sendPhoto" {
+				t.Fatalf("unexpected path: %s", r.URL.Path)
+			}
+			receivedContentType = r.Header.Get("Content-Type")
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatalf("read body: %v", err)
+			}
+			receivedBody = body
+			return jsonResponse(map[string]any{"ok": true, "result": map[string]any{"message_id": 7}}), nil
+		}),
+	}
+
+	if err := bot.SendPhoto(context.Background(), 99, imagePath, "look at this"); err != nil {
+		t.Fatalf("SendPhoto: %v", err)
+	}
+	if !strings.HasPrefix(receivedContentType, "multipart/form-data") {
+		t.Fatalf("expected multipart content-type, got %q", receivedContentType)
+	}
+	bodyStr := string(receivedBody)
+	if !strings.Contains(bodyStr, "PNG-DATA") {
+		t.Fatalf("expected file bytes in multipart body")
+	}
+	if !strings.Contains(bodyStr, "look at this") {
+		t.Fatalf("expected caption in multipart body")
+	}
+	if !strings.Contains(bodyStr, "name=\"chat_id\"") {
+		t.Fatalf("expected chat_id field in multipart body")
+	}
+	if !strings.Contains(bodyStr, "name=\"photo\"") {
+		t.Fatalf("expected photo field in multipart body")
+	}
+}
+
+func TestBotIncomingMessageSurfacesPhoto(t *testing.T) {
+	t.Parallel()
+
+	upd := update{
+		UpdateID: 1,
+		Message: &tgMessage{
+			MessageID: 5,
+			Caption:   "describe please",
+			Chat:      tgChat{ID: 100},
+			From:      tgUser{ID: 200},
+			Photo: []tgPhotoSize{
+				{FileID: "small", Width: 90, Height: 60, FileSize: 1024},
+				{FileID: "large", Width: 1280, Height: 720, FileSize: 100000},
+			},
+		},
+	}
+	msg, ok := upd.incomingMessage()
+	if !ok {
+		t.Fatalf("expected incomingMessage to surface photo update")
+	}
+	if msg.Image == nil {
+		t.Fatalf("expected Image attachment")
+	}
+	if msg.Image.FileID != "large" {
+		t.Fatalf("expected largest photo size, got %q", msg.Image.FileID)
+	}
+	if msg.Image.Caption != "describe please" {
+		t.Fatalf("expected caption to be surfaced, got %q", msg.Image.Caption)
+	}
+	if msg.Text != "describe please" {
+		t.Fatalf("expected text to mirror caption, got %q", msg.Text)
+	}
+	if msg.Source != "telegram_image" {
+		t.Fatalf("expected telegram_image source, got %q", msg.Source)
+	}
+}
+
 type roundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) {

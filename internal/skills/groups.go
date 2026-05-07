@@ -40,6 +40,24 @@ var (
 		Description: "Fetch page titles, visible text, screenshots, and simple health checks through Playwright.",
 		Order:       4,
 	}
+	GroupVision = Group{
+		Key:         "vision",
+		Title:       "Vision",
+		Description: "Describe images, compare screenshots, and summarize visual changes through a configured vision model.",
+		Order:       11,
+	}
+	GroupOCR = Group{
+		Key:         "ocr",
+		Title:       "OCR",
+		Description: "Extract text from images and screenshots using a local OCR backend.",
+		Order:       12,
+	}
+	GroupVisualWatch = Group{
+		Key:         "visual_watch",
+		Title:       "Visual watch",
+		Description: "Periodically capture URLs, diff against the baseline, and notify on visual or keyword changes.",
+		Order:       14,
+	}
 	GroupWorkbench = Group{
 		Key:         "workbench",
 		Title:       "Workbench",

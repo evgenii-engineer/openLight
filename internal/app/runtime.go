@@ -18,21 +18,26 @@ import (
 	fileskills "openlight/internal/skills/files"
 	memoryskills "openlight/internal/skills/memory"
 	"openlight/internal/skills/notes"
+	ocrskills "openlight/internal/skills/ocr"
 	serviceskills "openlight/internal/skills/services"
 	systemskills "openlight/internal/skills/system"
+	visionskills "openlight/internal/skills/vision"
+	visualwatchskills "openlight/internal/skills/visualwatch"
 	watchskills "openlight/internal/skills/watch"
 	workbenchskills "openlight/internal/skills/workbench"
 	"openlight/internal/storage"
 	"openlight/internal/storage/sqlite"
+	"openlight/internal/visualwatch"
 	watchengine "openlight/internal/watch"
 )
 
 type Runtime struct {
-	Registry   *skills.Registry
-	Classifier router.Classifier
-	Repository storage.Repository
-	Watch      *watchengine.Service
-	Closer     io.Closer
+	Registry    *skills.Registry
+	Classifier  router.Classifier
+	Repository  storage.Repository
+	Watch       *watchengine.Service
+	VisualWatch *visualwatch.Service
+	Closer      io.Closer
 }
 
 func BuildRuntime(ctx context.Context, cfg config.Config, logger *slog.Logger) (Runtime, error) {
@@ -69,7 +74,7 @@ func BuildRuntime(ctx context.Context, cfg config.Config, logger *slog.Logger) (
 		return Runtime{}, err
 	}
 
-	registry, watchService, allowedServiceNames, err := BuildRegistryWithWatch(cfg, repository, memoryStore, logger, llmProvider, systemProvider, serviceManager)
+	registry, watchService, visualWatchService, allowedServiceNames, err := BuildRegistryWithWatch(cfg, repository, memoryStore, logger, llmProvider, systemProvider, serviceManager)
 	if err != nil {
 		_ = closers.Close()
 		return Runtime{}, err
@@ -88,11 +93,12 @@ func BuildRuntime(ctx context.Context, cfg config.Config, logger *slog.Logger) (
 	}
 
 	return Runtime{
-		Registry:   registry,
-		Classifier: classifier,
-		Repository: repository,
-		Watch:      watchService,
-		Closer:     closers,
+		Registry:    registry,
+		Classifier:  classifier,
+		Repository:  repository,
+		Watch:       watchService,
+		VisualWatch: visualWatchService,
+		Closer:      closers,
 	}, nil
 }
 
@@ -108,7 +114,7 @@ func BuildRegistry(
 		return nil, nil, err
 	}
 
-	registry, _, allowedServiceNames, err := BuildRegistryWithWatch(cfg, repository, repository, logger, llmProvider, systemProvider, serviceManager)
+	registry, _, _, allowedServiceNames, err := BuildRegistryWithWatch(cfg, repository, repository, logger, llmProvider, systemProvider, serviceManager)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -123,12 +129,12 @@ func BuildRegistryWithWatch(
 	llmProvider basellm.Provider,
 	systemProvider systemskills.Provider,
 	serviceManager serviceskills.Manager,
-) (*skills.Registry, *watchengine.Service, []string, error) {
+) (*skills.Registry, *watchengine.Service, *visualwatch.Service, []string, error) {
 	registry := skills.NewRegistry()
 
 	allowedServiceNames, err := serviceskills.AllowedServiceNames(cfg.Services.Allowed)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	fileManager, err := fileskills.NewLocalManager(
 		cfg.Files.Enabled,
@@ -140,7 +146,7 @@ func BuildRegistryWithWatch(
 		cfg.Files.AllowSensitiveRead,
 	)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	browserManager := browserskills.NewLocalManager(
 		cfg.Browser.Enabled,
@@ -151,6 +157,14 @@ func BuildRegistryWithWatch(
 		cfg.Browser.TimeoutSeconds,
 		browserskills.NewCommandRunner(cfg.Browser.NodePath, cfg.Browser.HelperPath),
 	)
+	visionManager, err := buildVisionManager(cfg, logger)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	ocrManager, err := buildOCRManager(cfg)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
 	watchService := watchengine.NewService(
 		repository,
 		registry,
@@ -164,6 +178,24 @@ func BuildRegistryWithWatch(
 			RequestTimeout: cfg.Agent.RequestTimeout,
 		},
 	)
+	var visualWatchService *visualwatch.Service
+	if cfg.VisualWatch.Enabled {
+		visualWatchService = visualwatch.NewService(
+			repository,
+			browserManager,
+			ocrManager,
+			nil,
+			logger.With("component", "visual-watch"),
+			visualwatch.Options{
+				PollInterval:     cfg.VisualWatch.PollInterval,
+				BaselinesDir:     cfg.VisualWatch.BaselinesDir,
+				DefaultInterval:  cfg.VisualWatch.DefaultInterval,
+				DefaultThreshold: cfg.VisualWatch.DefaultThreshold,
+				DefaultCooldown:  cfg.VisualWatch.DefaultCooldown,
+				RequestTimeout:   cfg.VisualWatch.RequestTimeout,
+			},
+		)
+	}
 
 	modules := []skills.Module{
 		systemskills.NewModule(systemProvider),
@@ -174,10 +206,19 @@ func BuildRegistryWithWatch(
 		notes.NewModule(repository, cfg.Notes.ListLimit),
 		watchskills.NewModule(watchService),
 	}
+	if cfg.Vision.Enabled {
+		modules = append(modules, visionskills.NewModule(visionManager))
+	}
+	if cfg.OCR.Enabled {
+		modules = append(modules, ocrskills.NewModule(ocrManager))
+	}
+	if visualWatchService != nil {
+		modules = append(modules, visualwatchskills.NewModule(repository, visualWatchService))
+	}
 	if len(cfg.Accounts.Providers) > 0 {
 		accountManager, err := accountskills.NewManager(cfg.Accounts.Providers, serviceManager)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, nil, err
 		}
 		modules = append(modules, accountskills.NewModule(accountManager))
 	}
@@ -189,7 +230,7 @@ func BuildRegistryWithWatch(
 			cfg.Workbench.MaxOutputBytes,
 		)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, nil, err
 		}
 		modules = append(modules, workbenchskills.NewModule(workbenchManager))
 	}
@@ -203,10 +244,57 @@ func BuildRegistryWithWatch(
 	modules = append(modules, skills.NewCoreModule())
 
 	if err := skills.RegisterModules(registry, modules...); err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 
-	return registry, watchService, allowedServiceNames, nil
+	return registry, watchService, visualWatchService, allowedServiceNames, nil
+}
+
+func buildVisionManager(cfg config.Config, logger *slog.Logger) (visionskills.Manager, error) {
+	provider, err := visionskills.BuildProvider(visionskills.ProviderConfig{
+		Provider: cfg.Vision.Provider,
+		Endpoint: cfg.Vision.Endpoint,
+		Model:    cfg.Vision.Model,
+		APIKey:   cfg.Vision.APIKey,
+		Timeout:  cfg.Vision.Timeout,
+		Logger:   logger.With("component", "vision"),
+	})
+	if err != nil {
+		return nil, err
+	}
+	if cfg.Vision.Enabled && provider == nil {
+		return nil, fmt.Errorf("vision is enabled but provider %q resolves to none", cfg.Vision.Provider)
+	}
+	return visionskills.NewLocalManager(visionskills.Options{
+		Enabled:          cfg.Vision.Enabled,
+		Provider:         provider,
+		ProviderName:     cfg.Vision.Provider,
+		ModelName:        cfg.Vision.Model,
+		DefaultPrompt:    cfg.Vision.DefaultPrompt,
+		MaxImageSizeMB:   cfg.Vision.MaxImageSizeMB,
+		Timeout:          cfg.Vision.Timeout,
+		MaxResponseChars: cfg.Vision.MaxResponseChars,
+	}), nil
+}
+
+func buildOCRManager(cfg config.Config) (ocrskills.Manager, error) {
+	provider, err := ocrskills.BuildProvider(ocrskills.ProviderConfig{
+		Provider:   cfg.OCR.Provider,
+		BinaryPath: cfg.OCR.BinaryPath,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if cfg.OCR.Enabled && provider == nil {
+		return nil, fmt.Errorf("ocr is enabled but provider %q resolves to none", cfg.OCR.Provider)
+	}
+	return ocrskills.NewLocalManager(ocrskills.Options{
+		Enabled:        cfg.OCR.Enabled,
+		Provider:       provider,
+		Languages:      cfg.OCR.Languages,
+		Timeout:        cfg.OCR.Timeout,
+		MaxImageSizeMB: cfg.OCR.MaxImageSizeMB,
+	}), nil
 }
 
 func buildLLMProvider(cfg config.Config, logger *slog.Logger) (basellm.Provider, error) {

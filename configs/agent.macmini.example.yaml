@@ -85,8 +85,53 @@ browser:
   artifacts_dir: "./data/browser-artifacts"
   timeout_seconds: 20
 
+# Vision: describe screenshots and compare images using a local vision model.
+# Pair with a small Ollama model for Mac mini M1 (e.g. qwen2.5vl:3b or
+# minicpm-v:latest). Disabled by default — enable when you have the model
+# pulled locally.
+vision:
+  enabled: false
+  provider: "ollama"
+  endpoint: "http://127.0.0.1:11434"
+  model: "qwen2.5vl:3b"
+  max_image_size_mb: 10
+  timeout: 30s
+  default_prompt: "Describe this image in concise plain English."
+  max_response_chars: 1500
+
+# OCR: extract text from screenshots and photos. tesseract is the default —
+# `make install-ocr-deps` installs it via brew. For best macOS Vision-quality
+# you can build a Swift helper that wraps the Vision framework and switch to
+# `provider: apple_vision` with `binary_path` pointing at it.
+ocr:
+  enabled: false
+  provider: "tesseract"
+  binary_path: "/opt/homebrew/bin/tesseract"
+  languages:
+    - "eng"
+    - "rus"
+  timeout: 20s
+  max_image_size_mb: 10
+
+# Visual watch periodically captures screenshots of allowlisted URLs, diffs
+# them against the previous baseline, and notifies the chat when something
+# changes. Requires browser.enabled = true. When ocr.enabled is also true,
+# keyword matches are checked against OCR'd text first and fall back to the
+# visible HTML text otherwise.
+visual_watch:
+  enabled: false
+  baselines_dir: "./data/visual-watch"
+  poll_interval: 30s
+  default_interval: 15m
+  default_threshold: 0.15
+  default_cooldown: 30m
+  request_timeout: 60s
+
 agent:
-  request_timeout: 10s
+  # Upper bound for any single skill execution. 90s comfortably covers
+  # vision-model first loads (Ollama warming up qwen2.5vl) and OCR on
+  # large screenshots. Most skills finish in seconds.
+  request_timeout: 90s
 
 log:
   level: "info"

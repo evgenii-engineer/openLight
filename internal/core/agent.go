@@ -32,6 +32,14 @@ type buttonTransport interface {
 	SendTextWithButtons(ctx context.Context, chatID int64, text string, buttons [][]telegram.Button) error
 }
 
+// photoTransport is implemented by transports that can deliver image and file
+// attachments alongside the text reply (Telegram Bot does, the local CLI
+// transport doesn't — it falls back to a textual marker).
+type photoTransport interface {
+	SendPhoto(ctx context.Context, chatID int64, path, caption string) error
+	SendDocument(ctx context.Context, chatID int64, path, caption string) error
+}
+
 type Agent struct {
 	transport       Transport
 	authorizer      *auth.Authorizer
@@ -40,6 +48,7 @@ type Agent struct {
 	repository      storage.Repository
 	watchService    *watchengine.Service
 	voiceProcessor  *voice.Processor
+	imageInbox      *ImageInbox
 	ui              UI
 	replyTranscript bool
 	logger          *slog.Logger
@@ -53,6 +62,7 @@ type UI interface {
 	HandleCallback(ctx context.Context, msg telegram.IncomingMessage) error
 	HandlePendingInput(ctx context.Context, msg telegram.IncomingMessage) (bool, error)
 	HasPendingInput(chatID int64) bool
+	StartSkillInput(ctx context.Context, chatID, userID int64, skill skills.Skill, args map[string]string) (bool, error)
 	CancelPending(chatID int64)
 	MapReplyKeyboard(text string) (string, bool)
 	OpenScreen(ctx context.Context, chatID int64, screen string) error
@@ -96,6 +106,13 @@ func (a *Agent) SetVoiceProcessor(processor *voice.Processor, replyTranscript bo
 	a.replyTranscript = replyTranscript
 }
 
+// SetImageInbox installs the optional inbound image processor. When enabled,
+// photos sent to the bot are downloaded and routed to vision/ocr based on the
+// caption.
+func (a *Agent) SetImageInbox(inbox *ImageInbox) {
+	a.imageInbox = inbox
+}
+
 // SetUI installs the optional Telegram button-driven UI layer.
 func (a *Agent) SetUI(ui UI) {
 	a.ui = ui
@@ -121,6 +138,22 @@ func (a *Agent) HandleMessage(ctx context.Context, message telegram.IncomingMess
 		if a.replyTranscript {
 			replyPrefix = "Transcript: " + result.Transcript
 		}
+	}
+
+	if message.Image != nil {
+		if a.imageInbox == nil || !a.imageInbox.Enabled() {
+			return a.reply(ctx, message.ChatID, message.UserID, "image input is disabled (enable vision or ocr)")
+		}
+		downloader, _ := a.transport.(voice.Downloader)
+		if err := a.authorizer.Error(message.UserID, message.ChatID); err != nil {
+			a.logWarn("blocked unauthorized image", "error", err)
+			return a.reply(ctx, message.ChatID, message.UserID, "access denied")
+		}
+		result, err := a.imageInbox.Process(ctx, message, downloader)
+		if err != nil {
+			return a.reply(ctx, message.ChatID, message.UserID, userMessageForError(err))
+		}
+		return a.replyResult(ctx, message.ChatID, message.UserID, result)
 	}
 
 	if strings.TrimSpace(message.Text) == "" {
@@ -274,6 +307,23 @@ func (a *Agent) HandleMessage(ctx context.Context, message telegram.IncomingMess
 		return a.reply(ctx, message.ChatID, message.UserID, withReplyPrefix(replyPrefix, "skill not found"))
 	}
 
+	// If a bare slash command resolved to a skill that needs input the
+	// router didn't fill, hand off to the UI's pending-input flow so the
+	// user gets the same conversational prompt they'd see when tapping
+	// the skill in the menu — instead of a terse "argument required"
+	// error. Only triggers when the message is just `/skill_name` (no
+	// trailing args), so `/vision_analyze ./img.png` and friends still
+	// hit the skill's own RawText fallback.
+	if a.ui != nil && isBareSlashCommand(message.Text) {
+		handed, err := a.ui.StartSkillInput(ctx, message.ChatID, message.UserID, skill, decision.Args)
+		if err != nil {
+			a.logError("start skill input flow", "error", err, "skill", decision.SkillName)
+		}
+		if handed {
+			return nil
+		}
+	}
+
 	startedAt := time.Now()
 	execCtx, cancel := context.WithTimeout(ctx, a.requestTimeout)
 	defer cancel()
@@ -367,28 +417,79 @@ func (a *Agent) reply(ctx context.Context, chatID, userID int64, text string) er
 }
 
 func (a *Agent) replyResult(ctx context.Context, chatID, userID int64, result skills.Result) error {
+	textForLog := result.Text
+	textForUser := result.Text
+	photoSender, supportsPhotos := a.transport.(photoTransport)
+	// When the transport can't render attachments, append their paths so the
+	// user still has a pointer to the artifact on disk.
+	if !supportsPhotos && len(result.Attachments) > 0 {
+		textForUser = appendAttachmentNote(textForUser, result.Attachments)
+	}
+
 	var err error
 	if len(result.Buttons) > 0 {
 		if sender, ok := a.transport.(buttonTransport); ok {
-			err = sender.SendTextWithButtons(ctx, chatID, result.Text, result.Buttons)
+			err = sender.SendTextWithButtons(ctx, chatID, textForUser, result.Buttons)
 		} else {
-			err = a.transport.SendText(ctx, chatID, result.Text)
+			err = a.transport.SendText(ctx, chatID, textForUser)
 		}
 	} else {
-		err = a.transport.SendText(ctx, chatID, result.Text)
+		err = a.transport.SendText(ctx, chatID, textForUser)
 	}
 	if err != nil {
 		return fmt.Errorf("send reply: %w", err)
+	}
+
+	if supportsPhotos {
+		for _, attachment := range result.Attachments {
+			path := strings.TrimSpace(attachment.Path)
+			if path == "" {
+				continue
+			}
+			caption := strings.TrimSpace(attachment.Caption)
+			var sendErr error
+			switch attachment.Kind {
+			case skills.AttachmentDocument:
+				sendErr = photoSender.SendDocument(ctx, chatID, path, caption)
+			default:
+				sendErr = photoSender.SendPhoto(ctx, chatID, path, caption)
+			}
+			if sendErr != nil {
+				a.logError("send attachment", "error", sendErr, "path", path, "kind", attachment.Kind)
+			}
+		}
 	}
 
 	a.saveMessage(ctx, models.Message{
 		TelegramUserID: userID,
 		TelegramChatID: chatID,
 		Role:           models.RoleAssistant,
-		Text:           result.Text,
+		Text:           textForLog,
 	})
 
 	return nil
+}
+
+func appendAttachmentNote(text string, attachments []skills.Attachment) string {
+	if len(attachments) == 0 {
+		return text
+	}
+	parts := make([]string, 0, len(attachments))
+	for _, attachment := range attachments {
+		path := strings.TrimSpace(attachment.Path)
+		if path == "" {
+			continue
+		}
+		parts = append(parts, "• "+path)
+	}
+	if len(parts) == 0 {
+		return text
+	}
+	prefix := strings.TrimSpace(text)
+	if prefix == "" {
+		return "Files:\n" + strings.Join(parts, "\n")
+	}
+	return prefix + "\n\nFiles:\n" + strings.Join(parts, "\n")
 }
 
 func (a *Agent) saveMessage(ctx context.Context, message models.Message) {
@@ -615,6 +716,17 @@ func isMenuCommand(text string) bool {
 		return true
 	}
 	return false
+}
+
+// isBareSlashCommand reports whether the message is just `/skill_name`
+// without any trailing arguments. Used to decide whether to hand off to
+// the UI's pending-input flow instead of running the skill with empty args.
+func isBareSlashCommand(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if !strings.HasPrefix(trimmed, "/") {
+		return false
+	}
+	return len(strings.Fields(trimmed)) == 1
 }
 
 func looksLikeClarificationAnswer(text string) bool {

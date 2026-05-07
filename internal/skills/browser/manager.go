@@ -81,7 +81,24 @@ func (r CommandRunner) Run(ctx context.Context, request Request) (Response, erro
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		return Response{}, skills.NewUserError(skills.ErrUnavailable, "browser helper failed")
+		// Surface stderr so the user can tell whether playwright is missing,
+		// chromium isn't installed, the URL is unreachable, etc. Without
+		// this every failure looked like the same generic "browser helper
+		// failed".
+		details := strings.TrimSpace(stderr.String())
+		if details == "" {
+			// Some helper failures only print to stdout (e.g. JSON error
+			// payload). Fall back to it before declaring unknown.
+			details = strings.TrimSpace(stdout.String())
+		}
+		if details == "" {
+			details = err.Error()
+		}
+		const limit = 400
+		if runes := []rune(details); len(runes) > limit {
+			details = string(runes[:limit]) + "…"
+		}
+		return Response{}, skills.NewUserError(skills.ErrUnavailable, "browser helper failed: "+details)
 	}
 
 	var response Response
@@ -89,7 +106,11 @@ func (r CommandRunner) Run(ctx context.Context, request Request) (Response, erro
 		return Response{}, fmt.Errorf("decode browser response: %w", err)
 	}
 	if !response.OK {
-		return Response{}, skills.NewUserError(skills.ErrUnavailable, "browser request failed")
+		details := strings.TrimSpace(response.Error)
+		if details == "" {
+			details = "browser request failed"
+		}
+		return Response{}, skills.NewUserError(skills.ErrUnavailable, details)
 	}
 
 	return response, nil
@@ -212,6 +233,14 @@ func (m *LocalManager) validateURL(rawURL string) (string, error) {
 	host := strings.ToLower(strings.TrimSpace(parsed.Hostname()))
 	if host == "" {
 		return "", fmt.Errorf("%w: url host is required", skills.ErrInvalidArguments)
+	}
+	// Reject hosts that don't have a dot AND aren't localhost or an IP
+	// literal. This catches stray words an LLM classifier might have
+	// extracted as URL (e.g. "сайта" → punycode → ERR_NAME_NOT_RESOLVED
+	// from playwright) before the helper round-trip fails for an
+	// unintelligible reason.
+	if !strings.Contains(host, ".") && host != "localhost" && net.ParseIP(host) == nil {
+		return "", fmt.Errorf("%w: %q does not look like a domain (need example.com or 127.0.0.1)", skills.ErrInvalidArguments, host)
 	}
 	if !m.allowAllDomains && !domainAllowed(host, m.allowedDomains) {
 		return "", fmt.Errorf("%w: %s", skills.ErrAccessDenied, host)

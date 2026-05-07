@@ -100,6 +100,33 @@ type Watch struct {
 	UpdatedAt       time.Time
 }
 
+// VisualWatch is a periodic browser-screenshot diff target. It belongs to a
+// single chat and runs on its own polling cadence, independent from the
+// service/metric watch engine.
+type VisualWatch struct {
+	ID                  int64
+	TelegramUserID      int64
+	TelegramChatID      int64
+	Name                string
+	URL                 string
+	Keywords            []string
+	NotifyOnChange      bool
+	NotifyOnKeywords    bool
+	DiffThreshold       float64
+	Interval            time.Duration
+	Cooldown            time.Duration
+	BaselinePath        string
+	LastScreenshotPath  string
+	LastChangedFraction float64
+	LastKeywordsSeen    []string
+	LastCheckedAt       time.Time
+	LastChangedAt       time.Time
+	LastAlertedAt       time.Time
+	Enabled             bool
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
+}
+
 type WatchIncident struct {
 	ID                int64
 	WatchID           int64

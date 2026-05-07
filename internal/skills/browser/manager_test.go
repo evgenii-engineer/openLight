@@ -28,6 +28,16 @@ func TestLocalManagerRejectsDisallowedDomain(t *testing.T) {
 	}
 }
 
+func TestLocalManagerRejectsHostWithoutDot(t *testing.T) {
+	t.Parallel()
+
+	manager := NewLocalManager(true, []string{"example.com"}, true, false, t.TempDir(), 20, &stubRunner{})
+	_, err := manager.Title(context.Background(), "https://сайта")
+	if err == nil || !errors.Is(err, skills.ErrInvalidArguments) {
+		t.Fatalf("expected invalid arguments for non-domain host, got %v", err)
+	}
+}
+
 func TestLocalManagerRejectsPrivateNetworkWhenDisabled(t *testing.T) {
 	t.Parallel()
 

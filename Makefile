@@ -18,6 +18,8 @@ NPM ?= npm
 NPX ?= npx
 BROWSER_AGENT_DIR ?= tools/browser-agent
 PLAYWRIGHT_BROWSER ?= chromium
+OLLAMA_VISION_MODEL ?= qwen2.5vl:3b
+TESSERACT_LANG_PACK ?= tesseract-lang
 
 -include Makefile.local
 
@@ -40,7 +42,7 @@ GOOS ?= linux
 GOARCH ?= arm64
 CGO_ENABLED ?= 0
 
-.PHONY: build build-rpi build-cli build-rpi-cli build-macmini build-macmini-cli init-rpi-config init-macmini-config check-config remote-prepare remote-sync-repo push-config push-browser-agent remote-build remote-install-launchd remote-restart remote-stop remote-status remote-health deploy-rpi-config deploy-rpi deploy-rpi-cli deploy-rpi-service deploy-rpi-all deploy-rpi-full deploy-macmini-agent deploy-macmini-config deploy-macmini deploy-macmini-cli deploy-macmini-service deploy-macmini-all deploy-macmini-full deploy-macmini-deps-host bootstrap-macmini deploy-and-smoke-rpi deploy-and-smoke-rpi-ollama deploy-and-smoke-rpi-openai deploy-and-smoke-macmini deploy-and-smoke-macmini-ollama deploy-and-smoke-macmini-openai smoke-rpi-cli smoke-rpi-cli-ollama smoke-rpi-cli-openai smoke-macmini-cli smoke-macmini-cli-ollama smoke-macmini-cli-openai logs-macmini restart-macmini status-macmini stop-macmini test test-e2e-ollama clean ollama-up ollama-pull ollama-down docker-build docker-buildx docker-push install-macmini-deps install-voice-deps install-browser-deps install-playwright
+.PHONY: build build-rpi build-cli build-rpi-cli build-macmini build-macmini-cli init-rpi-config init-macmini-config check-config remote-prepare remote-sync-repo push-config push-browser-agent remote-build remote-install-launchd remote-restart remote-stop remote-status remote-health deploy-rpi-config deploy-rpi deploy-rpi-cli deploy-rpi-service deploy-rpi-all deploy-rpi-full deploy-macmini-agent deploy-macmini-config deploy-macmini deploy-macmini-cli deploy-macmini-service deploy-macmini-all deploy-macmini-full deploy-macmini-deps-host bootstrap-macmini deploy-and-smoke-rpi deploy-and-smoke-rpi-ollama deploy-and-smoke-rpi-openai deploy-and-smoke-macmini deploy-and-smoke-macmini-ollama deploy-and-smoke-macmini-openai smoke-rpi-cli smoke-rpi-cli-ollama smoke-rpi-cli-openai smoke-macmini-cli smoke-macmini-cli-ollama smoke-macmini-cli-openai logs-macmini restart-macmini status-macmini stop-macmini test test-e2e-ollama clean ollama-up ollama-pull ollama-down docker-build docker-buildx docker-push install-macmini-deps install-voice-deps install-browser-deps install-playwright install-vision-deps install-ocr-deps
 
 OLLAMA_COMPOSE_FILE ?= deployments/docker/ollama-compose.yaml
 OLLAMA_ENDPOINT ?= http://127.0.0.1:11434
@@ -277,6 +279,17 @@ deploy-macmini-deps-host: push-browser-agent
 			exit 1; \
 		fi; \
 		"$$brew_bin" install ffmpeg whisper-cpp node; \
+		if command -v tesseract >/dev/null 2>&1; then \
+			echo "tesseract already installed: $$(command -v tesseract)"; \
+		else \
+			"$$brew_bin" install tesseract $(TESSERACT_LANG_PACK); \
+		fi; \
+		if command -v ollama >/dev/null 2>&1; then \
+			echo "ollama already installed: $$(command -v ollama)"; \
+		else \
+			"$$brew_bin" install ollama; \
+			"$$brew_bin" services start ollama >/dev/null 2>&1 || true; \
+		fi; \
 		npm_bin="$$(command -v $(NPM) || true)"; \
 		npx_bin="$$(command -v $(NPX) || true)"; \
 		if [ -z "$$npm_bin" ] || [ -z "$$npx_bin" ]; then \
@@ -284,7 +297,18 @@ deploy-macmini-deps-host: push-browser-agent
 			exit 1; \
 		fi; \
 		"$$npm_bin" --prefix "$(PROJECT_DIR)/$(BROWSER_AGENT_DIR)" install; \
-		"$$npx_bin" --prefix "$(PROJECT_DIR)/$(BROWSER_AGENT_DIR)" playwright install $(PLAYWRIGHT_BROWSER)'
+		"$$npx_bin" --prefix "$(PROJECT_DIR)/$(BROWSER_AGENT_DIR)" playwright install $(PLAYWRIGHT_BROWSER); \
+		ollama_bin="$$(command -v ollama || true)"; \
+		if [ -z "$$ollama_bin" ]; then \
+			echo "ollama binary still not on PATH; skip vision model pull"; \
+		elif ! curl -fsS http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then \
+			echo "ollama daemon not reachable; pull $(OLLAMA_VISION_MODEL) manually after it starts"; \
+		elif "$$ollama_bin" list 2>/dev/null | awk "NR>1 {print \$$1}" | grep -qx "$(OLLAMA_VISION_MODEL)"; then \
+			echo "vision model $(OLLAMA_VISION_MODEL) already pulled"; \
+		else \
+			echo "pulling vision model $(OLLAMA_VISION_MODEL)"; \
+			"$$ollama_bin" pull $(OLLAMA_VISION_MODEL) || true; \
+		fi'
 
 bootstrap-macmini:
 	$(MAKE) deploy-macmini-deps-host
@@ -354,7 +378,51 @@ install-browser-deps:
 install-playwright:
 	$(NPX) --prefix $(BROWSER_AGENT_DIR) playwright install $(PLAYWRIGHT_BROWSER)
 
-install-macmini-deps: install-voice-deps install-browser-deps install-playwright
+# OCR (Tesseract) for the ocr_extract skill and visual-watch keyword matching.
+# tesseract-lang bundles the multilingual data; override TESSERACT_LANG_PACK
+# if you want only specific languages (e.g. tesseract-lang-eng-rus). The
+# install is skipped when the binary is already on PATH (e.g. installed via
+# the desktop app or a system package) so re-runs on configured machines
+# stay no-ops.
+install-ocr-deps:
+	@export PATH="/opt/homebrew/bin:/usr/local/bin:$$PATH"; \
+	if command -v tesseract >/dev/null 2>&1; then \
+		echo "tesseract already installed: $$(command -v tesseract)"; \
+	else \
+		$(BREW) install tesseract $(TESSERACT_LANG_PACK); \
+	fi
+
+# Vision (Ollama + a small VLM) for vision_analyze, vision_compare, and
+# the visual-watch alert summaries. Skips brew install when an ollama
+# binary is already on PATH (the desktop app puts one at
+# /opt/homebrew/bin/ollama and brew refuses to link over it). The pull
+# step is also skipped when the model already shows up in `ollama list`,
+# so re-running this target after the first machine setup is a no-op.
+install-vision-deps:
+	@export PATH="/opt/homebrew/bin:/usr/local/bin:$$PATH"; \
+	if command -v ollama >/dev/null 2>&1; then \
+		echo "ollama already installed: $$(command -v ollama)"; \
+	else \
+		$(BREW) install ollama; \
+	fi; \
+	if ! command -v ollama >/dev/null 2>&1; then \
+		echo "ollama binary still not on PATH; cannot pull $(OLLAMA_VISION_MODEL)"; \
+		exit 0; \
+	fi; \
+	if ! curl -fsS http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then \
+		echo "ollama daemon not reachable at http://127.0.0.1:11434"; \
+		echo "start it (Ollama.app, 'brew services start ollama', or 'ollama serve')"; \
+		echo "then run: ollama pull $(OLLAMA_VISION_MODEL)"; \
+		exit 0; \
+	fi; \
+	if ollama list 2>/dev/null | awk 'NR>1 {print $$1}' | grep -qx "$(OLLAMA_VISION_MODEL)"; then \
+		echo "vision model $(OLLAMA_VISION_MODEL) already pulled"; \
+	else \
+		echo "pulling vision model $(OLLAMA_VISION_MODEL)"; \
+		ollama pull $(OLLAMA_VISION_MODEL); \
+	fi
+
+install-macmini-deps: install-voice-deps install-browser-deps install-playwright install-ocr-deps install-vision-deps
 
 logs-macmini:
 	@ssh $(SSH_TARGET) 'touch "$(RUNTIME_DIR)/logs/agent.out.log" "$(RUNTIME_DIR)/logs/agent.err.log"; tail -n 40 -f "$(RUNTIME_DIR)/logs/agent.out.log" "$(RUNTIME_DIR)/logs/agent.err.log"'

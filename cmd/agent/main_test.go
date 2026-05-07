@@ -180,6 +180,57 @@ func TestBuildRegistryRegistersChatModuleWhenLLMEnabled(t *testing.T) {
 	}
 }
 
+func TestBuildRegistryRegistersVisionAndOCRModulesWhenEnabled(t *testing.T) {
+	t.Parallel()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	registry, _, err := app.BuildRegistry(config.Config{
+		Files: config.FilesConfig{
+			MaxReadBytes: 4096,
+			ListLimit:    40,
+		},
+		Services: config.ServicesConfig{
+			Allowed:  []string{"tailscale"},
+			LogLines: 50,
+		},
+		Notes: config.NotesConfig{
+			ListLimit: 10,
+		},
+		Chat: config.ChatConfig{
+			HistoryLimit:     6,
+			HistoryChars:     200,
+			MaxResponseChars: 100,
+		},
+		Vision: config.VisionConfig{
+			Enabled:          true,
+			Provider:         "ollama",
+			Endpoint:         "http://127.0.0.1:11434",
+			Model:            "qwen2.5vl:3b",
+			MaxImageSizeMB:   10,
+			Timeout:          30 * time.Second,
+			DefaultPrompt:    "Describe.",
+			MaxResponseChars: 200,
+		},
+		OCR: config.OCRConfig{
+			Enabled:        true,
+			Provider:       "tesseract",
+			BinaryPath:     "tesseract",
+			Languages:      []string{"eng"},
+			Timeout:        20 * time.Second,
+			MaxImageSizeMB: 10,
+		},
+	}, nil, logger, nil)
+	if err != nil {
+		t.Fatalf("buildRegistry returned error: %v", err)
+	}
+
+	for _, name := range []string{"vision_analyze", "vision_compare", "ocr_extract"} {
+		if _, ok := registry.Get(name); !ok {
+			t.Fatalf("expected skill %q to be registered when vision/ocr are enabled", name)
+		}
+	}
+}
+
 func TestBuildRegistryRegistersWorkbenchModuleWhenEnabled(t *testing.T) {
 	t.Parallel()
 
