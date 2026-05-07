@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Build the agent and CLI on the remote host using its Go toolchain.
-# Used when we want the binaries built from the remote git checkout
-# instead of cross-compiling locally and shipping them.
+# Build the openlight binary on the remote host using its Go toolchain.
+# Used when we want the binary built from the remote git checkout
+# instead of cross-compiling locally and shipping it.
 set -euo pipefail
 
 : "${SSH_TARGET:?SSH_TARGET must be set}"
@@ -20,8 +20,6 @@ test -f go.mod || {
   exit 1
 }
 go mod download
-CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o "\${RUNTIME_DIR}/bin/openlight-agent" ./cmd/agent
-CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o "\${RUNTIME_DIR}/bin/openlight-cli" ./cmd/cli
-test -x "\${RUNTIME_DIR}/bin/openlight-agent"
-test -x "\${RUNTIME_DIR}/bin/openlight-cli"
+CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o "\${RUNTIME_DIR}/bin/openlight" ./cmd/openlight
+test -x "\${RUNTIME_DIR}/bin/openlight"
 EOF

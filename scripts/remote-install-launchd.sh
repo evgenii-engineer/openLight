@@ -18,7 +18,8 @@ cat <<PLIST | ssh "${SSH_TARGET}" "cat > '${LAUNCH_AGENT}' && plutil -lint '${LA
   <string>dev.openlight.agent</string>
   <key>ProgramArguments</key>
   <array>
-    <string>${RUNTIME_DIR}/bin/openlight-agent</string>
+    <string>${RUNTIME_DIR}/bin/openlight</string>
+    <string>agent</string>
     <string>-config</string>
     <string>${CONFIG_REMOTE}</string>
   </array>

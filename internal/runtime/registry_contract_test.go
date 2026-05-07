@@ -1,10 +1,10 @@
-package app_test
+package runtime_test
 
 import (
 	"strings"
 	"testing"
 
-	"openlight/internal/app"
+	"openlight/internal/runtime"
 	"openlight/internal/skills"
 	"openlight/internal/testkit"
 )
@@ -26,7 +26,7 @@ func TestBuildRegistryDefaultSkillContract(t *testing.T) {
 	cfg := testkit.MinimalValidConfig(t)
 	repo := testkit.NewTempRepository(t)
 
-	registry, _, err := app.BuildRegistry(cfg, repo, testkit.SilentLogger(), nil)
+	registry, _, err := runtime.BuildRegistry(cfg, repo, testkit.SilentLogger(), nil)
 	if err != nil {
 		t.Fatalf("BuildRegistry: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestBuildRegistryIncludesCoreSkills(t *testing.T) {
 	cfg := testkit.MinimalValidConfig(t)
 	repo := testkit.NewTempRepository(t)
 
-	registry, _, err := app.BuildRegistry(cfg, repo, testkit.SilentLogger(), nil)
+	registry, _, err := runtime.BuildRegistry(cfg, repo, testkit.SilentLogger(), nil)
 	if err != nil {
 		t.Fatalf("BuildRegistry: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestBuildRegistryGroupsAreNonEmpty(t *testing.T) {
 	cfg := testkit.MinimalValidConfig(t)
 	repo := testkit.NewTempRepository(t)
 
-	registry, _, err := app.BuildRegistry(cfg, repo, testkit.SilentLogger(), nil)
+	registry, _, err := runtime.BuildRegistry(cfg, repo, testkit.SilentLogger(), nil)
 	if err != nil {
 		t.Fatalf("BuildRegistry: %v", err)
 	}

@@ -6,7 +6,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MAC_USER="${MAC_USER:-$(whoami)}"
 MAC_HOST="${MAC_HOST:-macmini.local}"
 MAC_DEST_DIR="${MAC_DEST_DIR:-/Users/${MAC_USER}}"
-BIN_NAME="${BIN_NAME:-openlight-agent}"
+BIN_NAME="${BIN_NAME:-openlight}"
 SERVICE_LABEL="${SERVICE_LABEL:-com.openlight.agent}"
 
 TEMPLATE_PATH="${ROOT_DIR}/deployments/launchd/openlight-agent.plist"
@@ -22,7 +22,7 @@ trap cleanup EXIT
 
 sed \
   -e "s|<string>com.openlight.agent</string>|<string>${SERVICE_LABEL}</string>|" \
-  -e "0,|<string>/Users/macmini/openlight-agent</string>|s|<string>/Users/macmini/openlight-agent</string>|<string>${MAC_DEST_DIR}/${BIN_NAME}</string>|" \
+  -e "0,|<string>/Users/macmini/openlight</string>|s|<string>/Users/macmini/openlight</string>|<string>${MAC_DEST_DIR}/${BIN_NAME}</string>|" \
   -e "s|<string>/Users/macmini</string>|<string>${MAC_DEST_DIR}</string>|" \
   -e "s|<string>macmini</string>|<string>${MAC_USER}</string>|" \
   -e "s|<string>/Users/macmini/Library/Logs/openlight-agent.log</string>|<string>${REMOTE_LOG_DIR}/openlight-agent.log</string>|" \

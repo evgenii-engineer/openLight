@@ -20,6 +20,9 @@ type Config struct {
 	Auth       AuthConfig      `yaml:"auth"`
 	Storage    StorageConfig   `yaml:"storage"`
 	Access     AccessConfig    `yaml:"access"`
+	// Nodes is the canonical, top-level way to declare remote SSH targets.
+	// Equivalent to access.hosts; both are accepted and merged at load time.
+	Nodes      map[string]NodeConfig `yaml:"nodes"`
 	Accounts   AccountsConfig  `yaml:"accounts"`
 	Files      FilesConfig     `yaml:"files"`
 	Filesystem FilesConfig     `yaml:"filesystem"`
@@ -66,6 +69,11 @@ type StorageConfig struct {
 type AccessConfig struct {
 	Hosts map[string]RemoteHostConfig `yaml:"hosts"`
 }
+
+// NodeConfig is the canonical name for a remote SSH-reachable node.
+// Internally it is the same shape as RemoteHostConfig; the alias keeps the
+// older internal API (access.hosts) working without churn.
+type NodeConfig = RemoteHostConfig
 
 type RemoteHostConfig struct {
 	Address                 string `yaml:"address"`
@@ -747,6 +755,8 @@ func normalize(cfg *Config) {
 	cfg.Telegram.Webhook.SecretToken = strings.TrimSpace(cfg.Telegram.Webhook.SecretToken)
 
 	cfg.Storage.SQLitePath = strings.TrimSpace(cfg.Storage.SQLitePath)
+	cfg.Access.Hosts = mergeNodeMaps(cfg.Access.Hosts, cfg.Nodes)
+	cfg.Nodes = nil
 	cfg.Access.Hosts = normalizeRemoteHosts(cfg.Access.Hosts)
 	cfg.Accounts.Providers = normalizeAccountProviders(cfg.Accounts.Providers)
 	cfg.Files = mergeFilesConfig(cfg.Files, cfg.Filesystem)
@@ -1011,8 +1021,13 @@ func normalizeServiceBackendSpec(spec string) (string, bool) {
 	}
 
 	lowerSpec := strings.ToLower(spec)
-	if strings.HasPrefix(lowerSpec, "host:") {
-		rest := strings.TrimSpace(spec[len("host:"):])
+	// "node:" and "host:" are equivalent; node: is the canonical spelling,
+	// host: is kept for back-compat with older configs.
+	for _, prefix := range []string{"node:", "host:"} {
+		if !strings.HasPrefix(lowerSpec, prefix) {
+			continue
+		}
+		rest := strings.TrimSpace(spec[len(prefix):])
 		idx := strings.Index(rest, ":")
 		if idx <= 0 || idx == len(rest)-1 {
 			return "", false
@@ -1041,6 +1056,24 @@ func normalizeServiceBackendSpec(spec string) (string, bool) {
 	default:
 		return strings.ToLower(spec), true
 	}
+}
+
+// mergeNodeMaps combines entries from `nodes:` (canonical) and `access.hosts:`
+// (legacy) into a single map. Entries declared under `nodes:` win on key
+// collision, so users can graduate to the new spelling without removing the
+// old block first.
+func mergeNodeMaps(legacy, canonical map[string]RemoteHostConfig) map[string]RemoteHostConfig {
+	if len(legacy) == 0 && len(canonical) == 0 {
+		return nil
+	}
+	merged := make(map[string]RemoteHostConfig, len(legacy)+len(canonical))
+	for name, host := range legacy {
+		merged[name] = host
+	}
+	for name, host := range canonical {
+		merged[name] = host
+	}
+	return merged
 }
 
 func normalizeRemoteHosts(values map[string]RemoteHostConfig) map[string]RemoteHostConfig {

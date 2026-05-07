@@ -17,9 +17,9 @@ test: ## P0: run the Go unit and integration suite
 
 smoke-cli: ## P0: deterministic CLI checks against configs/agent.test.yaml
 	@mkdir -p ./data
-	GOCACHE=/tmp/go-build GOSUMDB=off go run ./cmd/cli -config ./configs/agent.test.yaml -exec "skills"
-	GOCACHE=/tmp/go-build GOSUMDB=off go run ./cmd/cli -config ./configs/agent.test.yaml -exec "watch list"
-	GOCACHE=/tmp/go-build GOSUMDB=off go run ./cmd/cli -config ./configs/agent.test.yaml -exec "notes"
+	GOCACHE=/tmp/go-build GOSUMDB=off go run ./cmd/openlight cli -config ./configs/agent.test.yaml -exec "skills"
+	GOCACHE=/tmp/go-build GOSUMDB=off go run ./cmd/openlight cli -config ./configs/agent.test.yaml -exec "watch list"
+	GOCACHE=/tmp/go-build GOSUMDB=off go run ./cmd/openlight cli -config ./configs/agent.test.yaml -exec "notes"
 
 regression: test smoke-cli ## P1: full unit/integration suite plus deterministic CLI smoke
 
@@ -29,7 +29,7 @@ smoke-rpi: smoke-rpi-cli ## P2: smoke the deployed CLI on the Raspberry Pi
 smoke-macmini: smoke-macmini-cli ## P2: smoke the deployed CLI on the Mac mini
 
 smoke-rpi-cli:
-	ssh $(PI_USER)@$(PI_HOST) '$(if $(strip $(SMOKE_LLM_PROFILE)),LLM_PROFILE=$(SMOKE_LLM_PROFILE) ,)$(PI_DEST_DIR)/$(CLI_BIN_NAME) -config /etc/openlight/agent.yaml $(SMOKE_FLAGS)'
+	ssh $(PI_USER)@$(PI_HOST) '$(if $(strip $(SMOKE_LLM_PROFILE)),LLM_PROFILE=$(SMOKE_LLM_PROFILE) ,)$(PI_DEST_DIR)/$(BIN_NAME) cli -config /etc/openlight/agent.yaml $(SMOKE_FLAGS)'
 
 smoke-rpi-cli-ollama:
 	$(MAKE) smoke-rpi-cli SMOKE_LLM_PROFILE=ollama
@@ -38,7 +38,7 @@ smoke-rpi-cli-openai:
 	$(MAKE) smoke-rpi-cli SMOKE_LLM_PROFILE=openai
 
 smoke-macmini-cli:
-	@ssh $(SSH_TARGET) '$(if $(strip $(SMOKE_LLM_PROFILE)),LLM_PROFILE=$(SMOKE_LLM_PROFILE) ,)"$(RUNTIME_DIR)/bin/$(CLI_BIN_NAME)" -config "$(CONFIG_REMOTE)" $(SMOKE_FLAGS)'
+	@ssh $(SSH_TARGET) '$(if $(strip $(SMOKE_LLM_PROFILE)),LLM_PROFILE=$(SMOKE_LLM_PROFILE) ,)"$(RUNTIME_DIR)/bin/$(BIN_NAME)" cli -config "$(CONFIG_REMOTE)" $(SMOKE_FLAGS)'
 
 smoke-macmini-cli-ollama:
 	$(MAKE) smoke-macmini-cli SMOKE_LLM_PROFILE=ollama

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"openlight/internal/app"
+	"openlight/internal/runtime"
 	"openlight/internal/auth"
 	"openlight/internal/config"
 	"openlight/internal/core"
@@ -25,7 +25,7 @@ type Harness struct {
 	timeout   time.Duration
 }
 
-func NewHarness(cfg config.Config, runtime app.Runtime, userID, chatID int64) *Harness {
+func NewHarness(cfg config.Config, runtime runtime.Runtime, userID, chatID int64) *Harness {
 	transport := &captureTransport{}
 	if runtime.Watch != nil {
 		runtime.Watch.SetNotifier(transport)

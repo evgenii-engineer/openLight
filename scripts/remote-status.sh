@@ -17,7 +17,7 @@ launchctl list | grep openlight || true
 echo
 
 echo "processes:"
-pgrep -fl openlight-agent || true
+pgrep -fl "openlight agent" || true
 echo
 
 echo "stderr (last 40):"
@@ -29,5 +29,5 @@ tail -n 40 "\${RUNTIME_DIR}/logs/agent.out.log" 2>/dev/null || true
 echo
 
 echo "cli status:"
-"\${RUNTIME_DIR}/bin/openlight-cli" -config "\${CONFIG_REMOTE}" -exec "status" || true
+"\${RUNTIME_DIR}/bin/openlight" cli -config "\${CONFIG_REMOTE}" -exec "status" || true
 EOF

@@ -18,4 +18,4 @@ export REQUEST_TIMEOUT="${REQUEST_TIMEOUT:-5s}"
 export POLL_TIMEOUT="${POLL_TIMEOUT:-25s}"
 
 mkdir -p "$ROOT_DIR/data"
-exec go run ./cmd/agent
+exec go run ./cmd/openlight agent

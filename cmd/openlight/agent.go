@@ -4,21 +4,19 @@ import (
 	"context"
 	"errors"
 	"flag"
-	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
-
 	"time"
 
-	"openlight/internal/app"
 	"openlight/internal/auth"
 	"openlight/internal/config"
 	"openlight/internal/core"
 	"openlight/internal/logging"
 	"openlight/internal/router"
+	"openlight/internal/runtime"
 	"openlight/internal/skills"
 	"openlight/internal/telegram"
 	telegramui "openlight/internal/telegram/ui"
@@ -28,16 +26,12 @@ import (
 
 var defaultConfigPath = "/etc/openlight/agent.yaml"
 
-func main() {
-	if err := run(); err != nil {
-		fmt.Fprintf(os.Stderr, "agent failed: %v\n", err)
-		os.Exit(1)
+func runAgent(args []string) error {
+	fs := flag.NewFlagSet("agent", flag.ContinueOnError)
+	configPath := fs.String("config", "", "Path to YAML configuration file")
+	if err := fs.Parse(args); err != nil {
+		return err
 	}
-}
-
-func run() error {
-	configPath := flag.String("config", "", "Path to YAML configuration file")
-	flag.Parse()
 
 	cfg, err := config.Load(resolveConfigPath(*configPath))
 	if err != nil {
@@ -50,11 +44,11 @@ func run() error {
 	runCtx, cancelRun := context.WithCancel(ctx)
 	defer cancelRun()
 
-	runtime, err := app.BuildRuntime(runCtx, cfg, logger)
+	rt, err := runtime.BuildRuntime(runCtx, cfg, logger)
 	if err != nil {
 		return err
 	}
-	defer app.CloseRuntime(runtime)
+	defer runtime.CloseRuntime(rt)
 
 	bot := telegram.NewBot(telegram.Options{
 		Token:       cfg.Telegram.BotToken,
@@ -69,24 +63,24 @@ func run() error {
 		},
 		Logger: logger.With("component", "telegram"),
 	})
-	if runtime.Watch != nil {
-		runtime.Watch.SetNotifier(bot)
+	if rt.Watch != nil {
+		rt.Watch.SetNotifier(bot)
 	}
-	if runtime.VisualWatch != nil {
-		runtime.VisualWatch.SetNotifier(visualWatchNotifier{bot: bot})
+	if rt.VisualWatch != nil {
+		rt.VisualWatch.SetNotifier(visualWatchNotifier{bot: bot})
 	}
 	agent := core.NewAgent(
 		bot,
 		auth.New(cfg.Auth.AllowedUserIDs, cfg.Auth.AllowedChatIDs),
-		router.NewWithLogger(runtime.Registry, runtime.Classifier, logger.With("component", "router")),
-		runtime.Registry,
-		runtime.Repository,
-		runtime.Watch,
+		router.NewWithLogger(rt.Registry, rt.Classifier, logger.With("component", "router")),
+		rt.Registry,
+		rt.Repository,
+		rt.Watch,
 		logger.With("component", "agent"),
 		cfg.Agent.RequestTimeout,
 	)
 	ui := telegramui.New(telegramui.Config{
-		Registry:     runtime.Registry,
+		Registry:     rt.Registry,
 		Transport:    bot,
 		Sessions:     sessions.NewStore(15 * time.Minute),
 		QuickActions: telegramui.DefaultQuickActions(),
@@ -107,7 +101,7 @@ func run() error {
 		)
 	}
 	if cfg.Vision.Enabled || cfg.OCR.Enabled {
-		agent.SetImageInbox(core.NewImageInbox(runtime.Registry, core.ImageInboxOptions{
+		agent.SetImageInbox(core.NewImageInbox(rt.Registry, core.ImageInboxOptions{
 			VisionEnabled: cfg.Vision.Enabled,
 			OCREnabled:    cfg.OCR.Enabled,
 			DefaultPrompt: cfg.Vision.DefaultPrompt,
@@ -115,23 +109,23 @@ func run() error {
 	}
 
 	var watchErrCh chan error
-	if cfg.Watch.Enabled && runtime.Watch != nil {
+	if cfg.Watch.Enabled && rt.Watch != nil {
 		watchErrCh = make(chan error, 1)
 		go func() {
-			watchErrCh <- runtime.Watch.Run(runCtx)
+			watchErrCh <- rt.Watch.Run(runCtx)
 		}()
 	}
 
 	var visualWatchErrCh chan error
-	if cfg.VisualWatch.Enabled && runtime.VisualWatch != nil {
+	if cfg.VisualWatch.Enabled && rt.VisualWatch != nil {
 		visualWatchErrCh = make(chan error, 1)
 		go func() {
-			visualWatchErrCh <- runtime.VisualWatch.Run(runCtx)
+			visualWatchErrCh <- rt.VisualWatch.Run(runCtx)
 		}()
 	}
 
 	publishCtx, publishCancel := context.WithTimeout(runCtx, 10*time.Second)
-	if err := bot.SetMyCommands(publishCtx, telegramCommandsFromRegistry(runtime.Registry)); err != nil {
+	if err := bot.SetMyCommands(publishCtx, telegramCommandsFromRegistry(rt.Registry)); err != nil {
 		logger.Warn("publish telegram commands", "error", err)
 	}
 	publishCancel()
@@ -157,9 +151,6 @@ func run() error {
 	return nil
 }
 
-// visualWatchNotifier adapts the Telegram bot to the visualwatch.Notifier
-// interface. It sends the screenshot as a photo with the alert text as the
-// caption and falls back to a plain text reply if the file is missing.
 type visualWatchNotifier struct {
 	bot *telegram.Bot
 }
@@ -205,14 +196,11 @@ func resolveConfigPath(flagValue string) string {
 	if value := strings.TrimSpace(flagValue); value != "" {
 		return value
 	}
-
 	if value := strings.TrimSpace(os.Getenv("OPENLIGHT_CONFIG")); value != "" {
 		return value
 	}
-
 	if info, err := os.Stat(defaultConfigPath); err == nil && !info.IsDir() {
 		return defaultConfigPath
 	}
-
 	return ""
 }

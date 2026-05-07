@@ -38,9 +38,9 @@ Both binaries build the same runtime and execute the same skills through `core.A
 
 Relevant files:
 
-- [cmd/agent/main.go](./cmd/agent/main.go)
-- [cmd/cli/main.go](./cmd/cli/main.go)
-- [internal/core/agent.go](./internal/core/agent.go)
+- [cmd/agent/main.go](../cmd/agent/main.go)
+- [cmd/cli/main.go](../cmd/cli/main.go)
+- [internal/core/agent.go](../internal/core/agent.go)
 
 ## Runtime assembly
 
@@ -71,9 +71,9 @@ Conditionally registered modules:
 
 Relevant files:
 
-- [internal/app/runtime.go](./internal/app/runtime.go)
-- [internal/config/config.go](./internal/config/config.go)
-- [internal/skills](./internal/skills)
+- [internal/app/runtime.go](../internal/app/runtime.go)
+- [internal/config/config.go](../internal/config/config.go)
+- [internal/skills](../internal/skills)
 
 ## Configuration model
 
@@ -122,8 +122,8 @@ Pending clarification state is stored in the `settings` table and expires after 
 
 Relevant files:
 
-- [internal/core/agent.go](./internal/core/agent.go)
-- [internal/storage/storage.go](./internal/storage/storage.go)
+- [internal/core/agent.go](../internal/core/agent.go)
+- [internal/storage/storage.go](../internal/storage/storage.go)
 
 ## Routing model
 
@@ -168,10 +168,10 @@ The LLM never expands permissions. It can only choose among already registered s
 
 Relevant files:
 
-- [internal/router/router.go](./internal/router/router.go)
-- [internal/router/rules/rules.go](./internal/router/rules/rules.go)
-- [internal/router/semantic/normalize.go](./internal/router/semantic/normalize.go)
-- [internal/router/llm/classifier.go](./internal/router/llm/classifier.go)
+- [internal/router/router.go](../internal/router/router.go)
+- [internal/router/rules/rules.go](../internal/router/rules/rules.go)
+- [internal/router/semantic/normalize.go](../internal/router/semantic/normalize.go)
+- [internal/router/llm/classifier.go](../internal/router/llm/classifier.go)
 
 ## Skill surface and safety boundaries
 
@@ -251,10 +251,10 @@ When the transport supports buttons, alerts use inline buttons. Otherwise the ru
 
 Relevant files:
 
-- [internal/watch/service.go](./internal/watch/service.go)
-- [internal/watch/spec.go](./internal/watch/spec.go)
-- [internal/watch/actions.go](./internal/watch/actions.go)
-- [internal/watch/packs.go](./internal/watch/packs.go)
+- [internal/watch/service.go](../internal/watch/service.go)
+- [internal/watch/spec.go](../internal/watch/spec.go)
+- [internal/watch/actions.go](../internal/watch/actions.go)
+- [internal/watch/packs.go](../internal/watch/packs.go)
 
 ## Persistence model
 
@@ -286,10 +286,10 @@ Default container database path:
 
 Relevant files:
 
-- [internal/storage/storage.go](./internal/storage/storage.go)
-- [internal/storage/sqlite/sqlite.go](./internal/storage/sqlite/sqlite.go)
-- [migrations/0001_init.sql](./migrations/0001_init.sql)
-- [migrations/0002_watch.sql](./migrations/0002_watch.sql)
+- [internal/storage/storage.go](../internal/storage/storage.go)
+- [internal/storage/sqlite/sqlite.go](../internal/storage/sqlite/sqlite.go)
+- [migrations/0001_init.sql](../migrations/0001_init.sql)
+- [migrations/0002_watch.sql](../migrations/0002_watch.sql)
 
 ## LLM integration
 
@@ -316,20 +316,17 @@ This means the runtime still works in deterministic-only mode for commands, rule
 
 Relevant files:
 
-- [internal/llm/factory.go](./internal/llm/factory.go)
-- [internal/llm/ollama.go](./internal/llm/ollama.go)
-- [internal/llm/openai.go](./internal/llm/openai.go)
+- [internal/llm/factory.go](../internal/llm/factory.go)
+- [internal/llm/ollama.go](../internal/llm/ollama.go)
+- [internal/llm/openai.go](../internal/llm/openai.go)
 
 ## Deployment model
 
 Supported deployment paths:
 
 - native Linux or Raspberry Pi
-- Docker image from [Dockerfile](./Dockerfile)
-- bundled Compose stack from [openlight-compose.yaml](./openlight-compose.yaml)
-- same bundled stack under [deployments/docker/openlight-compose.yaml](./deployments/docker/openlight-compose.yaml)
-
-The two Compose files are currently identical. The top-level file is the simpler entrypoint for users.
+- Docker image from [Dockerfile](../Dockerfile)
+- bundled Compose stack from [openlight-compose.yaml](../openlight-compose.yaml)
 
 Container layout:
 
@@ -346,26 +343,26 @@ Running `openLight` inside Docker does not automatically grant host file access 
 
 Relevant files:
 
-- [Dockerfile](./Dockerfile)
-- [openlight-compose.yaml](./openlight-compose.yaml)
-- [deployments/systemd/openlight-agent.service](./deployments/systemd/openlight-agent.service)
-- [scripts/install.sh](./scripts/install.sh)
-- [scripts/deploy-rpi.sh](./scripts/deploy-rpi.sh)
+- [Dockerfile](../Dockerfile)
+- [openlight-compose.yaml](../openlight-compose.yaml)
+- [deployments/systemd/openlight-agent.service](../deployments/systemd/openlight-agent.service)
+- [scripts/install.sh](../scripts/install.sh)
+- [scripts/deploy-rpi.sh](../scripts/deploy-rpi.sh)
 
 ## Code map
 
 If you want to read the code in roughly the right order:
 
-1. [cmd/agent/main.go](./cmd/agent/main.go)
-2. [internal/app/runtime.go](./internal/app/runtime.go)
-3. [internal/core/agent.go](./internal/core/agent.go)
-4. [internal/router/router.go](./internal/router/router.go)
-5. [internal/router/llm/classifier.go](./internal/router/llm/classifier.go)
-6. [internal/skills](./internal/skills)
-7. [internal/watch/service.go](./internal/watch/service.go)
-8. [internal/storage/sqlite/sqlite.go](./internal/storage/sqlite/sqlite.go)
+1. [cmd/agent/main.go](../cmd/agent/main.go)
+2. [internal/app/runtime.go](../internal/app/runtime.go)
+3. [internal/core/agent.go](../internal/core/agent.go)
+4. [internal/router/router.go](../internal/router/router.go)
+5. [internal/router/llm/classifier.go](../internal/router/llm/classifier.go)
+6. [internal/skills](../internal/skills)
+7. [internal/watch/service.go](../internal/watch/service.go)
+8. [internal/storage/sqlite/sqlite.go](../internal/storage/sqlite/sqlite.go)
 
 Related docs:
 
-- [README.md](./README.md)
-- [CHANGELOG.md](./CHANGELOG.md)
+- [README.md](../README.md)
+- [CHANGELOG.md](../CHANGELOG.md)

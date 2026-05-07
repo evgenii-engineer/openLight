@@ -14,6 +14,6 @@ CONFIG_REMOTE="${CONFIG_REMOTE}"
 
 curl -fsS http://127.0.0.1:11434/api/tags >/dev/null
 launchctl list | grep -q openlight
-pgrep -f openlight-agent >/dev/null
-"\${RUNTIME_DIR}/bin/openlight-cli" -config "\${CONFIG_REMOTE}" -exec "status" >/dev/null
+pgrep -f "openlight agent" >/dev/null
+"\${RUNTIME_DIR}/bin/openlight" cli -config "\${CONFIG_REMOTE}" -exec "status" >/dev/null
 EOF

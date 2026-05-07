@@ -3,8 +3,8 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-BIN_NAME="${BIN_NAME:-openlight-agent}"
-PKG="${PKG:-./cmd/agent}"
+BIN_NAME="${BIN_NAME:-openlight}"
+PKG="${PKG:-./cmd/openlight}"
 PI_USER="${PI_USER:-pi}"
 PI_HOST="${PI_HOST:-raspberrypi.local}"
 PI_DEST_DIR="${PI_DEST_DIR:-/home/${PI_USER}}"

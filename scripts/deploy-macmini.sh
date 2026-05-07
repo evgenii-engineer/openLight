@@ -3,8 +3,8 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-BIN_NAME="${BIN_NAME:-openlight-agent}"
-PKG="${PKG:-./cmd/agent}"
+BIN_NAME="${BIN_NAME:-openlight}"
+PKG="${PKG:-./cmd/openlight}"
 SSH_USER="${SSH_USER:-$(whoami)}"
 SSH_HOST="${SSH_HOST:-macmini.local}"
 SSH_TARGET="${SSH_TARGET:-${SSH_USER}@${SSH_HOST}}"

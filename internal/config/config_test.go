@@ -632,6 +632,49 @@ services:
 	}
 }
 
+func TestLoadAcceptsNodesAlias(t *testing.T) {
+	clearConfigEnv(t)
+
+	configPath := filepath.Join(t.TempDir(), "agent.yaml")
+	writeConfig(t, configPath, `
+telegram:
+  bot_token: "token"
+
+auth:
+  allowed_user_ids: [1]
+
+storage:
+  sqlite_path: "./agent.db"
+
+nodes:
+  vps:
+    address: "203.0.113.10"
+    user: "root"
+    password_env: "OPENLIGHT_VPS_PASSWORD"
+    known_hosts_path: "/home/pi/.ssh/known_hosts"
+
+services:
+  allowed:
+    - "matrix=node:vps:compose:/opt/matrix/docker-compose.yml:synapse"
+`)
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+
+	host, ok := cfg.Access.Hosts["vps"]
+	if !ok {
+		t.Fatalf("expected nodes entry to merge into access.hosts, got %#v", cfg.Access.Hosts)
+	}
+	if host.Address != "203.0.113.10:22" {
+		t.Fatalf("unexpected node address: %q", host.Address)
+	}
+	if got := cfg.Services.Allowed; len(got) != 1 || got[0] != "matrix=host:vps:compose:/opt/matrix/docker-compose.yml:synapse" {
+		t.Fatalf("expected node: prefix to normalize to host:, got %#v", got)
+	}
+}
+
 func TestLoadNormalizesAccountProviders(t *testing.T) {
 	clearConfigEnv(t)
 

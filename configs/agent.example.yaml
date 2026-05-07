@@ -21,15 +21,19 @@ auth:
 storage:
   sqlite_path: "./data/agent.db"
 
-access:
-  hosts:
-    # Named SSH hosts can be reused by remote service entries.
-    # vps:
-    #   address: "203.0.113.10:22"
-    #   user: "root"
-    #   password_env: "OPENLIGHT_VPS_PASSWORD"
-    #   known_hosts_path: "/home/pi/.ssh/known_hosts"
-    #   sudo: false
+# Named SSH-reachable nodes. Reference them from services.allowed via
+# `node:<name>:...`. See docs/NODES.md.
+nodes: {}
+  # vps:
+  #   address: "203.0.113.10:22"
+  #   user: "root"
+  #   password_env: "OPENLIGHT_VPS_PASSWORD"
+  #   known_hosts_path: "/home/pi/.ssh/known_hosts"
+  #   sudo: false
+
+# Legacy alias for `nodes:` — both keys are still accepted.
+# access:
+#   hosts: {}
 
 # `filesystem` is the preferred name for the safe local file skill.
 # The legacy `files` key is still accepted for older configs.
@@ -62,10 +66,10 @@ services:
     # - "synapse=compose:/home/pi/matrix/docker-compose.yml"
     # Direct Docker containers are also supported:
     # - "jitsi-web=docker:docker-jitsi-meet_web_1"
-    # Remote services can target a named host from access.hosts:
-    # - "jitsi-web=host:vps:compose:/opt/jitsi/docker-compose.yml:web"
-    # - "jitsi-web=host:vps:docker:docker-jitsi-meet_web_1"
-    # - "jitsi-jvb=host:vps:systemd:jitsi-videobridge2"
+    # Remote services target a node from the `nodes:` block:
+    # - "jitsi-web=node:vps:compose:/opt/jitsi/docker-compose.yml:web"
+    # - "jitsi-web=node:vps:docker:docker-jitsi-meet_web_1"
+    # - "jitsi-jvb=node:vps:systemd:jitsi-videobridge2"
   log_lines: 100
   max_log_chars: 3000
 

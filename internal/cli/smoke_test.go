@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"openlight/internal/app"
+	"openlight/internal/runtime"
 	"openlight/internal/config"
 	"openlight/internal/models"
 	"openlight/internal/router"
@@ -144,7 +144,7 @@ func TestAddLLMFallbackExecCheckUsesClassifierDecision(t *testing.T) {
 		response: "Memory usage: 42%",
 	})
 
-	runtime := app.Runtime{
+	runtime := runtime.Runtime{
 		Registry: registry,
 		Classifier: smokeStubClassifier{
 			decision: router.Decision{

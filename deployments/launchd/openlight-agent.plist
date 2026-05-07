@@ -7,7 +7,8 @@
 
 	<key>ProgramArguments</key>
 	<array>
-		<string>/Users/macmini/openlight-agent</string>
+		<string>/Users/macmini/openlight</string>
+		<string>agent</string>
 		<string>-config</string>
 		<string>/etc/openlight/agent.yaml</string>
 	</array>

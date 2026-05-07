@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"openlight/internal/app"
+	"openlight/internal/runtime"
 	"openlight/internal/config"
 	"openlight/internal/models"
 	"openlight/internal/router"
@@ -176,7 +176,7 @@ func (r SmokeReport) RenderTable() string {
 	return strings.Join(lines, "\n")
 }
 
-func RunSmoke(ctx context.Context, cfg config.Config, runtime app.Runtime, userID, chatID int64, options SmokeOptions) (SmokeReport, error) {
+func RunSmoke(ctx context.Context, cfg config.Config, runtime runtime.Runtime, userID, chatID int64, options SmokeOptions) (SmokeReport, error) {
 	harness := NewHarness(cfg, runtime, userID, chatID)
 	serviceNames := allAllowedServices(cfg)
 	dockerPackTargets := allDockerPackTargets(cfg)
@@ -879,7 +879,7 @@ func smokeAccountUsername(base, provider string) string {
 	return base + "_" + provider
 }
 
-func addRoutingCheck(report *SmokeReport, runtime app.Runtime, ctx context.Context, check string, validate func(router.Decision) error, prompts ...string) {
+func addRoutingCheck(report *SmokeReport, runtime runtime.Runtime, ctx context.Context, check string, validate func(router.Decision) error, prompts ...string) {
 	start := time.Now()
 	row := SmokeRow{
 		Check:   check,
@@ -930,7 +930,7 @@ func addRoutingCheck(report *SmokeReport, runtime app.Runtime, ctx context.Conte
 
 func addLLMFallbackExecCheck(
 	report *SmokeReport,
-	runtime app.Runtime,
+	runtime runtime.Runtime,
 	harness *Harness,
 	progress io.Writer,
 	ctx context.Context,
@@ -1331,7 +1331,7 @@ func smokeWatchEquals(left, right models.Watch) bool {
 
 func addPackEnableCheck(
 	report *SmokeReport,
-	runtime app.Runtime,
+	runtime runtime.Runtime,
 	harness *Harness,
 	progress io.Writer,
 	ctx context.Context,
@@ -1532,7 +1532,7 @@ func smokeHasWatchSpec(watches []models.Watch, want models.Watch) bool {
 
 func addWatchRunnerCheck(
 	report *SmokeReport,
-	runtime app.Runtime,
+	runtime runtime.Runtime,
 	harness *Harness,
 	progress io.Writer,
 	ctx context.Context,

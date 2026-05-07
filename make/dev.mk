@@ -5,13 +5,18 @@
 
 ##@ Runtime
 
-.PHONY: run-local run-agent
+.PHONY: run run-local run-agent doctor
+
+run: ## Run openlight agent in the foreground (go run ./cmd/openlight agent)
+	go run $(PKG) agent
+
+run-agent: run ## Alias for `make run`
 
 run-local: ## Run the agent locally via scripts/run-local.sh
 	./scripts/run-local.sh
 
-run-agent: ## Run the agent in the foreground (go run ./cmd/agent)
-	go run $(PKG)
+doctor: ## Run openlight doctor against ./configs/agent.example.yaml (override CONFIG=...)
+	go run $(PKG) doctor -config $(if $(CONFIG),$(CONFIG),./configs/agent.example.yaml)
 
 ##@ Dev tooling
 

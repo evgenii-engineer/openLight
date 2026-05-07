@@ -9,10 +9,8 @@
 
 # ---- Go build ------------------------------------------------------------
 
-BIN_NAME      ?= openlight-agent
-PKG           ?= ./cmd/agent
-CLI_BIN_NAME  ?= openlight-cli
-CLI_PKG       ?= ./cmd/cli
+BIN_NAME      ?= openlight
+PKG           ?= ./cmd/openlight
 
 GOOS          ?= linux
 GOARCH        ?= arm64
@@ -20,7 +18,6 @@ CGO_ENABLED   ?= 0
 
 BUILD_DIR     ?= build/$(GOOS)-$(GOARCH)
 OUTPUT        ?= $(BUILD_DIR)/$(BIN_NAME)
-CLI_OUTPUT    ?= $(BUILD_DIR)/$(CLI_BIN_NAME)
 
 GO_LDFLAGS    ?= -s -w
 GO_BUILD_FLAGS ?= -trimpath -ldflags="$(GO_LDFLAGS)"
