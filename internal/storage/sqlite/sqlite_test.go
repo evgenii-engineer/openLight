@@ -187,3 +187,48 @@ func TestRepositoryCRUD(t *testing.T) {
 		t.Fatalf("unexpected pending incidents: %#v", pending)
 	}
 }
+
+func TestPruneOlderThanDeletesOldRowsAndKeepsRecent(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	repo, err := New(ctx, filepath.Join(t.TempDir(), "prune.db"), nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer repo.Close()
+
+	now := time.Now().UTC()
+	old := now.Add(-30 * 24 * time.Hour)
+	recent := now.Add(-1 * time.Hour)
+
+	for _, ts := range []time.Time{old, old, recent} {
+		if err := repo.SaveMessage(ctx, models.Message{
+			TelegramUserID: 1, TelegramChatID: 1, Role: models.RoleUser, Text: "x", CreatedAt: ts,
+		}); err != nil {
+			t.Fatalf("SaveMessage: %v", err)
+		}
+		if err := repo.SaveSkillCall(ctx, models.SkillCall{
+			SkillName: "s", InputText: "i", ArgsJSON: "{}", Status: "ok", CreatedAt: ts,
+		}); err != nil {
+			t.Fatalf("SaveSkillCall: %v", err)
+		}
+	}
+
+	cutoff := now.Add(-7 * 24 * time.Hour)
+	msgs, calls, err := repo.PruneOlderThan(ctx, cutoff)
+	if err != nil {
+		t.Fatalf("PruneOlderThan: %v", err)
+	}
+	if msgs != 2 || calls != 2 {
+		t.Fatalf("expected 2 messages and 2 skill_calls deleted, got %d / %d", msgs, calls)
+	}
+
+	rest, err := repo.ListMessagesByChat(ctx, 1, 10)
+	if err != nil {
+		t.Fatalf("ListMessagesByChat: %v", err)
+	}
+	if len(rest) != 1 {
+		t.Fatalf("expected 1 surviving message, got %d", len(rest))
+	}
+}

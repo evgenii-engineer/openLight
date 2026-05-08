@@ -7,7 +7,7 @@
 
 ##@ Test
 
-.PHONY: test smoke-cli regression \
+.PHONY: test smoke-cli smoke-darwin regression \
         smoke-rpi smoke-macmini \
         smoke-rpi-cli smoke-rpi-cli-ollama smoke-rpi-cli-openai \
         smoke-macmini-cli smoke-macmini-cli-ollama smoke-macmini-cli-openai
@@ -20,6 +20,17 @@ smoke-cli: ## P0: deterministic CLI checks against configs/agent.test.yaml
 	GOCACHE=/tmp/go-build GOSUMDB=off go run ./cmd/openlight cli -config ./configs/agent.test.yaml -exec "skills"
 	GOCACHE=/tmp/go-build GOSUMDB=off go run ./cmd/openlight cli -config ./configs/agent.test.yaml -exec "watch list"
 	GOCACHE=/tmp/go-build GOSUMDB=off go run ./cmd/openlight cli -config ./configs/agent.test.yaml -exec "notes"
+
+# smoke-darwin: P0 sanity check that the macOS-native system provider
+# (sysctl, vm_stat, top) actually returns sensible values when run on
+# a Mac. Does not require Telegram, LLM, or any deploy.
+smoke-darwin: ## P0 (macOS): verify /cpu, /memory, /uptime work locally
+	@if [ "$$(uname -s)" != "Darwin" ]; then echo "smoke-darwin must run on macOS (got $$(uname -s))"; exit 1; fi
+	@mkdir -p ./data
+	GOCACHE=/tmp/go-build GOSUMDB=off go run ./cmd/openlight cli -config ./configs/agent.test.yaml -exec "/cpu"
+	GOCACHE=/tmp/go-build GOSUMDB=off go run ./cmd/openlight cli -config ./configs/agent.test.yaml -exec "/memory"
+	GOCACHE=/tmp/go-build GOSUMDB=off go run ./cmd/openlight cli -config ./configs/agent.test.yaml -exec "/uptime"
+	GOCACHE=/tmp/go-build GOSUMDB=off go run ./cmd/openlight cli -config ./configs/agent.test.yaml -exec "/status"
 
 regression: test smoke-cli ## P1: full unit/integration suite plus deterministic CLI smoke
 

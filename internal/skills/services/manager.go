@@ -182,7 +182,7 @@ func (m *SystemdManager) Status(ctx context.Context, service string) (Info, erro
 	if err != nil {
 		return Info{}, err
 	}
-	if err := ensureLinux(); err != nil {
+	if err := validateBackendOnHost(target); err != nil {
 		return Info{}, err
 	}
 
@@ -201,7 +201,7 @@ func (m *SystemdManager) Restart(ctx context.Context, service string) error {
 	if err != nil {
 		return err
 	}
-	if err := ensureLinux(); err != nil {
+	if err := validateBackendOnHost(target); err != nil {
 		return err
 	}
 
@@ -220,7 +220,7 @@ func (m *SystemdManager) Logs(ctx context.Context, service string, lines int) (s
 	if err != nil {
 		return "", err
 	}
-	if err := ensureLinux(); err != nil {
+	if err := validateBackendOnHost(target); err != nil {
 		return "", err
 	}
 
@@ -239,7 +239,7 @@ func (m *SystemdManager) Exec(ctx context.Context, service string, args ...strin
 	if err != nil {
 		return "", err
 	}
-	if err := ensureLinux(); err != nil {
+	if err := validateBackendOnHost(target); err != nil {
 		return "", err
 	}
 	if len(args) == 0 || strings.TrimSpace(args[0]) == "" {
@@ -951,9 +951,22 @@ func dockerDescription(target serviceTarget, record composePSRecord) string {
 	}
 }
 
-func ensureLinux() error {
+// validateBackendOnHost guards the systemd backend on a non-Linux host.
+// Docker and compose backends work everywhere Docker is installed
+// (including Mac mini), and remote targets are validated by the SSH
+// executor on the remote side, so neither needs the local-OS check.
+func validateBackendOnHost(target serviceTarget) error {
+	if target.Backend != backendSystemd {
+		return nil
+	}
+	// Remote systemd is fine: the systemctl call runs on the remote host
+	// where systemd actually lives. Only block when this binary would have
+	// to invoke systemd locally on a non-Linux machine.
+	if strings.TrimSpace(target.Host) != "" {
+		return nil
+	}
 	if runtime.GOOS != "linux" {
-		return fmt.Errorf("%w: systemd management is supported on linux only", skills.ErrUnavailable)
+		return fmt.Errorf("%w: systemd management is supported on linux only (use docker/compose backend or a remote host on macOS)", skills.ErrUnavailable)
 	}
 	return nil
 }

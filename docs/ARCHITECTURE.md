@@ -31,20 +31,25 @@ watch.Service runs alongside the agent:
 
 ## Entry points
 
-- `cmd/agent`: production runtime with Telegram polling or webhook transport
-- `cmd/cli`: local transport for one-shot execution and smoke checks
+There is a single binary, `openlight`, with subcommands:
 
-Both binaries build the same runtime and execute the same skills through `core.Agent`.
+- `openlight agent`: production runtime with Telegram polling or webhook transport
+- `openlight cli`: local transport for one-shot execution and smoke checks
+- `openlight doctor`: read-only health probe for config and dependencies
+
+All subcommands build the same runtime and execute the same skills through `core.Agent`.
 
 Relevant files:
 
-- [cmd/agent/main.go](../cmd/agent/main.go)
-- [cmd/cli/main.go](../cmd/cli/main.go)
+- [cmd/openlight/main.go](../cmd/openlight/main.go)
+- [cmd/openlight/agent.go](../cmd/openlight/agent.go)
+- [cmd/openlight/cli.go](../cmd/openlight/cli.go)
+- [cmd/openlight/doctor.go](../cmd/openlight/doctor.go)
 - [internal/core/agent.go](../internal/core/agent.go)
 
 ## Runtime assembly
 
-`internal/app/runtime.go` wires the runtime in a fixed order:
+`internal/runtime/runtime.go` wires the runtime in a fixed order:
 
 1. load config
 2. open SQLite and run embedded migrations
@@ -52,7 +57,7 @@ Relevant files:
 4. build the service manager and system provider
 5. register skill modules
 6. build the optional LLM classifier
-7. return the shared runtime to `cmd/agent` or `cmd/cli`
+7. return the shared runtime to the agent or cli subcommand
 
 Always-registered modules:
 
@@ -71,7 +76,7 @@ Conditionally registered modules:
 
 Relevant files:
 
-- [internal/app/runtime.go](../internal/app/runtime.go)
+- [internal/runtime/runtime.go](../internal/runtime/runtime.go)
 - [internal/config/config.go](../internal/config/config.go)
 - [internal/skills](../internal/skills)
 
@@ -98,8 +103,8 @@ Examples of what config controls:
 
 Notes:
 
-- `cmd/agent` resolves config from `-config`, then `OPENLIGHT_CONFIG`, then `/etc/openlight/agent.yaml`
-- `cmd/cli` uses the passed `-config` path directly, or env/defaults when no file is passed
+- `openlight agent` resolves config from `-config`, then `OPENLIGHT_CONFIG`, then `/etc/openlight/agent.yaml`
+- `openlight cli` uses the passed `-config` path directly, or env/defaults when no file is passed
 
 ## Request lifecycle
 
@@ -353,14 +358,15 @@ Relevant files:
 
 If you want to read the code in roughly the right order:
 
-1. [cmd/agent/main.go](../cmd/agent/main.go)
-2. [internal/app/runtime.go](../internal/app/runtime.go)
-3. [internal/core/agent.go](../internal/core/agent.go)
-4. [internal/router/router.go](../internal/router/router.go)
-5. [internal/router/llm/classifier.go](../internal/router/llm/classifier.go)
-6. [internal/skills](../internal/skills)
-7. [internal/watch/service.go](../internal/watch/service.go)
-8. [internal/storage/sqlite/sqlite.go](../internal/storage/sqlite/sqlite.go)
+1. [cmd/openlight/main.go](../cmd/openlight/main.go)
+2. [cmd/openlight/agent.go](../cmd/openlight/agent.go)
+3. [internal/runtime/runtime.go](../internal/runtime/runtime.go)
+4. [internal/core/agent.go](../internal/core/agent.go)
+5. [internal/router/router.go](../internal/router/router.go)
+6. [internal/router/llm/classifier.go](../internal/router/llm/classifier.go)
+7. [internal/skills](../internal/skills)
+8. [internal/watch/service.go](../internal/watch/service.go)
+9. [internal/storage/sqlite/sqlite.go](../internal/storage/sqlite/sqlite.go)
 
 Related docs:
 

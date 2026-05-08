@@ -101,6 +101,9 @@ func (s *stubRepository) SetSetting(context.Context, string, string) error      
 func (s *stubRepository) GetSetting(context.Context, string) (models.Setting, bool, error) {
 	return models.Setting{}, false, nil
 }
+func (s *stubRepository) PruneOlderThan(context.Context, time.Time) (int64, int64, error) {
+	return 0, 0, nil
+}
 func (s *stubRepository) Close() error { return nil }
 
 type stubService struct {

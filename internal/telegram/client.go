@@ -3,6 +3,7 @@ package telegram
 import (
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -164,9 +165,15 @@ func (b *Bot) serveWebhook(ctx context.Context, handler func(context.Context, In
 	}
 	defer listener.Close()
 
+	// WriteTimeout and IdleTimeout protect the listener from slow-loris
+	// style stalls on long-lived TCP connections. The handler itself only
+	// reads JSON from Telegram, so a few seconds is generous.
 	server := &http.Server{
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	serverErrors := make(chan error, 1)
@@ -586,9 +593,17 @@ func (b *Bot) webhookHandler(ctx context.Context, handler func(context.Context, 
 			return
 		}
 
-		if b.webhook.SecretToken != "" && r.Header.Get("X-Telegram-Bot-Api-Secret-Token") != b.webhook.SecretToken {
-			http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
-			return
+		if b.webhook.SecretToken != "" {
+			provided := r.Header.Get("X-Telegram-Bot-Api-Secret-Token")
+			// subtle.ConstantTimeCompare avoids leaking the secret one
+			// byte at a time via response-time differences. The length
+			// comparison is required because ConstantTimeCompare returns
+			// 0 for length mismatches without doing the actual compare.
+			if len(provided) != len(b.webhook.SecretToken) ||
+				subtle.ConstantTimeCompare([]byte(provided), []byte(b.webhook.SecretToken)) != 1 {
+				http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+				return
+			}
 		}
 
 		var update update

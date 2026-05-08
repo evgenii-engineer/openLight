@@ -58,9 +58,12 @@ type Options struct {
 	RequestTimeout   time.Duration
 }
 
-// Service is the visual-watch background poller.
+// Service is the visual-watch background poller. It only persists
+// visual-watch state, so it depends on the narrow VisualWatchStore
+// interface rather than the full Repository — tests can supply a stub
+// that implements four methods instead of forty.
 type Service struct {
-	repository storage.Repository
+	repository storage.VisualWatchStore
 	browser    BrowserManager
 	ocr        OCRManager
 	notifier   Notifier
@@ -72,7 +75,7 @@ type Service struct {
 // and set later via SetNotifier (the agent does this so it can pass the
 // Telegram bot only after both objects exist).
 func NewService(
-	repository storage.Repository,
+	repository storage.VisualWatchStore,
 	browserManager BrowserManager,
 	ocrManager OCRManager,
 	notifier Notifier,

@@ -122,48 +122,24 @@ func (a *Agent) Run(ctx context.Context) error {
 	return a.transport.Poll(ctx, a.HandleMessage)
 }
 
+// HandleMessage is the agent's request lifecycle. It is intentionally
+// kept short and linear so the order of stages is obvious from a single
+// read: preprocess (voice/image, empty filter) → persist + auth → UI
+// pipeline → watch action callbacks → route (with clarification reuse)
+// → execute + reply. Each stage is a private method that returns a
+// (handled, error) pair; HandleMessage stays the only place those
+// stages compose so there is no implicit middleware ordering anywhere.
 func (a *Agent) HandleMessage(ctx context.Context, message telegram.IncomingMessage) error {
-	replyPrefix := ""
-
-	if strings.TrimSpace(message.Text) == "" && message.Audio != nil {
-		if a.voiceProcessor == nil {
-			return a.reply(ctx, message.ChatID, message.UserID, "voice is disabled")
-		}
-		downloader, _ := a.transport.(voice.Downloader)
-		result, err := a.voiceProcessor.Process(ctx, message, downloader)
-		if err != nil {
-			return a.reply(ctx, message.ChatID, message.UserID, userMessageForError(err))
-		}
-		message.Text = result.RoutedText
-		if a.replyTranscript {
-			replyPrefix = "Transcript: " + result.Transcript
-		}
+	replyPrefix, handled, err := a.preprocessAttachments(ctx, &message)
+	if handled || err != nil {
+		return err
 	}
-
-	if message.Image != nil {
-		if a.imageInbox == nil || !a.imageInbox.Enabled() {
-			return a.reply(ctx, message.ChatID, message.UserID, "image input is disabled (enable vision or ocr)")
-		}
-		downloader, _ := a.transport.(voice.Downloader)
-		if err := a.authorizer.Error(message.UserID, message.ChatID); err != nil {
-			a.logWarn("blocked unauthorized image", "error", err)
-			return a.reply(ctx, message.ChatID, message.UserID, "access denied")
-		}
-		result, err := a.imageInbox.Process(ctx, message, downloader)
-		if err != nil {
-			return a.reply(ctx, message.ChatID, message.UserID, userMessageForError(err))
-		}
-		return a.replyResult(ctx, message.ChatID, message.UserID, result)
-	}
-
 	if strings.TrimSpace(message.Text) == "" {
 		return nil
 	}
-
 	message.Source = normalizeIncomingSource(message.Source, message.Audio != nil)
 
 	sanitizedMessageText := utils.RedactSensitiveText(message.Text)
-
 	a.saveMessage(ctx, models.Message{
 		TelegramUserID: message.UserID,
 		TelegramChatID: message.ChatID,
@@ -176,66 +152,170 @@ func (a *Agent) HandleMessage(ctx context.Context, message telegram.IncomingMess
 		return a.reply(ctx, message.ChatID, message.UserID, withReplyPrefix(replyPrefix, "access denied"))
 	}
 
-	if a.ui != nil {
-		if message.IsCallback {
-			if err := a.ui.HandleCallback(ctx, message); err != nil {
-				a.logError("handle callback", "error", err)
-				return a.reply(ctx, message.ChatID, message.UserID, withReplyPrefix(replyPrefix, "internal error"))
-			}
-			return nil
+	if handled, err := a.handleUIPipeline(ctx, message, replyPrefix); handled || err != nil {
+		return err
+	}
+
+	if handled, err := a.handleWatchAction(ctx, message, replyPrefix); handled || err != nil {
+		return err
+	}
+
+	decision, decisionText, err := a.routeWithClarification(ctx, message, sanitizedMessageText)
+	if err != nil {
+		return a.reply(ctx, message.ChatID, message.UserID, withReplyPrefix(replyPrefix, "internal error"))
+	}
+
+	a.logRouteDecision("router decision", message, decision)
+
+	if decision.ShouldClarify() {
+		a.savePendingClarification(ctx, message.ChatID, decisionText, decision.ClarificationQuestion)
+		a.logInfo(
+			"requesting clarification",
+			"message_text", shortTextForLog(sanitizedMessageText),
+			"mode", decision.Mode,
+			"skill", decision.SkillName,
+			"args", sanitizedArgs(decision.Args),
+			"confidence", decision.Confidence,
+			"question", decision.ClarificationQuestion,
+		)
+		return a.reply(ctx, message.ChatID, message.UserID, withReplyPrefix(replyPrefix, decision.ClarificationQuestion))
+	}
+
+	decision = a.applyChatFallback(message, decision)
+
+	if !decision.Matched() {
+		a.logWarn(
+			"router did not match any skill",
+			"message_text", shortTextForLog(sanitizedMessageText),
+			"chat_id", message.ChatID,
+			"user_id", message.UserID,
+		)
+		return a.reply(ctx, message.ChatID, message.UserID, withReplyPrefix(replyPrefix, "skill not found. Try /help or /skills."))
+	}
+
+	return a.executeSkillAndReply(ctx, message, decision, replyPrefix, sanitizedMessageText)
+}
+
+// preprocessAttachments handles voice transcription and image inbox
+// dispatch. Voice mutates message.Text in place; image inbox is a
+// terminal flow that replies and returns handled=true. Returns
+// (replyPrefix, handled, err) where handled means the caller must
+// stop processing (image inbox already replied or voice produced an
+// error reply).
+func (a *Agent) preprocessAttachments(ctx context.Context, message *telegram.IncomingMessage) (string, bool, error) {
+	replyPrefix := ""
+
+	if strings.TrimSpace(message.Text) == "" && message.Audio != nil {
+		if a.voiceProcessor == nil {
+			return "", true, a.reply(ctx, message.ChatID, message.UserID, "voice is disabled")
 		}
-		// Reply-keyboard taps and /menu always take precedence over a pending
-		// input flow — they let the user escape if they got stuck.
-		if screen, ok := a.ui.MapReplyKeyboard(message.Text); ok {
-			a.ui.CancelPending(message.ChatID)
-			if err := a.ui.OpenScreen(ctx, message.ChatID, screen); err != nil {
-				a.logError("open ui screen", "screen", screen, "error", err)
-				return a.reply(ctx, message.ChatID, message.UserID, withReplyPrefix(replyPrefix, "internal error"))
-			}
-			return nil
+		downloader, _ := a.transport.(voice.Downloader)
+		result, err := a.voiceProcessor.Process(ctx, *message, downloader)
+		if err != nil {
+			return "", true, a.reply(ctx, message.ChatID, message.UserID, userMessageForError(err))
 		}
-		if isMenuCommand(message.Text) {
-			a.ui.CancelPending(message.ChatID)
-			a.ui.SetFreeChat(message.ChatID, false)
-			if err := a.ui.SendHome(ctx, message.ChatID); err != nil {
-				a.logError("send ui home", "error", err)
-				return a.reply(ctx, message.ChatID, message.UserID, withReplyPrefix(replyPrefix, "internal error"))
-			}
-			return nil
-		}
-		if a.ui.HasPendingInput(message.ChatID) {
-			handled, err := a.ui.HandlePendingInput(ctx, message)
-			if err != nil {
-				a.logError("handle pending input", "error", err)
-				return a.reply(ctx, message.ChatID, message.UserID, withReplyPrefix(replyPrefix, "internal error"))
-			}
-			if handled {
-				return nil
-			}
-		}
-		if a.ui.IsFreeChat(message.ChatID) && !strings.HasPrefix(strings.TrimSpace(message.Text), "/") {
-			if _, ok := a.registry.Get("chat"); ok {
-				return a.runFreeChat(ctx, message, replyPrefix)
-			}
+		message.Text = result.RoutedText
+		if a.replyTranscript {
+			replyPrefix = "Transcript: " + result.Transcript
 		}
 	}
 
-	if a.watchService != nil {
-		handled, err := a.watchService.HandleAction(ctx, message.ChatID, message.UserID, message.Text)
+	if message.Image != nil {
+		if a.imageInbox == nil || !a.imageInbox.Enabled() {
+			return "", true, a.reply(ctx, message.ChatID, message.UserID, "image input is disabled (enable vision or ocr)")
+		}
+		downloader, _ := a.transport.(voice.Downloader)
+		if err := a.authorizer.Error(message.UserID, message.ChatID); err != nil {
+			a.logWarn("blocked unauthorized image", "error", err)
+			return "", true, a.reply(ctx, message.ChatID, message.UserID, "access denied")
+		}
+		result, err := a.imageInbox.Process(ctx, *message, downloader)
 		if err != nil {
-			a.logError("handle watch action", "error", err)
-			return a.reply(ctx, message.ChatID, message.UserID, withReplyPrefix(replyPrefix, "internal error"))
+			return "", true, a.reply(ctx, message.ChatID, message.UserID, userMessageForError(err))
+		}
+		return "", true, a.replyResult(ctx, message.ChatID, message.UserID, result)
+	}
+
+	return replyPrefix, false, nil
+}
+
+// handleUIPipeline runs the optional Telegram UI layer: callback
+// dispatch, reply-keyboard taps, /menu, pending-input flows, and free
+// chat. Returns handled=true if the UI consumed the message.
+func (a *Agent) handleUIPipeline(ctx context.Context, message telegram.IncomingMessage, replyPrefix string) (bool, error) {
+	if a.ui == nil {
+		return false, nil
+	}
+
+	if message.IsCallback {
+		if err := a.ui.HandleCallback(ctx, message); err != nil {
+			a.logError("handle callback", "error", err)
+			return true, a.reply(ctx, message.ChatID, message.UserID, withReplyPrefix(replyPrefix, "internal error"))
+		}
+		return true, nil
+	}
+
+	// Reply-keyboard taps and /menu always take precedence over a pending
+	// input flow — they let the user escape if they got stuck.
+	if screen, ok := a.ui.MapReplyKeyboard(message.Text); ok {
+		a.ui.CancelPending(message.ChatID)
+		if err := a.ui.OpenScreen(ctx, message.ChatID, screen); err != nil {
+			a.logError("open ui screen", "screen", screen, "error", err)
+			return true, a.reply(ctx, message.ChatID, message.UserID, withReplyPrefix(replyPrefix, "internal error"))
+		}
+		return true, nil
+	}
+	if isMenuCommand(message.Text) {
+		a.ui.CancelPending(message.ChatID)
+		a.ui.SetFreeChat(message.ChatID, false)
+		if err := a.ui.SendHome(ctx, message.ChatID); err != nil {
+			a.logError("send ui home", "error", err)
+			return true, a.reply(ctx, message.ChatID, message.UserID, withReplyPrefix(replyPrefix, "internal error"))
+		}
+		return true, nil
+	}
+	if a.ui.HasPendingInput(message.ChatID) {
+		handled, err := a.ui.HandlePendingInput(ctx, message)
+		if err != nil {
+			a.logError("handle pending input", "error", err)
+			return true, a.reply(ctx, message.ChatID, message.UserID, withReplyPrefix(replyPrefix, "internal error"))
 		}
 		if handled {
-			return nil
+			return true, nil
 		}
 	}
+	if a.ui.IsFreeChat(message.ChatID) && !strings.HasPrefix(strings.TrimSpace(message.Text), "/") {
+		if _, ok := a.registry.Get("chat"); ok {
+			return true, a.runFreeChat(ctx, message, replyPrefix)
+		}
+	}
+	return false, nil
+}
 
+// handleWatchAction lets the watch service consume action callbacks
+// (e.g. yes/no confirmations on an open incident) before routing.
+func (a *Agent) handleWatchAction(ctx context.Context, message telegram.IncomingMessage, replyPrefix string) (bool, error) {
+	if a.watchService == nil {
+		return false, nil
+	}
+	handled, err := a.watchService.HandleAction(ctx, message.ChatID, message.UserID, message.Text)
+	if err != nil {
+		a.logError("handle watch action", "error", err)
+		return true, a.reply(ctx, message.ChatID, message.UserID, withReplyPrefix(replyPrefix, "internal error"))
+	}
+	return handled, nil
+}
+
+// routeWithClarification routes the message and, when a pending
+// clarification exists for the chat, re-routes the stitched
+// (original + answer) text. The pending state is always cleared on the
+// way out so a stale prompt doesn't poison the next message.
+func (a *Agent) routeWithClarification(ctx context.Context, message telegram.IncomingMessage, sanitizedMessageText string) (router.Decision, string, error) {
 	decisionText := message.Text
 	decision, err := a.router.Route(ctx, decisionText)
 	if err != nil {
 		a.logError("route message", "error", err)
-		return a.reply(ctx, message.ChatID, message.UserID, withReplyPrefix(replyPrefix, "internal error"))
+		return router.Decision{}, decisionText, err
 	}
 
 	pending, hasPending := a.loadPendingClarification(ctx, message.ChatID)
@@ -261,46 +341,42 @@ func (a *Agent) HandleMessage(ctx context.Context, message telegram.IncomingMess
 	if hasPending {
 		a.clearPendingClarification(ctx, message.ChatID)
 	}
+	return decision, decisionText, nil
+}
 
-	a.logRouteDecision("router decision", message, decision)
-
-	if decision.ShouldClarify() {
-		a.savePendingClarification(ctx, message.ChatID, decisionText, decision.ClarificationQuestion)
-		a.logInfo(
-			"requesting clarification",
-			"message_text", shortTextForLog(sanitizedMessageText),
-			"mode", decision.Mode,
-			"skill", decision.SkillName,
-			"args", sanitizedArgs(decision.Args),
-			"confidence", decision.Confidence,
-			"question", decision.ClarificationQuestion,
-		)
-		return a.reply(ctx, message.ChatID, message.UserID, withReplyPrefix(replyPrefix, decision.ClarificationQuestion))
+// applyChatFallback turns an unmatched non-slash message into a chat
+// skill invocation when the chat module is registered. Pure function
+// over the decision; no I/O.
+func (a *Agent) applyChatFallback(message telegram.IncomingMessage, decision router.Decision) router.Decision {
+	if decision.Matched() {
+		return decision
 	}
-
-	if !decision.Matched() {
-		if !strings.HasPrefix(strings.TrimSpace(message.Text), "/") {
-			if _, ok := a.registry.Get("chat"); ok {
-				decision = router.Decision{
-					Mode:      router.ModeUnknown,
-					SkillName: "chat",
-					Args:      map[string]string{"text": message.Text},
-				}
-				a.logRouteDecision("router chat fallback", message, decision)
-			}
-		}
+	if strings.HasPrefix(strings.TrimSpace(message.Text), "/") {
+		return decision
 	}
-
-	if !decision.Matched() {
-		a.logWarn(
-			"router did not match any skill",
-			"message_text", shortTextForLog(sanitizedMessageText),
-			"chat_id", message.ChatID,
-			"user_id", message.UserID,
-		)
-		return a.reply(ctx, message.ChatID, message.UserID, withReplyPrefix(replyPrefix, "skill not found. Try /help or /skills."))
+	if _, ok := a.registry.Get("chat"); !ok {
+		return decision
 	}
+	chatDecision := router.Decision{
+		Mode:      router.ModeUnknown,
+		SkillName: "chat",
+		Args:      map[string]string{"text": message.Text},
+	}
+	a.logRouteDecision("router chat fallback", message, chatDecision)
+	return chatDecision
+}
 
+// executeSkillAndReply resolves the decision to a Skill, optionally
+// hands off to the UI's pending-input flow for bare slash commands,
+// runs the skill under requestTimeout, persists the skill_call, and
+// sends the reply.
+func (a *Agent) executeSkillAndReply(
+	ctx context.Context,
+	message telegram.IncomingMessage,
+	decision router.Decision,
+	replyPrefix string,
+	sanitizedMessageText string,
+) error {
 	skill, ok := a.registry.Get(decision.SkillName)
 	if !ok {
 		a.logWarn("router returned unknown skill", "skill", decision.SkillName)

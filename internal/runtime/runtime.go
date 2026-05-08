@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"strings"
+	"time"
 
 	"openlight/internal/config"
 	basellm "openlight/internal/llm"
@@ -16,7 +17,9 @@ import (
 	browserskills "openlight/internal/skills/browser"
 	chatskills "openlight/internal/skills/chat"
 	fileskills "openlight/internal/skills/files"
+	mcpskills "openlight/internal/skills/mcp"
 	memoryskills "openlight/internal/skills/memory"
+	networkskills "openlight/internal/skills/network"
 	"openlight/internal/skills/notes"
 	ocrskills "openlight/internal/skills/ocr"
 	serviceskills "openlight/internal/skills/services"
@@ -41,9 +44,22 @@ type Runtime struct {
 }
 
 func BuildRuntime(ctx context.Context, cfg config.Config, logger *slog.Logger) (Runtime, error) {
+	for _, msg := range cfg.Deprecations {
+		logger.Warn("deprecated config", "message", msg)
+	}
+
 	repository, err := sqlite.New(ctx, cfg.Storage.SQLitePath, logger.With("component", "sqlite"))
 	if err != nil {
 		return Runtime{}, err
+	}
+
+	if cfg.Storage.RetentionDays > 0 {
+		cutoff := time.Now().UTC().AddDate(0, 0, -cfg.Storage.RetentionDays)
+		if msgs, calls, pruneErr := repository.PruneOlderThan(ctx, cutoff); pruneErr != nil {
+			logger.Warn("storage retention prune failed", "error", pruneErr)
+		} else if msgs > 0 || calls > 0 {
+			logger.Info("storage retention prune", "cutoff", cutoff, "messages_deleted", msgs, "skill_calls_deleted", calls)
+		}
 	}
 
 	closers := multiCloser{repository}
@@ -74,7 +90,17 @@ func BuildRuntime(ctx context.Context, cfg config.Config, logger *slog.Logger) (
 		return Runtime{}, err
 	}
 
-	registry, watchService, visualWatchService, allowedServiceNames, err := BuildRegistryWithWatch(cfg, repository, memoryStore, logger, llmProvider, systemProvider, serviceManager)
+	var mcpManager *mcpskills.Manager
+	if cfg.MCP.Enabled && len(cfg.MCP.Servers) > 0 {
+		mcpManager, err = mcpskills.NewManager(ctx, cfg.MCP.Servers, logger.With("component", "mcp"))
+		if err != nil {
+			_ = closers.Close()
+			return Runtime{}, fmt.Errorf("mcp: %w", err)
+		}
+		closers = append(closers, mcpManager)
+	}
+
+	registry, watchService, visualWatchService, allowedServiceNames, err := BuildRegistryWithWatch(cfg, repository, memoryStore, logger, llmProvider, systemProvider, serviceManager, mcpManager)
 	if err != nil {
 		_ = closers.Close()
 		return Runtime{}, err
@@ -114,7 +140,7 @@ func BuildRegistry(
 		return nil, nil, err
 	}
 
-	registry, _, _, allowedServiceNames, err := BuildRegistryWithWatch(cfg, repository, repository, logger, llmProvider, systemProvider, serviceManager)
+	registry, _, _, allowedServiceNames, err := BuildRegistryWithWatch(cfg, repository, repository, logger, llmProvider, systemProvider, serviceManager, nil)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -129,6 +155,7 @@ func BuildRegistryWithWatch(
 	llmProvider basellm.Provider,
 	systemProvider systemskills.Provider,
 	serviceManager serviceskills.Manager,
+	mcpManager *mcpskills.Manager,
 ) (*skills.Registry, *watchengine.Service, *visualwatch.Service, []string, error) {
 	registry := skills.NewRegistry()
 
@@ -214,6 +241,20 @@ func BuildRegistryWithWatch(
 	}
 	if visualWatchService != nil {
 		modules = append(modules, visualwatchskills.NewModule(repository, visualWatchService))
+	}
+	if cfg.Network.Enabled {
+		networkManager, err := networkskills.NewLocalManager(true, cfg.Network.Allowed, cfg.Network.Timeout)
+		if err != nil {
+			return nil, nil, nil, nil, fmt.Errorf("network skills: %w", err)
+		}
+		modules = append(modules, networkskills.NewModule(networkManager))
+		// Watch service uses the same network manager for port_down /
+		// cert_expiring evaluation. Setter pattern keeps the constructor
+		// signature stable.
+		watchService.SetNetworkManager(networkManager)
+	}
+	if mcpManager != nil {
+		modules = append(modules, mcpskills.NewModule(mcpManager))
 	}
 	if len(cfg.Accounts.Providers) > 0 {
 		accountManager, err := accountskills.NewManager(cfg.Accounts.Providers, serviceManager)

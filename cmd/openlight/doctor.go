@@ -37,6 +37,9 @@ func runDoctor(args []string) error {
 	}
 	report.ok("config", "loaded and validated")
 
+	for _, msg := range cfg.Deprecations {
+		report.warn("config:deprecated", msg)
+	}
 	checkAuth(report, cfg)
 	checkStorage(report, cfg)
 	checkTelegram(report, cfg)
@@ -46,6 +49,7 @@ func runDoctor(args []string) error {
 	checkFiles(report, cfg)
 	checkWatch(report, cfg)
 	checkOptional(report, cfg)
+	checkSecurity(report, cfg)
 
 	report.summary()
 	if report.failures > 0 {
@@ -221,6 +225,65 @@ func checkOptional(r *doctorReport, cfg config.Config) {
 	}
 	if cfg.VisualWatch.Enabled {
 		r.ok("optional:visual_watch", "enabled")
+	}
+}
+
+// checkSecurity surfaces non-fatal security smells that would otherwise be
+// invisible until something breaks. None of these are config errors per se
+// — config validation has already passed — but each one materially weakens
+// the deployment's posture and we want operators to see them on every run.
+func checkSecurity(r *doctorReport, cfg config.Config) {
+	emitted := false
+
+	for name, host := range cfg.Access.Hosts {
+		if host.InsecureIgnoreHostKey {
+			r.warn("security:ssh", fmt.Sprintf("node %q has insecure_ignore_host_key=true (vulnerable to MITM); set known_hosts_path instead", name))
+			emitted = true
+		}
+		if strings.TrimSpace(host.Password) != "" {
+			r.warn("security:ssh", fmt.Sprintf("node %q stores password inline; use password_env or private_key_path", name))
+			emitted = true
+		}
+		if strings.TrimSpace(host.PrivateKeyPassphrase) != "" {
+			r.warn("security:ssh", fmt.Sprintf("node %q stores private_key_passphrase inline; use private_key_passphrase_env", name))
+			emitted = true
+		}
+	}
+
+	if cfg.LLM.Enabled && strings.TrimSpace(cfg.LLM.APIKey) != "" {
+		r.warn("security:llm", "llm.api_key is set inline; consider OPENAI_API_KEY env or a profile-scoped secret store")
+		emitted = true
+	}
+	if cfg.Vision.Enabled && strings.TrimSpace(cfg.Vision.APIKey) != "" {
+		r.warn("security:vision", "vision.api_key is set inline")
+		emitted = true
+	}
+
+	if cfg.Workbench.Enabled {
+		dangerous := []string{}
+		for _, runtime := range cfg.Workbench.AllowedRuntimes {
+			switch strings.ToLower(strings.TrimSpace(runtime)) {
+			case "sh", "bash":
+				dangerous = append(dangerous, runtime)
+			}
+		}
+		if len(dangerous) > 0 {
+			r.warn("security:workbench", fmt.Sprintf("shell runtimes enabled (%s) — they bypass per-language sandboxing and let any allowed user run arbitrary host commands", strings.Join(dangerous, ", ")))
+			emitted = true
+		}
+	}
+
+	if cfg.Browser.Enabled && cfg.Browser.AllowAllDomains {
+		r.warn("security:browser", "browser.allow_all_domains=true removes the domain allowlist; consider scoping allowed_domains")
+		emitted = true
+	}
+	if cfg.Browser.Enabled && cfg.Browser.AllowPrivateNetwork {
+		r.warn("security:browser", "browser.allow_private_network=true lets the helper hit RFC1918, link-local, and loopback hosts")
+		emitted = true
+	}
+
+	if !emitted {
+		r.ok("security", "no obvious posture warnings")
 	}
 }
 

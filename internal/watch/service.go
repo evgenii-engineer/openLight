@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"net"
 	"strconv"
 	"strings"
 	"time"
 
 	"openlight/internal/models"
 	"openlight/internal/skills"
+	networkpkg "openlight/internal/skills/network"
 	servicepkg "openlight/internal/skills/services"
 	systempkg "openlight/internal/skills/system"
 	"openlight/internal/storage"
@@ -51,6 +53,7 @@ type Service struct {
 	notifier       Notifier
 	systemProvider systempkg.Provider
 	serviceManager servicepkg.Manager
+	networkManager networkpkg.Manager // optional; nil if network skills are disabled
 	logger         *slog.Logger
 	pollInterval   time.Duration
 	askTTL         time.Duration
@@ -101,6 +104,15 @@ func (s *Service) SetNotifier(notifier Notifier) {
 		return
 	}
 	s.notifier = notifier
+}
+
+// SetNetworkManager wires in the optional network probe used by the
+// port_down and cert_expiring watch kinds. Pass nil to disable.
+func (s *Service) SetNetworkManager(m networkpkg.Manager) {
+	if s == nil {
+		return
+	}
+	s.networkManager = m
 }
 
 func (s *Service) Run(ctx context.Context) error {
@@ -657,9 +669,85 @@ func (s *Service) evaluateWatch(ctx context.Context, watch models.Watch) (evalua
 			summary:   summary,
 			details:   fmt.Sprintf("Threshold: %.1fC", watch.Threshold),
 		}, nil
+	case models.WatchKindPortDown:
+		if s.networkManager == nil {
+			return evaluation{}, fmt.Errorf("%w: network skills are disabled", skills.ErrUnavailable)
+		}
+		host, port, err := splitHostPortTarget(watch.Target)
+		if err != nil {
+			return evaluation{}, err
+		}
+		res, err := s.networkManager.PortCheck(ctx, host, port)
+		if err != nil {
+			return evaluation{}, err
+		}
+		if res.Open {
+			return evaluation{
+				condition: false,
+				summary:   fmt.Sprintf("%s:%d is open (%s)", host, port, res.Latency.Round(time.Millisecond)),
+			}, nil
+		}
+		return evaluation{
+			condition: true,
+			summary:   fmt.Sprintf("%s:%d is closed", host, port),
+			details:   fmt.Sprintf("dial timed out or refused (latency %s)", res.Latency.Round(time.Millisecond)),
+		}, nil
+	case models.WatchKindCertExpiringSoon:
+		if s.networkManager == nil {
+			return evaluation{}, fmt.Errorf("%w: network skills are disabled", skills.ErrUnavailable)
+		}
+		host, port, err := splitHostPortTargetDefault(watch.Target, 443)
+		if err != nil {
+			return evaluation{}, err
+		}
+		res, err := s.networkManager.CertCheck(ctx, host, port)
+		if err != nil {
+			return evaluation{}, err
+		}
+		threshold := int(watch.Threshold)
+		if threshold <= 0 {
+			threshold = 14
+		}
+		condition := res.DaysLeft <= threshold
+		summary := fmt.Sprintf("%s:%d cert has %d days left", host, port, res.DaysLeft)
+		if condition {
+			summary = fmt.Sprintf("%s:%d cert expires in %d days (<= %d)", host, port, res.DaysLeft, threshold)
+		}
+		return evaluation{
+			condition: condition,
+			summary:   summary,
+			details:   fmt.Sprintf("NotAfter: %s, Issuer: %s", res.NotAfter.UTC().Format("2006-01-02"), res.Issuer),
+		}, nil
 	default:
 		return evaluation{}, fmt.Errorf("%w: unsupported watch kind %q", skills.ErrInvalidArguments, watch.Kind)
 	}
+}
+
+func splitHostPortTarget(target string) (string, int, error) {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return "", 0, fmt.Errorf("%w: target host:port is required", skills.ErrInvalidArguments)
+	}
+	host, portStr, err := net.SplitHostPort(target)
+	if err != nil {
+		return "", 0, fmt.Errorf("%w: target must be host:port (got %q)", skills.ErrInvalidArguments, target)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port <= 0 || port > 65535 {
+		return "", 0, fmt.Errorf("%w: invalid port in target %q", skills.ErrInvalidArguments, target)
+	}
+	return strings.ToLower(host), port, nil
+}
+
+func splitHostPortTargetDefault(target string, defaultPort int) (string, int, error) {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return "", 0, fmt.Errorf("%w: target host[:port] is required", skills.ErrInvalidArguments)
+	}
+	if !strings.Contains(target, ":") {
+		return strings.ToLower(target), defaultPort, nil
+	}
+	return splitHostPortTarget(target)
 }
 
 func (s *Service) executeAction(ctx context.Context, watch models.Watch, incident models.WatchIncident, reason string) (ActionResult, error) {
@@ -844,6 +932,20 @@ func validateSpec(spec addSpec) error {
 		if spec.Threshold <= 0 {
 			return fmt.Errorf("%w: threshold must be greater than zero", skills.ErrInvalidArguments)
 		}
+	case models.WatchKindPortDown:
+		if spec.Target == "" {
+			return fmt.Errorf("%w: target host:port is required", skills.ErrInvalidArguments)
+		}
+		if _, _, err := splitHostPortTarget(spec.Target); err != nil {
+			return err
+		}
+	case models.WatchKindCertExpiringSoon:
+		if spec.Target == "" {
+			return fmt.Errorf("%w: target host[:port] is required", skills.ErrInvalidArguments)
+		}
+		if spec.Threshold < 0 {
+			return fmt.Errorf("%w: cert expiry threshold (days) must be >= 0", skills.ErrInvalidArguments)
+		}
 	}
 	return nil
 }
@@ -867,6 +969,10 @@ func recoveryText(watch models.Watch) string {
 		return "Disk usage is back below threshold."
 	case models.WatchKindTemperatureHigh:
 		return "Temperature is back below threshold."
+	case models.WatchKindPortDown:
+		return watch.Target + " is reachable again."
+	case models.WatchKindCertExpiringSoon:
+		return watch.Target + " certificate is no longer in the warning window."
 	default:
 		return "Condition is back to normal."
 	}

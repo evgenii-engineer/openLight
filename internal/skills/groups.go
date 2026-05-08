@@ -94,6 +94,18 @@ var (
 		Description: "Help, discovery, and core bot commands.",
 		Order:       10,
 	}
+	GroupNetwork = Group{
+		Key:         "network",
+		Title:       "Network",
+		Description: "Probe allowlisted hosts: TCP ports, HTTP endpoints, TLS certs, DNS records.",
+		Order:       13,
+	}
+	GroupMCP = Group{
+		Key:         "mcp",
+		Title:       "MCP",
+		Description: "Tools provided by configured Model Context Protocol servers.",
+		Order:       15,
+	}
 	GroupOther = Group{
 		Key:         "other",
 		Title:       "Other",

@@ -21,7 +21,7 @@ auth:
 storage:
   sqlite_path: "./data/test-agent.db"
 
-filesystem:
+files:
   enabled: true
   allowed_roots:
     - ./testdata/files

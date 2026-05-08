@@ -35,11 +35,19 @@ type Config struct {
 	Memory     MemoryConfig    `yaml:"memory"`
 	Voice      VoiceConfig     `yaml:"voice"`
 	Browser    BrowserConfig   `yaml:"browser"`
+	Network    NetworkConfig   `yaml:"network"`
+	MCP        MCPConfig       `yaml:"mcp"`
 	Vision      VisionConfig      `yaml:"vision"`
 	OCR         OCRConfig         `yaml:"ocr"`
 	VisualWatch VisualWatchConfig `yaml:"visual_watch"`
 	Agent      AgentConfig     `yaml:"agent"`
 	Log        LogConfig       `yaml:"log"`
+
+	// Deprecations is populated at load time. It lists keys the user is
+	// still using that have a preferred replacement. The runtime logs
+	// these on startup and `openlight doctor` surfaces them as warnings.
+	// Not exposed via YAML.
+	Deprecations []string `yaml:"-"`
 }
 
 type TelegramConfig struct {
@@ -64,6 +72,10 @@ type AuthConfig struct {
 
 type StorageConfig struct {
 	SQLitePath string `yaml:"sqlite_path"`
+	// RetentionDays caps how long messages and skill_calls are kept in
+	// SQLite. Zero (default) keeps everything, mirroring previous
+	// behavior; any positive value triggers a prune at startup.
+	RetentionDays int `yaml:"retention_days"`
 }
 
 type AccessConfig struct {
@@ -193,6 +205,24 @@ type BrowserConfig struct {
 	TimeoutSeconds      int      `yaml:"timeout_seconds"`
 }
 
+type NetworkConfig struct {
+	Enabled bool          `yaml:"enabled"`
+	Allowed []string      `yaml:"allowed"`
+	Timeout time.Duration `yaml:"timeout"`
+}
+
+type MCPConfig struct {
+	Enabled bool                         `yaml:"enabled"`
+	Servers map[string]MCPServerConfig   `yaml:"servers"`
+}
+
+type MCPServerConfig struct {
+	Command      []string          `yaml:"command"`
+	Env          map[string]string `yaml:"env"`
+	EnvFrom      map[string]string `yaml:"env_from"`
+	AllowedTools []string          `yaml:"allowed_tools"`
+}
+
 type VisionConfig struct {
 	Enabled         bool          `yaml:"enabled"`
 	Provider        string        `yaml:"provider"`
@@ -246,6 +276,7 @@ func Load(path string) (Config, error) {
 		}
 	}
 
+	collectDeprecations(&cfg)
 	normalize(&cfg)
 
 	if err := applySelectedLLMProfile(&cfg, os.Getenv("LLM_PROFILE")); err != nil {
@@ -260,6 +291,21 @@ func Load(path string) (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// collectDeprecations records which legacy keys the user still has set in
+// their YAML so the doctor and runtime can warn on them. It runs BEFORE
+// normalize() so the legacy field is still distinguishable from its
+// canonical equivalent. The aliases continue to work for now.
+func collectDeprecations(cfg *Config) {
+	if cfg.Filesystem.Enabled || len(cfg.Filesystem.Allowed) > 0 || len(cfg.Filesystem.AllowedRoots) > 0 {
+		cfg.Deprecations = append(cfg.Deprecations,
+			"`filesystem:` is deprecated; rename to `files:` (the alias still works for now but will be removed in a future release)")
+	}
+	if len(cfg.Access.Hosts) > 0 {
+		cfg.Deprecations = append(cfg.Deprecations,
+			"`access.hosts:` is deprecated; declare remote SSH targets under top-level `nodes:` instead")
+	}
 }
 
 func defaultConfig() Config {

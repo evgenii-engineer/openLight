@@ -20,14 +20,15 @@ check-config: ## Fail if $(CONFIG_LOCAL) is missing
 
 ##@ Deploy: Raspberry Pi
 
-.PHONY: deploy-rpi deploy-rpi-cli deploy-rpi-service deploy-rpi-config \
+.PHONY: deploy-rpi deploy-rpi-service deploy-rpi-config \
         deploy-rpi-all deploy-rpi-full deploy-pi
 
-deploy-rpi: ## Build + ship the agent binary to the Pi
-	BIN_NAME=$(BIN_NAME) PKG=$(PKG) ./scripts/deploy-rpi.sh
+# openlight is a single binary: `openlight agent`, `openlight cli`,
+# `openlight doctor`. There is no separate CLI binary to deploy, so the
+# old deploy-rpi-cli / deploy-macmini-cli targets are gone.
 
-deploy-rpi-cli: ## Build + ship the CLI binary to the Pi
-	BIN_NAME=$(CLI_BIN_NAME) PKG=$(CLI_PKG) ./scripts/deploy-rpi.sh
+deploy-rpi: ## Build + ship the openlight binary to the Pi
+	BIN_NAME=$(BIN_NAME) PKG=$(PKG) ./scripts/deploy-rpi.sh
 
 deploy-rpi-service: ## Install + restart the systemd unit on the Pi
 	BIN_NAME=$(BIN_NAME) ./scripts/deploy-rpi-service.sh
@@ -35,9 +36,9 @@ deploy-rpi-service: ## Install + restart the systemd unit on the Pi
 deploy-rpi-config: ## Push the local Pi config to the Pi
 	./scripts/deploy-rpi-config.sh
 
-deploy-rpi-all: deploy-rpi-config deploy-rpi deploy-rpi-service ## config + agent + service
+deploy-rpi-all: deploy-rpi-config deploy-rpi deploy-rpi-service ## config + binary + service
 
-deploy-rpi-full: deploy-rpi-all deploy-rpi-cli ## deploy-rpi-all + CLI
+deploy-rpi-full: deploy-rpi-all ## Alias for deploy-rpi-all (the CLI ships in the same binary)
 
 # Preferred conventional alias.
 deploy-pi: deploy-rpi-full ## Alias for deploy-rpi-full
@@ -45,29 +46,25 @@ deploy-pi: deploy-rpi-full ## Alias for deploy-rpi-full
 ##@ Deploy: Mac mini
 
 .PHONY: deploy-macmini deploy-macmini-agent deploy-macmini-config \
-        deploy-macmini-cli deploy-macmini-service \
+        deploy-macmini-service \
         deploy-macmini-all deploy-macmini-full \
         deploy-macmini-deps-host bootstrap-macmini
 
-deploy-macmini: ## Full Mac mini deploy (config + binaries + service + health)
+deploy-macmini: ## Full Mac mini deploy (config + binary + service + health)
 	$(MAKE) check-config
 	$(MAKE) remote-prepare
 	$(MAKE) push-config
 	$(MAKE) push-browser-agent
 	$(MAKE) deploy-macmini-agent
-	$(MAKE) deploy-macmini-cli
 	$(MAKE) remote-install-launchd
 	$(MAKE) remote-restart
 	$(MAKE) remote-status
 	$(MAKE) remote-health
 
-deploy-macmini-agent: remote-prepare ## Build + ship the agent to the Mac mini
+deploy-macmini-agent: remote-prepare ## Build + ship the openlight binary to the Mac mini
 	BIN_NAME=$(BIN_NAME) PKG=$(PKG) ./scripts/deploy-macmini.sh
 
 deploy-macmini-config: push-config ## Push the local Mac mini config to the host
-
-deploy-macmini-cli: remote-prepare ## Build + ship the CLI to the Mac mini
-	BIN_NAME=$(CLI_BIN_NAME) PKG=$(CLI_PKG) ./scripts/deploy-macmini.sh
 
 deploy-macmini-service: remote-install-launchd ## Install the LaunchAgent plist on the Mac mini
 
@@ -157,7 +154,7 @@ stop-macmini: remote-stop ## Stop the Mac mini agent
 .PHONY: deploy-and-smoke-rpi deploy-and-smoke-rpi-ollama deploy-and-smoke-rpi-openai \
         deploy-and-smoke-macmini deploy-and-smoke-macmini-ollama deploy-and-smoke-macmini-openai
 
-deploy-and-smoke-rpi: deploy-rpi-all deploy-rpi-cli smoke-rpi-cli ## Pi: deploy + smoke
+deploy-and-smoke-rpi: deploy-rpi-all smoke-rpi-cli ## Pi: deploy + smoke
 
 deploy-and-smoke-rpi-ollama:
 	$(MAKE) deploy-and-smoke-rpi SMOKE_LLM_PROFILE=ollama

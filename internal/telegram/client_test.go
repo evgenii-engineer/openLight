@@ -459,6 +459,90 @@ func TestBotWebhookReceivesMessages(t *testing.T) {
 	}
 }
 
+func TestBotWebhookRejectsWrongSecret(t *testing.T) {
+	t.Parallel()
+
+	addr := freeTCPAddr(t)
+	webhookReady := make(chan struct{}, 1)
+
+	bot := NewBot(Options{
+		Token:       "TOKEN",
+		BaseURL:     "https://telegram.invalid",
+		Mode:        "webhook",
+		PollTimeout: time.Second,
+		Webhook: WebhookOptions{
+			URL:         "https://example.com/telegram/webhook",
+			ListenAddr:  addr,
+			SecretToken: "real-secret",
+		},
+	})
+	bot.client = &http.Client{
+		Timeout: time.Second,
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			if r.URL.Path == "/botTOKEN/setWebhook" {
+				select {
+				case webhookReady <- struct{}{}:
+				default:
+				}
+				return jsonResponse(map[string]any{"ok": true, "result": true}), nil
+			}
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+			return nil, nil
+		}),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- bot.Poll(ctx, func(ctx context.Context, message IncomingMessage) error {
+			t.Errorf("handler should not have been called")
+			return nil
+		})
+	}()
+
+	select {
+	case <-webhookReady:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for setWebhook")
+	}
+
+	cases := []struct {
+		name   string
+		secret string
+	}{
+		{"empty", ""},
+		{"wrong same length", "wrng-secret"},
+		{"wrong shorter", "real"},
+		{"wrong longer", "real-secret-extra"},
+	}
+	for _, tc := range cases {
+		body := []byte(`{"update_id":1,"message":{"message_id":10,"text":"x","chat":{"id":1},"from":{"id":1}}}`)
+		request, err := http.NewRequest(http.MethodPost, "http://"+addr+"/telegram/webhook", bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("create request: %v", err)
+		}
+		if tc.secret != "" {
+			request.Header.Set("X-Telegram-Bot-Api-Secret-Token", tc.secret)
+		}
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatalf("send request: %v", err)
+		}
+		response.Body.Close()
+		if response.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("[%s] expected 401, got %d", tc.name, response.StatusCode)
+		}
+	}
+
+	cancel()
+	err := <-errCh
+	if err != nil && err != context.Canceled {
+		t.Fatalf("Poll returned error: %v", err)
+	}
+}
+
 func TestBotSendTextSplitsLongMessages(t *testing.T) {
 	t.Parallel()
 

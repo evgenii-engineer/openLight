@@ -134,6 +134,9 @@ func (m *memoryRepository) SetSetting(context.Context, string, string) error    
 func (m *memoryRepository) GetSetting(context.Context, string) (models.Setting, bool, error) {
 	return models.Setting{}, false, nil
 }
+func (m *memoryRepository) PruneOlderThan(context.Context, time.Time) (int64, int64, error) {
+	return 0, 0, nil
+}
 func (m *memoryRepository) Close() error { return nil }
 
 type stubBrowser struct {

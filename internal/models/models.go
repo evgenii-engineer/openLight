@@ -9,11 +9,13 @@ const (
 	SkillCallSuccess = "success"
 	SkillCallFailed  = "failed"
 
-	WatchKindServiceDown     = "service_down"
-	WatchKindCPUHigh         = "cpu_high"
-	WatchKindMemoryHigh      = "memory_high"
-	WatchKindDiskHigh        = "disk_high"
-	WatchKindTemperatureHigh = "temperature_high"
+	WatchKindServiceDown      = "service_down"
+	WatchKindCPUHigh          = "cpu_high"
+	WatchKindMemoryHigh       = "memory_high"
+	WatchKindDiskHigh         = "disk_high"
+	WatchKindTemperatureHigh  = "temperature_high"
+	WatchKindPortDown         = "port_down"
+	WatchKindCertExpiringSoon = "cert_expiring"
 
 	WatchReactionNotify = "notify"
 	WatchReactionAsk    = "ask"

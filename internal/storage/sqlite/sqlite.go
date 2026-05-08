@@ -140,6 +140,29 @@ func (r *Repository) SaveSkillCall(ctx context.Context, call models.SkillCall) e
 	return nil
 }
 
+// PruneOlderThan deletes message and skill_call rows whose created_at is
+// strictly before the cutoff. The two tables are pruned independently so
+// a failure on one table does not prevent the other from shrinking. The
+// returned counts are best-effort (RowsAffected may not be supported on
+// every driver but modernc.org/sqlite always reports it). The retention
+// cleanup is idempotent and cheap thanks to the created_at indexes added
+// in 0005_message_retention.sql.
+func (r *Repository) PruneOlderThan(ctx context.Context, cutoff time.Time) (messages, skillCalls int64, err error) {
+	res, mErr := r.db.ExecContext(ctx, `DELETE FROM messages WHERE created_at < ?`, cutoff)
+	if mErr != nil {
+		return 0, 0, fmt.Errorf("prune messages: %w", mErr)
+	}
+	messages, _ = res.RowsAffected()
+
+	res, sErr := r.db.ExecContext(ctx, `DELETE FROM skill_calls WHERE created_at < ?`, cutoff)
+	if sErr != nil {
+		return messages, 0, fmt.Errorf("prune skill_calls: %w", sErr)
+	}
+	skillCalls, _ = res.RowsAffected()
+
+	return messages, skillCalls, nil
+}
+
 func (r *Repository) AddNote(ctx context.Context, text string) (models.Note, error) {
 	now := time.Now().UTC()
 	result, err := r.db.ExecContext(ctx, `INSERT INTO notes (text, created_at) VALUES (?, ?)`, text, now)
