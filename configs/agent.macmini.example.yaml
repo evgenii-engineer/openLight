@@ -17,7 +17,7 @@ auth:
 storage:
   sqlite_path: "./data/agent.db"
 
-filesystem:
+files:
   enabled: true
   allowed_roots:
     - ~/openlight
@@ -42,13 +42,45 @@ watch:
 
 llm:
   enabled: false
-  provider: "generic"
+  # Top-level provider/endpoint are shared by FAST and SMART unless a profile
+  # overrides them. `model` is the legacy single-model fallback used when no
+  # `profiles.smart` entry is defined.
+  provider: "ollama"
   endpoint: "http://127.0.0.1:11434"
-  model: "qwen2.5:0.5b"
+  model: "gemma3-12b-8k"
   execute_threshold: 0.80
   clarify_threshold: 0.60
   decision_input_chars: 160
   decision_num_predict: 48
+
+  # Always-warm policy. On agent startup the listed profiles are pinned
+  # into Ollama with `keep_alive` so users never wait on a cold model
+  # load. Recognized profile names: "fast", "smart", "vision". The 12B
+  # SMART model has the worst cold start, so it's the only one worth
+  # pinning by default. `keep_alive: -1` keeps the model resident until
+  # another model evicts it or Ollama restarts. The prompt is a tiny
+  # no-op string used only to trigger the load.
+  #
+  # Per-profile keep_alive below controls what is sent on *normal* (non-
+  # warmup) requests. By default smart inherits "-1", fast inherits
+  # "10m", vision inherits "5m" — set explicitly to override.
+  warmup:
+    enabled: true
+    profiles: ["smart"]
+    keep_alive: -1
+    prompt: "warmup"
+
+  # Two-tier routing: FAST handles cheap classification / argument extraction
+  # / route decisions; SMART handles reasoning, final answers, and log
+  # explanations. Leave `profiles` empty to use the legacy single-model setup.
+  profiles:
+    fast:
+      model: "qwen2.5:1.5b"
+      decision_input_chars: 160
+      decision_num_predict: 64
+    smart:
+      model: "gemma3-12b-8k"
+      decision_num_predict: 256
 
 chat:
   history_limit: 6

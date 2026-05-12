@@ -78,6 +78,22 @@ func (m *LocalManager) Enabled() bool {
 	return m != nil && m.opts.Enabled
 }
 
+// Prewarm asks the underlying provider to load the model into memory. Safe
+// to call when vision is disabled or the provider does not support prewarm
+// — it returns nil in both cases.
+func (m *LocalManager) Prewarm(ctx context.Context) error {
+	if m == nil || !m.opts.Enabled || m.opts.Provider == nil {
+		return nil
+	}
+	pw, ok := m.opts.Provider.(interface {
+		Prewarm(context.Context) error
+	})
+	if !ok {
+		return nil
+	}
+	return pw.Prewarm(ctx)
+}
+
 func (m *LocalManager) Analyze(ctx context.Context, imagePath, prompt string) (AnalyzeResult, error) {
 	if err := m.assertReady(); err != nil {
 		return AnalyzeResult{}, err

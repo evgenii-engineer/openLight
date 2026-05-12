@@ -16,10 +16,11 @@ const (
 )
 
 type ProviderConfig struct {
-	Endpoint string
-	Model    string
-	APIKey   string
-	Timeout  time.Duration
+	Endpoint  string
+	Model     string
+	APIKey    string
+	Timeout   time.Duration
+	KeepAlive string
 }
 
 type ProviderFactory interface {
@@ -214,7 +215,7 @@ func buildOllamaProvider(cfg ProviderConfig, logger *slog.Logger) (Provider, err
 	if strings.TrimSpace(cfg.Model) == "" {
 		return nil, fmt.Errorf("llm.model is required for provider %q", ProviderOllama)
 	}
-	return NewOllamaProvider(cfg.Endpoint, cfg.Model, cfg.Timeout, logger), nil
+	return NewOllamaProviderWithKeepAlive(cfg.Endpoint, cfg.Model, cfg.KeepAlive, cfg.Timeout, logger), nil
 }
 
 func buildOpenAIProvider(cfg ProviderConfig, logger *slog.Logger) (Provider, error) {

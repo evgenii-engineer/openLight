@@ -83,6 +83,44 @@ func newOllamaProvider(cfg ProviderConfig) *ollamaProvider {
 	}
 }
 
+// Prewarm fires a no-op text-only generation so Ollama loads the vision
+// model into memory. The first AnalyzeImage call would otherwise pay a
+// 10-30s cold-start cost on Mac mini hardware.
+func (p *ollamaProvider) Prewarm(ctx context.Context) error {
+	if strings.TrimSpace(p.model) == "" {
+		return fmt.Errorf("ollama vision: prewarm requires a model name")
+	}
+	payload := map[string]any{
+		"model":      p.model,
+		"prompt":     "hi",
+		"stream":     false,
+		"keep_alive": "30m",
+		"options": map[string]any{
+			"temperature": 0.0,
+			"num_predict": 1,
+		},
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("ollama vision: marshal prewarm: %w", err)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, p.endpoint+"/api/generate", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("ollama vision: build prewarm request: %w", err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := p.http.client.Do(request)
+	if err != nil {
+		return fmt.Errorf("ollama vision: %w", err)
+	}
+	defer response.Body.Close()
+	_, _ = io.Copy(io.Discard, response.Body)
+	if response.StatusCode >= http.StatusBadRequest {
+		return fmt.Errorf("ollama vision: prewarm returned %d", response.StatusCode)
+	}
+	return nil
+}
+
 func (p *ollamaProvider) AnalyzeImage(ctx context.Context, imagePath, prompt string) (string, error) {
 	encoded, err := readImageBase64(imagePath)
 	if err != nil {

@@ -138,10 +138,19 @@ remote-health: ## Hard health check on the Mac mini (Ollama + agent)
 
 ##@ Deploy: Mac mini convenience
 
-.PHONY: logs-macmini restart-macmini status-macmini stop-macmini
+.PHONY: logs-macmini logs-macmini-follow restart-macmini status-macmini stop-macmini
 
-logs-macmini: ## Tail agent.out.log + agent.err.log on the Mac mini
-	@./scripts/remote-logs.sh
+# One-shot snapshot of the last $(LINES) lines.
+# Override with `make logs-macmini LINES=500`.
+# Defaults to agent.out.log only; pass `WITH_ERR=1` to also tail agent.err.log.
+LINES    ?= 200
+WITH_ERR ?= 0
+
+logs-macmini: ## Print last $(LINES) lines of agent.out.log (one-shot). Pass WITH_ERR=1 to also include agent.err.log
+	@LINES=$(LINES) FOLLOW=0 WITH_ERR=$(WITH_ERR) ./scripts/remote-logs.sh
+
+logs-macmini-follow: ## Stream agent.out.log with tail -f. Pass WITH_ERR=1 to also include agent.err.log
+	@LINES=$(LINES) FOLLOW=1 WITH_ERR=$(WITH_ERR) ./scripts/remote-logs.sh
 
 restart-macmini: remote-restart ## Restart the Mac mini agent
 

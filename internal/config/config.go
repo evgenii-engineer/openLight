@@ -156,6 +156,79 @@ type LLMConfig struct {
 	ClarifyThreshold   float64                     `yaml:"clarify_threshold"`
 	DecisionInputChars int                         `yaml:"decision_input_chars"`
 	DecisionNumPredict int                         `yaml:"decision_num_predict"`
+
+	// KeepAlive is the top-level fallback for how long Ollama keeps a
+	// model loaded after a request. Role-based defaults (smart=-1,
+	// fast=10m, vision=5m) win when this is empty.
+	KeepAlive string `yaml:"keep_alive"`
+
+	// Warmup describes the always-warm policy executed on agent startup.
+	// See LLMWarmupConfig.
+	Warmup LLMWarmupConfig `yaml:"warmup"`
+}
+
+// LLMWarmupConfig pins specific LLM profiles into Ollama memory on startup
+// so users never wait on a cold model load. The warmup request also
+// transmits an explicit keep_alive value so the chosen profiles stay
+// resident until evicted by another model or until Ollama restarts.
+type LLMWarmupConfig struct {
+	Enabled   bool     `yaml:"enabled"`
+	Profiles  []string `yaml:"profiles"`
+	KeepAlive any      `yaml:"keep_alive"`
+	Prompt    string   `yaml:"prompt"`
+}
+
+// Includes reports whether the named profile is in the warmup list.
+func (w LLMWarmupConfig) Includes(name string) bool {
+	if !w.Enabled {
+		return false
+	}
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" {
+		return false
+	}
+	for _, candidate := range w.Profiles {
+		if strings.ToLower(strings.TrimSpace(candidate)) == name {
+			return true
+		}
+	}
+	return false
+}
+
+// KeepAliveString normalizes the YAML value of warmup.keep_alive. Accepts
+// integers like -1 (number form in YAML) and strings like "30m" or "-1".
+// Empty/nil returns "" so callers fall back to a sensible default.
+func (w LLMWarmupConfig) KeepAliveString() string {
+	switch v := w.KeepAlive.(type) {
+	case nil:
+		return ""
+	case string:
+		return strings.TrimSpace(v)
+	case int:
+		return strconv.Itoa(v)
+	case int64:
+		return strconv.FormatInt(v, 10)
+	case uint64:
+		return strconv.FormatUint(v, 10)
+	case float64:
+		// YAML often decodes plain integers as float64. Trim the decimals
+		// when the value is a whole number ("-1" not "-1.000000").
+		if v == float64(int64(v)) {
+			return strconv.FormatInt(int64(v), 10)
+		}
+		return strconv.FormatFloat(v, 'f', -1, 64)
+	default:
+		return fmt.Sprint(v)
+	}
+}
+
+// PromptOrDefault returns the warmup prompt or a sensible fallback so the
+// Ollama request always has a non-empty body.
+func (w LLMWarmupConfig) PromptOrDefault() string {
+	if p := strings.TrimSpace(w.Prompt); p != "" {
+		return p
+	}
+	return "warmup"
 }
 
 type LLMProfileConfig struct {
@@ -167,6 +240,94 @@ type LLMProfileConfig struct {
 	ClarifyThreshold   float64 `yaml:"clarify_threshold"`
 	DecisionInputChars int     `yaml:"decision_input_chars"`
 	DecisionNumPredict int     `yaml:"decision_num_predict"`
+	// KeepAlive overrides llm.keep_alive for this profile only. Useful for
+	// pinning SMART forever while letting FAST evict normally.
+	KeepAlive string `yaml:"keep_alive"`
+}
+
+// HasProfile reports whether a profile with the given name is configured.
+// Names are matched case-insensitively after trimming whitespace.
+func (c LLMConfig) HasProfile(name string) bool {
+	key := strings.ToLower(strings.TrimSpace(name))
+	if key == "" || len(c.Profiles) == 0 {
+		return false
+	}
+	_, ok := c.Profiles[key]
+	return ok
+}
+
+// ResolveProfile returns an effective LLMProfileConfig for the given profile
+// name. Top-level llm.* fields act as defaults; any non-empty profile field
+// overrides them. When the named profile is missing the top-level values are
+// returned unchanged — this is how openLight stays backward compatible with
+// single-model configs.
+func (c LLMConfig) ResolveProfile(name string) LLMProfileConfig {
+	base := LLMProfileConfig{
+		Provider:           c.Provider,
+		Endpoint:           c.Endpoint,
+		Model:              c.Model,
+		APIKey:             c.APIKey,
+		ExecuteThreshold:   c.ExecuteThreshold,
+		ClarifyThreshold:   c.ClarifyThreshold,
+		DecisionInputChars: c.DecisionInputChars,
+		DecisionNumPredict: c.DecisionNumPredict,
+		KeepAlive:          c.KeepAlive,
+	}
+	if !c.HasProfile(name) {
+		return base
+	}
+	profile := c.Profiles[strings.ToLower(strings.TrimSpace(name))]
+	if v := strings.TrimSpace(profile.Provider); v != "" {
+		base.Provider = v
+	}
+	if v := strings.TrimSpace(profile.Endpoint); v != "" {
+		base.Endpoint = v
+	}
+	if v := strings.TrimSpace(profile.Model); v != "" {
+		base.Model = v
+	}
+	if v := strings.TrimSpace(profile.APIKey); v != "" {
+		base.APIKey = v
+	}
+	if profile.ExecuteThreshold > 0 {
+		base.ExecuteThreshold = profile.ExecuteThreshold
+	}
+	if profile.ClarifyThreshold > 0 {
+		base.ClarifyThreshold = profile.ClarifyThreshold
+	}
+	if profile.DecisionInputChars > 0 {
+		base.DecisionInputChars = profile.DecisionInputChars
+	}
+	if profile.DecisionNumPredict > 0 {
+		base.DecisionNumPredict = profile.DecisionNumPredict
+	}
+	if v := strings.TrimSpace(profile.KeepAlive); v != "" {
+		base.KeepAlive = v
+	}
+	if strings.TrimSpace(base.KeepAlive) == "" {
+		base.KeepAlive = defaultKeepAliveForRole(name)
+	}
+	return base
+}
+
+// defaultKeepAliveForRole returns the sensible keep_alive default for a
+// well-known profile role:
+//   - smart  → "-1"  (always warm; this is the user-facing model)
+//   - fast   → "10m" (cheap to reload; evict during idle)
+//   - vision → "5m"  (rarely called; release VRAM aggressively)
+//
+// Unrecognized profile names fall back to "30m".
+func defaultKeepAliveForRole(name string) string {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "smart":
+		return "-1"
+	case "fast":
+		return "10m"
+	case "vision":
+		return "5m"
+	default:
+		return "30m"
+	}
 }
 
 type ChatConfig struct {
@@ -342,6 +503,12 @@ func defaultConfig() Config {
 			ClarifyThreshold:   0.60,
 			DecisionInputChars: 160,
 			DecisionNumPredict: 48,
+			Warmup: LLMWarmupConfig{
+				Enabled:   true,
+				Profiles:  []string{"smart"},
+				KeepAlive: -1,
+				Prompt:    "warmup",
+			},
 		},
 		Chat: ChatConfig{
 			HistoryLimit:     6,
@@ -478,8 +645,12 @@ func (c Config) Validate() error {
 		if name == "" {
 			return errors.New("llm.profiles keys must not be empty")
 		}
-		if strings.TrimSpace(profile.Provider) == "" {
-			return fmt.Errorf("llm.profiles.%s.provider is required", name)
+		// A profile may omit `provider` and inherit it from the top-level
+		// llm.provider — this is how fast/smart profiles share a single
+		// Ollama endpoint with different model names. We still require
+		// *some* provider to be resolvable.
+		if strings.TrimSpace(profile.Provider) == "" && strings.TrimSpace(c.LLM.Provider) == "" {
+			return fmt.Errorf("llm.profiles.%s.provider is required when llm.provider is empty", name)
 		}
 		if profile.ExecuteThreshold < 0 || profile.ExecuteThreshold > 1 {
 			return fmt.Errorf("llm.profiles.%s.execute_threshold must be between zero and one", name)

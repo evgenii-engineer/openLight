@@ -35,9 +35,9 @@ nodes: {}
 # access:
 #   hosts: {}
 
-# `filesystem` is the preferred name for the safe local file skill.
-# The legacy `files` key is still accepted for older configs.
-filesystem:
+# `files` is the preferred name for the safe local file skill.
+# The legacy `filesystem` key is still accepted for older configs.
+files:
   enabled: true
   allowed_roots:
     - /tmp/openlight
@@ -152,6 +152,24 @@ llm:
   clarify_threshold: 0.60
   decision_input_chars: 160
   decision_num_predict: 48
+  # Always-warm policy. The listed profiles get pinned into Ollama at
+  # startup with the supplied keep_alive. Set enabled:false to disable.
+  warmup:
+    enabled: true
+    profiles: ["smart"]
+    keep_alive: -1
+    prompt: "warmup"
+  # Optional two-tier routing. FAST = cheap classifier (route + arg extraction).
+  # SMART = reasoning model (final answers, explanations, log analysis). When
+  # `profiles` is omitted openLight falls back to the single top-level model
+  # for both tiers — existing configs keep working.
+  # profiles:
+  #   fast:
+  #     model: "gemma3:4b-4k"
+  #     decision_num_predict: 64
+  #   smart:
+  #     model: "gemma3-12b-8k"
+  #     decision_num_predict: 256
 
 chat:
   history_limit: 6

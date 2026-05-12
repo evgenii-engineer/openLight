@@ -1362,3 +1362,57 @@ func TestClassifierPassesDecisionLimitsToProvider(t *testing.T) {
 		t.Fatalf("unexpected skill num_predict: %#v", provider.skillRequest)
 	}
 }
+
+
+func TestClassifierUsesFastProviderAndExposesProfile(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "cpu", group: skills.GroupSystem})
+
+	provider := &stubProvider{
+		routeClassification: basellm.RouteClassification{
+			Intent:     "system",
+			Confidence: 0.95,
+		},
+		skillClassification: basellm.Classification{
+			Skill:     "cpu",
+			Arguments: map[string]string{},
+		},
+	}
+
+	classifier := NewClassifier(provider, registry, Options{
+		Profile:      "fast",
+		Model:        "gemma3:4b-4k",
+		FallbackUsed: false,
+	}, nil)
+
+	if classifier.profile != "fast" {
+		t.Fatalf("expected profile=fast, got %q", classifier.profile)
+	}
+	if classifier.model != "gemma3:4b-4k" {
+		t.Fatalf("expected model=gemma3:4b-4k, got %q", classifier.model)
+	}
+	if classifier.fallbackUsed {
+		t.Fatalf("expected fallbackUsed=false")
+	}
+
+	_, ok, err := classifier.Classify(context.Background(), "проверь cpu")
+	if err != nil {
+		t.Fatalf("Classify returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected classifier match")
+	}
+}
+
+func TestClassifierDefaultsProfileToFast(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	classifier := NewClassifier(&stubProvider{}, registry, Options{}, nil)
+	if classifier.profile != "fast" {
+		t.Fatalf("expected default profile=fast, got %q", classifier.profile)
+	}
+}
+

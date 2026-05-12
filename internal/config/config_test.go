@@ -871,3 +871,314 @@ func writeConfig(t *testing.T, path, content string) {
 		t.Fatalf("write config file: %v", err)
 	}
 }
+
+func TestLLMConfigResolveProfileInheritsTopLevel(t *testing.T) {
+	t.Parallel()
+
+	cfg := LLMConfig{
+		Provider:           "ollama",
+		Endpoint:           "http://127.0.0.1:11434",
+		Model:              "gemma3-12b-8k",
+		ExecuteThreshold:   0.8,
+		ClarifyThreshold:   0.6,
+		DecisionInputChars: 160,
+		DecisionNumPredict: 48,
+		Profiles: map[string]LLMProfileConfig{
+			"fast": {
+				Model:              "gemma3:4b-4k",
+				DecisionNumPredict: 64,
+			},
+			"smart": {
+				Model:              "gemma3-12b-8k",
+				DecisionNumPredict: 256,
+			},
+		},
+	}
+
+	if !cfg.HasProfile("fast") || !cfg.HasProfile("smart") {
+		t.Fatalf("HasProfile should report both profiles")
+	}
+
+	fast := cfg.ResolveProfile("fast")
+	if fast.Provider != "ollama" || fast.Endpoint != "http://127.0.0.1:11434" {
+		t.Fatalf("fast profile should inherit provider/endpoint from top-level: %#v", fast)
+	}
+	if fast.Model != "gemma3:4b-4k" {
+		t.Fatalf("fast.Model = %q, want gemma3:4b-4k", fast.Model)
+	}
+	if fast.DecisionNumPredict != 64 {
+		t.Fatalf("fast.DecisionNumPredict = %d, want 64", fast.DecisionNumPredict)
+	}
+	if fast.DecisionInputChars != 160 {
+		t.Fatalf("fast.DecisionInputChars should inherit (160), got %d", fast.DecisionInputChars)
+	}
+
+	smart := cfg.ResolveProfile("smart")
+	if smart.Model != "gemma3-12b-8k" {
+		t.Fatalf("smart.Model = %q, want gemma3-12b-8k", smart.Model)
+	}
+	if smart.DecisionNumPredict != 256 {
+		t.Fatalf("smart.DecisionNumPredict = %d, want 256", smart.DecisionNumPredict)
+	}
+}
+
+func TestLLMConfigKeepAliveInheritsAndOverrides(t *testing.T) {
+	t.Parallel()
+
+	cfg := LLMConfig{
+		Provider:  "ollama",
+		Endpoint:  "http://127.0.0.1:11434",
+		Model:     "gemma3-12b-8k",
+		KeepAlive: "30m",
+		Profiles: map[string]LLMProfileConfig{
+			"fast": {
+				Model: "qwen2.5:1.5b",
+			},
+			"smart": {
+				Model:     "gemma3-12b-8k",
+				KeepAlive: "-1",
+			},
+		},
+	}
+
+	fast := cfg.ResolveProfile("fast")
+	if fast.KeepAlive != "30m" {
+		t.Fatalf("fast should inherit top-level keep_alive=30m, got %q", fast.KeepAlive)
+	}
+
+	smart := cfg.ResolveProfile("smart")
+	if smart.KeepAlive != "-1" {
+		t.Fatalf("smart should override keep_alive to -1, got %q", smart.KeepAlive)
+	}
+}
+
+func TestLLMWarmupConfigIncludesAndKeepAlive(t *testing.T) {
+	t.Parallel()
+
+	w := LLMWarmupConfig{Enabled: true, Profiles: []string{"smart"}, KeepAlive: -1}
+	if !w.Includes("smart") {
+		t.Fatalf("expected smart to be in warmup list")
+	}
+	if w.Includes("fast") {
+		t.Fatalf("fast should not be in warmup list")
+	}
+	if w.KeepAliveString() != "-1" {
+		t.Fatalf("KeepAliveString for int -1 should be %q, got %q", "-1", w.KeepAliveString())
+	}
+
+	w.KeepAlive = "30m"
+	if w.KeepAliveString() != "30m" {
+		t.Fatalf("KeepAliveString string passthrough failed: %q", w.KeepAliveString())
+	}
+
+	w.KeepAlive = float64(-1) // YAML decodes plain integers as float64 in some paths
+	if w.KeepAliveString() != "-1" {
+		t.Fatalf("KeepAliveString for float64 -1 should be %q, got %q", "-1", w.KeepAliveString())
+	}
+
+	w.Enabled = false
+	if w.Includes("smart") {
+		t.Fatalf("disabled warmup should match nothing")
+	}
+}
+
+func TestLoadWarmupDefaultsApplied(t *testing.T) {
+	clearConfigEnv(t)
+
+	configPath := filepath.Join(t.TempDir(), "agent.yaml")
+	writeConfig(t, configPath, `
+telegram:
+  bot_token: "token"
+auth:
+  allowed_user_ids: [1]
+storage:
+  sqlite_path: "./agent.db"
+llm:
+  enabled: true
+  provider: "ollama"
+  endpoint: "http://127.0.0.1:11434"
+  model: "gemma3-12b-8k"
+`)
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if !cfg.LLM.Warmup.Enabled {
+		t.Fatalf("default warmup should be enabled")
+	}
+	if !cfg.LLM.Warmup.Includes("smart") {
+		t.Fatalf("default warmup should include smart, got %v", cfg.LLM.Warmup.Profiles)
+	}
+	if cfg.LLM.Warmup.KeepAliveString() != "-1" {
+		t.Fatalf("default warmup keep_alive should be -1, got %q", cfg.LLM.Warmup.KeepAliveString())
+	}
+	if cfg.LLM.Warmup.PromptOrDefault() != "warmup" {
+		t.Fatalf("default warmup prompt should be warmup, got %q", cfg.LLM.Warmup.PromptOrDefault())
+	}
+}
+
+func TestLoadWarmupExplicitIntKeepAlive(t *testing.T) {
+	clearConfigEnv(t)
+
+	configPath := filepath.Join(t.TempDir(), "agent.yaml")
+	writeConfig(t, configPath, `
+telegram:
+  bot_token: "token"
+auth:
+  allowed_user_ids: [1]
+storage:
+  sqlite_path: "./agent.db"
+llm:
+  enabled: true
+  provider: "ollama"
+  endpoint: "http://127.0.0.1:11434"
+  model: "gemma3-12b-8k"
+  warmup:
+    enabled: true
+    profiles: ["smart"]
+    keep_alive: -1
+    prompt: "warmup"
+`)
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.LLM.Warmup.KeepAliveString() != "-1" {
+		t.Fatalf("expected keep_alive=-1, got %q", cfg.LLM.Warmup.KeepAliveString())
+	}
+}
+
+func TestLoadWarmupDisabled(t *testing.T) {
+	clearConfigEnv(t)
+
+	configPath := filepath.Join(t.TempDir(), "agent.yaml")
+	writeConfig(t, configPath, `
+telegram:
+  bot_token: "token"
+auth:
+  allowed_user_ids: [1]
+storage:
+  sqlite_path: "./agent.db"
+llm:
+  enabled: true
+  provider: "ollama"
+  endpoint: "http://127.0.0.1:11434"
+  model: "gemma3-12b-8k"
+  warmup:
+    enabled: false
+`)
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.LLM.Warmup.Enabled {
+		t.Fatalf("warmup should be disabled")
+	}
+	if cfg.LLM.Warmup.Includes("smart") {
+		t.Fatalf("disabled warmup must match nothing")
+	}
+}
+
+func TestRoleBasedKeepAliveDefaults(t *testing.T) {
+	t.Parallel()
+
+	cfg := LLMConfig{
+		Provider: "ollama",
+		Model:    "gemma3-12b-8k",
+		Profiles: map[string]LLMProfileConfig{
+			"smart":  {Model: "gemma3-12b-8k"},
+			"fast":   {Model: "qwen2.5:1.5b"},
+			"vision": {Model: "qwen2.5vl:3b"},
+			"misc":   {Model: "foo"},
+		},
+	}
+
+	cases := map[string]string{
+		"smart":  "-1",
+		"fast":   "10m",
+		"vision": "5m",
+		"misc":   "30m",
+	}
+	for role, want := range cases {
+		got := cfg.ResolveProfile(role).KeepAlive
+		if got != want {
+			t.Errorf("role %q default keep_alive = %q, want %q", role, got, want)
+		}
+	}
+
+	// Explicit profile-level override wins.
+	cfg.Profiles["smart"] = LLMProfileConfig{Model: "gemma3-12b-8k", KeepAlive: "24h"}
+	if got := cfg.ResolveProfile("smart").KeepAlive; got != "24h" {
+		t.Fatalf("explicit profile keep_alive should win, got %q", got)
+	}
+}
+
+func TestLLMConfigResolveMissingProfileFallsBackToTopLevel(t *testing.T) {
+	t.Parallel()
+
+	cfg := LLMConfig{
+		Provider: "ollama",
+		Endpoint: "http://127.0.0.1:11434",
+		Model:    "gemma3-12b-8k",
+	}
+
+	if cfg.HasProfile("fast") {
+		t.Fatalf("HasProfile should return false when profiles are not configured")
+	}
+
+	resolved := cfg.ResolveProfile("fast")
+	if resolved.Provider != "ollama" || resolved.Model != "gemma3-12b-8k" {
+		t.Fatalf("missing profile should fall back to top-level llm fields: %#v", resolved)
+	}
+}
+
+func TestLoadAcceptsFastSmartProfilesWithoutSelection(t *testing.T) {
+	// Validates the new two-tier shape: both `fast` and `smart` profiles
+	// declared simultaneously, no `llm.profile` selection. Each profile
+	// may omit `provider` and inherit it from the top-level.
+	clearConfigEnv(t)
+
+	configPath := filepath.Join(t.TempDir(), "agent.yaml")
+	writeConfig(t, configPath, `
+telegram:
+  bot_token: "token"
+
+auth:
+  allowed_user_ids: [1]
+
+storage:
+  sqlite_path: "./agent.db"
+
+llm:
+  enabled: true
+  provider: "ollama"
+  endpoint: "http://127.0.0.1:11434"
+  model: "gemma3-12b-8k"
+  profiles:
+    fast:
+      model: "gemma3:4b-4k"
+      decision_num_predict: 64
+    smart:
+      model: "gemma3-12b-8k"
+      decision_num_predict: 256
+`)
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+
+	if !cfg.LLM.HasProfile("fast") || !cfg.LLM.HasProfile("smart") {
+		t.Fatalf("expected both fast and smart profiles to be loaded")
+	}
+
+	fast := cfg.LLM.ResolveProfile("fast")
+	if fast.Provider != "ollama" || fast.Model != "gemma3:4b-4k" || fast.DecisionNumPredict != 64 {
+		t.Fatalf("unexpected fast profile resolution: %#v", fast)
+	}
+
+	smart := cfg.LLM.ResolveProfile("smart")
+	if smart.Provider != "ollama" || smart.Model != "gemma3-12b-8k" || smart.DecisionNumPredict != 256 {
+		t.Fatalf("unexpected smart profile resolution: %#v", smart)
+	}
+}

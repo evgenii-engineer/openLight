@@ -262,6 +262,7 @@ func (p *OpenAIProvider) createResponse(ctx context.Context, payload openAIRespo
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer "+p.apiKey)
 
+	startedAt := time.Now()
 	response, err := p.client.Do(request)
 	if err != nil {
 		return openAIResponse{}, fmt.Errorf("call openai responses endpoint: %w", err)
@@ -278,12 +279,14 @@ func (p *OpenAIProvider) createResponse(ctx context.Context, payload openAIRespo
 		return openAIResponse{}, fmt.Errorf("decode openai responses response: %w", err)
 	}
 
+	latencyMS := time.Since(startedAt).Milliseconds()
 	responseText := strings.TrimSpace(openAIResponseText(decoded))
 	if p.logger != nil {
 		p.logger.Debug("openai response completed",
 			"model", p.model,
 			"response_chars", utf8.RuneCountInString(responseText),
 			"function_calls", openAIFunctionCallCount(decoded),
+			"latency_ms", latencyMS,
 		)
 	}
 

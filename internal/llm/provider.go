@@ -65,6 +65,23 @@ type Provider interface {
 	Chat(ctx context.Context, messages []ChatMessage) (string, error)
 }
 
+// Prewarmer is an optional interface implemented by providers that benefit
+// from a no-op request on startup. Local providers (Ollama) pay a heavy
+// cold-start cost when a model is loaded into memory for the first time;
+// remote providers (OpenAI) do not implement this.
+type Prewarmer interface {
+	Prewarm(ctx context.Context) error
+}
+
+// PrewarmOptions lets the warmup runner override the request payload for a
+// specific prewarm call without changing the provider's stored defaults.
+// Useful when warmup needs keep_alive=-1 while normal traffic uses a
+// shorter TTL.
+type PrewarmOptions struct {
+	Prompt    string
+	KeepAlive string
+}
+
 type HTTPProvider struct {
 	endpoint string
 	client   *http.Client

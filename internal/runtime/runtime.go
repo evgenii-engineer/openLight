@@ -43,6 +43,25 @@ type Runtime struct {
 	Closer      io.Closer
 }
 
+// ProviderTier captures the resolved FAST and SMART LLM profile metadata so
+// the system skills can show which models the agent is configured with.
+// Empty when llm.enabled is false.
+type ProviderTier struct {
+	FastProvider   string
+	FastModel      string
+	FastEndpoint   string
+	FastKeepAlive  string
+	SmartProvider  string
+	SmartModel     string
+	SmartEndpoint  string
+	SmartKeepAlive string
+	FastFallback   bool
+
+	// SmartProviderInstance is the live SMART provider used by the system
+	// skill to query /api/ps for load status. Optional.
+	SmartProviderInstance basellm.Provider
+}
+
 func BuildRuntime(ctx context.Context, cfg config.Config, logger *slog.Logger) (Runtime, error) {
 	for _, msg := range cfg.Deprecations {
 		logger.Warn("deprecated config", "message", msg)
@@ -74,14 +93,53 @@ func BuildRuntime(ctx context.Context, cfg config.Config, logger *slog.Logger) (
 		memoryStore = memoryRepository
 	}
 
-	var llmProvider basellm.Provider
+	var (
+		smartProvider basellm.Provider
+		fastProvider  basellm.Provider
+		smartProfile  config.LLMProfileConfig
+		fastProfile   config.LLMProfileConfig
+		fastFallback  bool
+	)
 	if cfg.LLM.Enabled {
-		llmProvider, err = buildLLMProvider(cfg, logger)
+		smartProvider, smartProfile, err = buildProfileProvider(cfg, "smart", logger)
 		if err != nil {
 			_ = closers.Close()
 			return Runtime{}, err
 		}
+		if cfg.LLM.HasProfile("fast") {
+			fastProvider, fastProfile, err = buildProfileProvider(cfg, "fast", logger)
+			if err != nil {
+				_ = closers.Close()
+				return Runtime{}, err
+			}
+		} else {
+			// No dedicated FAST profile: route classification through the
+			// SMART provider so existing single-model configs keep working.
+			fastProvider = smartProvider
+			fastProfile = smartProfile
+			fastFallback = true
+		}
+
+		warmupFast := cfg.LLM.Warmup.Includes("fast")
+		warmupSmart := cfg.LLM.Warmup.Includes("smart")
+		if fastFallback {
+			// Single provider serves both roles — one warmup covers both
+			// if either is requested.
+			if warmupFast || warmupSmart {
+				runWarmup(ctx, smartProvider, "smart", smartProfile.Model, cfg.LLM.Warmup, logger)
+			}
+		} else {
+			if warmupFast {
+				runWarmup(ctx, fastProvider, "fast", fastProfile.Model, cfg.LLM.Warmup, logger)
+			}
+			if warmupSmart {
+				runWarmup(ctx, smartProvider, "smart", smartProfile.Model, cfg.LLM.Warmup, logger)
+			}
+		}
 	}
+	// llmProvider remains the chat-facing (SMART) provider. Other modules
+	// that historically took a single provider keep doing so.
+	llmProvider := smartProvider
 
 	systemProvider := systemskills.NewLocalProvider()
 	serviceManager, err := serviceskills.NewManager(cfg.Services.Allowed, cfg.Access.Hosts, logger.With("component", "services"))
@@ -100,21 +158,64 @@ func BuildRuntime(ctx context.Context, cfg config.Config, logger *slog.Logger) (
 		closers = append(closers, mcpManager)
 	}
 
-	registry, watchService, visualWatchService, allowedServiceNames, err := BuildRegistryWithWatch(cfg, repository, memoryStore, logger, llmProvider, systemProvider, serviceManager, mcpManager)
+	visionManager, err := buildVisionManager(cfg, logger)
+	if err != nil {
+		_ = closers.Close()
+		return Runtime{}, err
+	}
+
+	if cfg.LLM.Warmup.Includes("vision") && cfg.Vision.Enabled {
+		runVisionWarmup(ctx, visionManager, cfg.Vision.Model, cfg.LLM.Warmup, logger)
+	}
+
+	registry, watchService, visualWatchService, allowedServiceNames, err := BuildRegistryWithWatch(cfg, repository, memoryStore, logger, llmProvider, systemProvider, serviceManager, mcpManager, visionManager, ProviderTier{
+		FastProvider:          fastProfile.Provider,
+		FastModel:             fastProfile.Model,
+		FastEndpoint:          fastProfile.Endpoint,
+		FastKeepAlive:         fastProfile.KeepAlive,
+		SmartProvider:         smartProfile.Provider,
+		SmartModel:            smartProfile.Model,
+		SmartEndpoint:         smartProfile.Endpoint,
+		SmartKeepAlive:        smartProfile.KeepAlive,
+		FastFallback:          fastFallback,
+		SmartProviderInstance: smartProvider,
+	})
 	if err != nil {
 		_ = closers.Close()
 		return Runtime{}, err
 	}
 
 	var classifier router.Classifier
-	if llmProvider != nil {
-		classifier = routerllm.NewClassifier(llmProvider, registry, routerllm.Options{
+	if fastProvider != nil {
+		// Route classification uses the FAST provider — cheap, low-latency
+		// JSON output. Final reasoning/answers use SMART via the chat skill.
+		executeThreshold := fastProfile.ExecuteThreshold
+		if executeThreshold <= 0 {
+			executeThreshold = cfg.LLM.ExecuteThreshold
+		}
+		clarifyThreshold := fastProfile.ClarifyThreshold
+		if clarifyThreshold <= 0 {
+			clarifyThreshold = cfg.LLM.ClarifyThreshold
+		}
+		inputChars := fastProfile.DecisionInputChars
+		if inputChars <= 0 {
+			inputChars = cfg.LLM.DecisionInputChars
+		}
+		numPredict := fastProfile.DecisionNumPredict
+		if numPredict <= 0 {
+			numPredict = cfg.LLM.DecisionNumPredict
+		}
+
+		classifier = routerllm.NewClassifier(fastProvider, registry, routerllm.Options{
 			AllowedServices:          allowedServiceNames,
 			AllowedWorkbenchRuntimes: cfg.Workbench.AllowedRuntimes,
-			ExecuteThreshold:         cfg.LLM.ExecuteThreshold,
-			ClarifyThreshold:         cfg.LLM.ClarifyThreshold,
-			InputChars:               cfg.LLM.DecisionInputChars,
-			NumPredict:               cfg.LLM.DecisionNumPredict,
+			ExecuteThreshold:         executeThreshold,
+			ClarifyThreshold:         clarifyThreshold,
+			InputChars:               inputChars,
+			NumPredict:               numPredict,
+			Profile:                  "fast",
+			Model:                    fastProfile.Model,
+			FallbackUsed:             fastFallback,
 		}, logger.With("component", "router-llm"))
 	}
 
@@ -140,7 +241,17 @@ func BuildRegistry(
 		return nil, nil, err
 	}
 
-	registry, _, _, allowedServiceNames, err := BuildRegistryWithWatch(cfg, repository, repository, logger, llmProvider, systemProvider, serviceManager, nil)
+	visionManager, err := buildVisionManager(cfg, logger)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	registry, _, _, allowedServiceNames, err := BuildRegistryWithWatch(cfg, repository, repository, logger, llmProvider, systemProvider, serviceManager, nil, visionManager, ProviderTier{
+		SmartProvider: cfg.LLM.Provider,
+		SmartModel:    cfg.LLM.Model,
+		SmartEndpoint: cfg.LLM.Endpoint,
+		FastFallback:  true,
+	})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -156,6 +267,8 @@ func BuildRegistryWithWatch(
 	systemProvider systemskills.Provider,
 	serviceManager serviceskills.Manager,
 	mcpManager *mcpskills.Manager,
+	visionManager visionskills.Manager,
+	tier ProviderTier,
 ) (*skills.Registry, *watchengine.Service, *visualwatch.Service, []string, error) {
 	registry := skills.NewRegistry()
 
@@ -184,10 +297,6 @@ func BuildRegistryWithWatch(
 		cfg.Browser.TimeoutSeconds,
 		browserskills.NewCommandRunner(cfg.Browser.NodePath, cfg.Browser.HelperPath),
 	)
-	visionManager, err := buildVisionManager(cfg, logger)
-	if err != nil {
-		return nil, nil, nil, nil, err
-	}
 	ocrManager, err := buildOCRManager(cfg)
 	if err != nil {
 		return nil, nil, nil, nil, err
@@ -225,7 +334,7 @@ func BuildRegistryWithWatch(
 	}
 
 	modules := []skills.Module{
-		systemskills.NewModule(systemProvider),
+		systemskills.NewModule(systemProvider, buildSystemModelsInfo(cfg, tier, tier.SmartProviderInstance)),
 		fileskills.NewModule(fileManager),
 		browserskills.NewModule(browserManager),
 		serviceskills.NewModule(serviceManager, cfg.Services.LogLines, cfg.Services.MaxLogChars),
@@ -338,14 +447,230 @@ func buildOCRManager(cfg config.Config) (ocrskills.Manager, error) {
 	}), nil
 }
 
-func buildLLMProvider(cfg config.Config, logger *slog.Logger) (basellm.Provider, error) {
-	llmLogger := logger.With("component", "llm")
-	return basellm.BuildProvider(cfg.LLM.Provider, basellm.ProviderConfig{
-		Endpoint: cfg.LLM.Endpoint,
-		Model:    cfg.LLM.Model,
-		APIKey:   cfg.LLM.APIKey,
-		Timeout:  cfg.Agent.RequestTimeout,
+func buildSystemModelsInfo(cfg config.Config, tier ProviderTier, smartProvider basellm.Provider) systemskills.ModelsInfo {
+	info := systemskills.ModelsInfo{
+		LLMProfile:      cfg.LLM.Profile,
+		LLMProvider:     cfg.LLM.Provider,
+		LLMModel:        cfg.LLM.Model,
+		LLMEndpoint:     cfg.LLM.Endpoint,
+		FastProvider:    tier.FastProvider,
+		FastModel:       tier.FastModel,
+		FastEndpoint:    tier.FastEndpoint,
+		SmartProvider:   tier.SmartProvider,
+		SmartModel:      tier.SmartModel,
+		SmartEndpoint:   tier.SmartEndpoint,
+		FastFallback:    tier.FastFallback,
+		FastKeepAlive:   tier.FastKeepAlive,
+		SmartKeepAlive:  tier.SmartKeepAlive,
+		WarmupEnabled:   cfg.LLM.Warmup.Enabled,
+		WarmupProfiles:  append([]string(nil), cfg.LLM.Warmup.Profiles...),
+		WarmupKeepAlive: cfg.LLM.Warmup.KeepAliveString(),
+		WarmupPrompt:    cfg.LLM.Warmup.PromptOrDefault(),
+		VisionEnabled:   cfg.Vision.Enabled,
+		VisionProvider:  cfg.Vision.Provider,
+		VisionModel:     cfg.Vision.Model,
+		OCREnabled:      cfg.OCR.Enabled,
+		OCRProvider:     cfg.OCR.Provider,
+		OCRLanguages:    append([]string(nil), cfg.OCR.Languages...),
+		VoiceEnabled:    cfg.Voice.Enabled,
+		VoiceProvider:   cfg.Voice.Provider,
+		VoiceModel:      cfg.Voice.ModelPath,
+	}
+
+	// Wire a live /api/ps lookup if the SMART provider exposes one. The
+	// lookup is best-effort: errors and timeouts return an empty slice so
+	// `/models` never fails because Ollama is slow.
+	if lister, ok := smartProvider.(basellm.PsLister); ok {
+		info.LoadedModelsLookup = func(ctx context.Context) []systemskills.LoadedModelInfo {
+			lookupCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+			defer cancel()
+			loaded, err := lister.ListLoadedModels(lookupCtx)
+			if err != nil || len(loaded) == 0 {
+				return nil
+			}
+			out := make([]systemskills.LoadedModelInfo, 0, len(loaded))
+			for _, m := range loaded {
+				expires := ""
+				if !m.ExpiresAt.IsZero() {
+					expires = m.ExpiresAt.Format(time.RFC3339)
+					// Ollama emits an "epoch zero" expiry when the model is
+					// pinned forever via keep_alive=-1. Render that
+					// explicitly so users can confirm.
+					if m.ExpiresAt.Unix() <= 0 {
+						expires = "forever"
+					}
+				}
+				out = append(out, systemskills.LoadedModelInfo{
+					Name:      strings.TrimSpace(m.Name),
+					Size:      m.Size,
+					SizeVRAM:  m.SizeVRAM,
+					Processor: strings.TrimSpace(m.Processor),
+					Context:   m.ContextLen,
+					ExpiresAt: expires,
+				})
+			}
+			return out
+		}
+	}
+
+	return info
+}
+
+// buildProfileProvider resolves the named profile against cfg.LLM and
+// constructs the corresponding provider. The resolved profile is also
+// returned so the caller can pick thresholds and report metadata.
+func buildProfileProvider(cfg config.Config, name string, logger *slog.Logger) (basellm.Provider, config.LLMProfileConfig, error) {
+	profile := cfg.LLM.ResolveProfile(name)
+	if strings.TrimSpace(profile.Provider) == "" {
+		return nil, profile, fmt.Errorf("llm: cannot resolve provider for %q profile", name)
+	}
+
+	llmLogger := logger.With(
+		"component", "llm",
+		"profile", strings.ToLower(strings.TrimSpace(name)),
+		"model", profile.Model,
+	)
+	provider, err := basellm.BuildProvider(profile.Provider, basellm.ProviderConfig{
+		Endpoint:  profile.Endpoint,
+		Model:     profile.Model,
+		APIKey:    profile.APIKey,
+		Timeout:   cfg.Agent.RequestTimeout,
+		KeepAlive: profile.KeepAlive,
 	}, llmLogger)
+	if err != nil {
+		return nil, profile, fmt.Errorf("build %q llm profile: %w", name, err)
+	}
+	return provider, profile, nil
+}
+
+// warmupBackoff returns the sleep duration before warmup retry N (zero-
+// indexed). 5s, 15s, 45s, 2m, 5m, then cap. Bounded so the loop eventually
+// stops hammering Ollama if it's persistently down.
+var warmupBackoff = []time.Duration{
+	5 * time.Second,
+	15 * time.Second,
+	45 * time.Second,
+	2 * time.Minute,
+	5 * time.Minute,
+}
+
+const warmupMaxAttempts = 8
+
+// runWarmup launches a goroutine that warms up the LLM profile and retries
+// with backoff if Ollama is unavailable. The agent keeps running even if
+// warmup never succeeds — the next user request just pays cold start.
+func runWarmup(ctx context.Context, provider basellm.Provider, profileName, modelName string, warmup config.LLMWarmupConfig, logger *slog.Logger) {
+	if provider == nil {
+		return
+	}
+	pw, ok := provider.(basellm.Prewarmer)
+	if !ok {
+		return
+	}
+
+	type configurablePrewarmer interface {
+		PrewarmWith(ctx context.Context, opts basellm.PrewarmOptions) error
+	}
+
+	go func() {
+		baseLogger := logger.With(
+			"component", "llm-warmup",
+			"profile", profileName,
+			"model", modelName,
+			"keep_alive", warmup.KeepAliveString(),
+		)
+		baseLogger.Info("warmup scheduled")
+
+		for attempt := 0; attempt < warmupMaxAttempts; attempt++ {
+			attemptLogger := baseLogger.With("attempt", attempt+1)
+			started := time.Now()
+			pwCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+
+			var err error
+			if cp, supported := pw.(configurablePrewarmer); supported {
+				err = cp.PrewarmWith(pwCtx, basellm.PrewarmOptions{
+					Prompt:    warmup.PromptOrDefault(),
+					KeepAlive: warmup.KeepAliveString(),
+				})
+			} else {
+				err = pw.Prewarm(pwCtx)
+			}
+			cancel()
+
+			latencyMS := time.Since(started).Milliseconds()
+			if err == nil {
+				attemptLogger.Info("warmup completed", "latency_ms", latencyMS)
+				return
+			}
+			attemptLogger.Warn("warmup failed", "error", err, "latency_ms", latencyMS)
+
+			if ctx.Err() != nil {
+				return
+			}
+			delay := warmupBackoff[len(warmupBackoff)-1]
+			if attempt < len(warmupBackoff) {
+				delay = warmupBackoff[attempt]
+			}
+			attemptLogger.Info("warmup retry scheduled", "delay", delay.String())
+			select {
+			case <-time.After(delay):
+			case <-ctx.Done():
+				return
+			}
+		}
+		baseLogger.Warn("warmup giving up", "attempts", warmupMaxAttempts)
+	}()
+}
+
+// runVisionWarmup mirrors runWarmup for the vision package. Same retry
+// policy; same goroutine semantics.
+func runVisionWarmup(ctx context.Context, manager visionskills.Manager, modelName string, warmup config.LLMWarmupConfig, logger *slog.Logger) {
+	type prewarmer interface {
+		Prewarm(context.Context) error
+	}
+	pw, ok := manager.(prewarmer)
+	if !ok {
+		return
+	}
+
+	go func() {
+		baseLogger := logger.With(
+			"component", "vision-warmup",
+			"model", modelName,
+			"keep_alive", warmup.KeepAliveString(),
+		)
+		baseLogger.Info("warmup scheduled")
+
+		for attempt := 0; attempt < warmupMaxAttempts; attempt++ {
+			attemptLogger := baseLogger.With("attempt", attempt+1)
+			started := time.Now()
+			pwCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+			err := pw.Prewarm(pwCtx)
+			cancel()
+
+			latencyMS := time.Since(started).Milliseconds()
+			if err == nil {
+				attemptLogger.Info("warmup completed", "latency_ms", latencyMS)
+				return
+			}
+			attemptLogger.Warn("warmup failed", "error", err, "latency_ms", latencyMS)
+
+			if ctx.Err() != nil {
+				return
+			}
+			delay := warmupBackoff[len(warmupBackoff)-1]
+			if attempt < len(warmupBackoff) {
+				delay = warmupBackoff[attempt]
+			}
+			attemptLogger.Info("warmup retry scheduled", "delay", delay.String())
+			select {
+			case <-time.After(delay):
+			case <-ctx.Done():
+				return
+			}
+		}
+		baseLogger.Warn("warmup giving up", "attempts", warmupMaxAttempts)
+	}()
 }
 
 func CloseRuntime(runtime Runtime) error {

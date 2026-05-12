@@ -30,6 +30,14 @@ type Options struct {
 	ClarifyThreshold         float64
 	InputChars               int
 	NumPredict               int
+	// Profile is the logical role of the underlying provider (e.g. "fast",
+	// "smart"). It is attached to every routing log entry so operators can
+	// see which model produced a decision and whether the fast/smart split
+	// is actually being used. When the FAST profile is not configured the
+	// runtime wires the SMART provider here and sets FallbackUsed=true.
+	Profile      string
+	Model        string
+	FallbackUsed bool
 }
 
 type Classifier struct {
@@ -45,6 +53,9 @@ type Classifier struct {
 	routeNumPredict          int
 	skillInputChars          int
 	skillNumPredict          int
+	profile                  string
+	model                    string
+	fallbackUsed             bool
 }
 
 func NewClassifier(provider basellm.Provider, registry *skills.Registry, options Options, logger *slog.Logger) *Classifier {
@@ -58,10 +69,24 @@ func NewClassifier(provider basellm.Provider, registry *skills.Registry, options
 		clarifyThreshold = defaultClarifyThreshold
 	}
 
+	profile := strings.ToLower(strings.TrimSpace(options.Profile))
+	if profile == "" {
+		profile = "fast"
+	}
+
+	enriched := logger
+	if enriched != nil {
+		enriched = enriched.With(
+			"profile", profile,
+			"model", strings.TrimSpace(options.Model),
+			"fallback_used", options.FallbackUsed,
+		)
+	}
+
 	return &Classifier{
 		provider:                 provider,
 		registry:                 registry,
-		logger:                   logger,
+		logger:                   enriched,
 		allowedServices:          normalizeList(options.AllowedServices),
 		allowedWorkbenchRuntimes: normalizeList(options.AllowedWorkbenchRuntimes),
 		skillCatalog:             buildSkillCatalog(registry),
@@ -71,6 +96,9 @@ func NewClassifier(provider basellm.Provider, registry *skills.Registry, options
 		routeNumPredict:          effectiveLayerNumPredict(options.NumPredict, defaultRouteNumPredict),
 		skillInputChars:          effectiveLayerInputChars(options.InputChars, defaultSkillInputChars),
 		skillNumPredict:          effectiveLayerNumPredict(options.NumPredict, defaultSkillNumPredict),
+		profile:                  profile,
+		model:                    strings.TrimSpace(options.Model),
+		fallbackUsed:             options.FallbackUsed,
 	}
 }
 
@@ -118,7 +146,7 @@ func (c *Classifier) Classify(ctx context.Context, text string) (router.Decision
 			"route_confidence", routeClassification.Confidence,
 			"route_needs_clarification", routeClassification.NeedsClarification,
 			"route_available_groups", groupOptionKeys(availableGroups),
-			"route_source", "llm",
+			"route_source", c.profile,
 			"route_latency_ms", routeLatencyMS,
 		)
 	}
@@ -208,7 +236,7 @@ func (c *Classifier) Classify(ctx context.Context, text string) (router.Decision
 				"decision_args", classification.Arguments,
 				"decision_needs_clarification", classification.NeedsClarification,
 				"decision_available_skills", skillOptionNames(availableSkills),
-				"decision_source", "llm",
+				"decision_source", c.profile,
 				"decision_latency_ms", skillLatencyMS,
 				"decision_routed_skill", decision.SkillName,
 				"decision_matched", decision.Matched(),

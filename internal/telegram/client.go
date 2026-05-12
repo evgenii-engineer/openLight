@@ -878,6 +878,22 @@ func (b *Bot) sendMessage(ctx context.Context, chatID int64, text string, button
 	return b.call(ctx, "/sendMessage", payload, nil)
 }
 
+// SendChatAction triggers the Telegram "user is typing..." indicator (or
+// other action types like "upload_photo"). The indicator auto-clears after
+// ~5 seconds or when the bot's next message arrives, whichever comes
+// first. Cheap call — used to give users immediate feedback while we run
+// the routing + skill pipeline.
+func (b *Bot) SendChatAction(ctx context.Context, chatID int64, action string) error {
+	action = strings.TrimSpace(action)
+	if action == "" {
+		action = "typing"
+	}
+	return b.call(ctx, "/sendChatAction", map[string]any{
+		"chat_id": chatID,
+		"action":  action,
+	}, nil)
+}
+
 func (b *Bot) answerCallbackQuery(ctx context.Context, callbackID string) error {
 	return b.call(ctx, "/answerCallbackQuery", map[string]any{
 		"callback_query_id": callbackID,

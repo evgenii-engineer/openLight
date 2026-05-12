@@ -40,6 +40,13 @@ type photoTransport interface {
 	SendDocument(ctx context.Context, chatID int64, path, caption string) error
 }
 
+// typingTransport surfaces Telegram's chat_action="typing" indicator. CLI
+// and other transports that have no equivalent simply don't implement it
+// and the agent silently skips the call.
+type typingTransport interface {
+	SendChatAction(ctx context.Context, chatID int64, action string) error
+}
+
 type Agent struct {
 	transport       Transport
 	authorizer      *auth.Authorizer
@@ -130,6 +137,9 @@ func (a *Agent) Run(ctx context.Context) error {
 // (handled, error) pair; HandleMessage stays the only place those
 // stages compose so there is no implicit middleware ordering anywhere.
 func (a *Agent) HandleMessage(ctx context.Context, message telegram.IncomingMessage) error {
+	stopTyping := a.startTyping(ctx, message.ChatID)
+	defer stopTyping()
+
 	replyPrefix, handled, err := a.preprocessAttachments(ctx, &message)
 	if handled || err != nil {
 		return err
@@ -490,6 +500,37 @@ func (a *Agent) runFreeChat(ctx context.Context, message telegram.IncomingMessag
 
 func (a *Agent) reply(ctx context.Context, chatID, userID int64, text string) error {
 	return a.replyResult(ctx, chatID, userID, skills.Result{Text: text})
+}
+
+// startTyping fires Telegram's "user is typing..." indicator immediately
+// and refreshes it every 4 seconds until the returned cancel func is
+// called (the indicator auto-clears after ~5s of silence). Transports
+// without typing support (CLI) get a no-op. Errors are swallowed — a
+// missed typing ping never blocks the actual reply.
+func (a *Agent) startTyping(ctx context.Context, chatID int64) func() {
+	typer, ok := a.transport.(typingTransport)
+	if !ok {
+		return func() {}
+	}
+
+	typingCtx, cancel := context.WithCancel(ctx)
+	go func() {
+		// Fire once immediately so the indicator shows up before the
+		// first LLM prefill starts; ignore errors.
+		_ = typer.SendChatAction(typingCtx, chatID, "typing")
+
+		ticker := time.NewTicker(4 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-typingCtx.Done():
+				return
+			case <-ticker.C:
+				_ = typer.SendChatAction(typingCtx, chatID, "typing")
+			}
+		}
+	}()
+	return cancel
 }
 
 func (a *Agent) replyResult(ctx context.Context, chatID, userID int64, result skills.Result) error {

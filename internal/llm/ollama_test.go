@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -29,7 +30,7 @@ func TestOllamaProviderClassifyRoute(t *testing.T) {
 			if payload["model"] != "phi3" {
 				t.Fatalf("unexpected model: %v", payload["model"])
 			}
-			if payload["keep_alive"] != ollamaKeepAlive {
+			if payload["keep_alive"] != defaultOllamaKeepAlive {
 				t.Fatalf("unexpected keep_alive: %#v", payload["keep_alive"])
 			}
 			if payload["think"] != false {
@@ -550,7 +551,7 @@ func TestOllamaProviderChat(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 				t.Fatalf("decode request: %v", err)
 			}
-			if payload["keep_alive"] != ollamaKeepAlive {
+			if payload["keep_alive"] != defaultOllamaKeepAlive {
 				t.Fatalf("unexpected keep_alive: %#v", payload["keep_alive"])
 			}
 			if payload["think"] != false {
@@ -596,5 +597,138 @@ func jsonHTTPResponse(payload any) *http.Response {
 			"Content-Type": []string{"application/json"},
 		},
 		Body: io.NopCloser(bytes.NewReader(body)),
+	}
+}
+
+func TestOllamaProviderImplementsPrewarmer(t *testing.T) {
+	t.Parallel()
+
+	var p Provider = NewOllamaProvider("http://127.0.0.1:11434", "qwen2.5:1.5b", time.Second, nil)
+	if _, ok := p.(Prewarmer); !ok {
+		t.Fatalf("expected *OllamaProvider to implement Prewarmer")
+	}
+}
+
+func TestOllamaProviderKeepAliveDefaults(t *testing.T) {
+	t.Parallel()
+
+	p := NewOllamaProvider("http://127.0.0.1:11434", "qwen2.5:1.5b", time.Second, nil)
+	if p.keepAlive != defaultOllamaKeepAlive {
+		t.Fatalf("expected default keep_alive %q, got %q", defaultOllamaKeepAlive, p.keepAlive)
+	}
+}
+
+func TestOllamaProviderKeepAliveOverride(t *testing.T) {
+	t.Parallel()
+
+	p := NewOllamaProviderWithKeepAlive("http://127.0.0.1:11434", "gemma3-12b-8k", "-1", time.Second, nil)
+	if p.keepAlive != "-1" {
+		t.Fatalf("expected keep_alive=-1, got %q", p.keepAlive)
+	}
+
+	p2 := NewOllamaProviderWithKeepAlive("http://127.0.0.1:11434", "gemma3-12b-8k", "  ", time.Second, nil)
+	if p2.keepAlive != defaultOllamaKeepAlive {
+		t.Fatalf("blank keep_alive should fall back to default, got %q", p2.keepAlive)
+	}
+}
+
+func TestOllamaProviderListLoadedModels(t *testing.T) {
+	t.Parallel()
+
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/ps" || r.Method != http.MethodGet {
+			http.Error(w, "wrong path", http.StatusBadRequest)
+			return
+		}
+		called = true
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"models":[{"name":"gemma3-12b-8k:latest","model":"gemma3-12b-8k:latest","size":8138551296,"size_vram":8138551296,"expires_at":"0001-01-01T00:00:00Z","processor":"100% GPU","context_length":8192,"details":{"format":"gguf","family":"gemma3","parameter_size":"12B","quantization_level":"Q4_K_M"}}]}`))
+	}))
+	defer server.Close()
+
+	p := NewOllamaProvider(server.URL, "gemma3-12b-8k", 5*time.Second, nil)
+	loaded, err := p.ListLoadedModels(context.Background())
+	if err != nil {
+		t.Fatalf("ListLoadedModels: %v", err)
+	}
+	if !called {
+		t.Fatalf("expected /api/ps to be hit")
+	}
+	if len(loaded) != 1 {
+		t.Fatalf("expected 1 model, got %d", len(loaded))
+	}
+	m := loaded[0]
+	if m.Name != "gemma3-12b-8k:latest" {
+		t.Fatalf("unexpected name %q", m.Name)
+	}
+	if m.Processor != "100% GPU" {
+		t.Fatalf("unexpected processor %q", m.Processor)
+	}
+	if m.ContextLen != 8192 {
+		t.Fatalf("unexpected context %d", m.ContextLen)
+	}
+	if !m.ExpiresAt.IsZero() && m.ExpiresAt.Unix() > 0 {
+		t.Fatalf("expected pinned-forever expiry (epoch zero), got %v", m.ExpiresAt)
+	}
+}
+
+func TestOllamaProviderPrewarmWithCustomKeepAlive(t *testing.T) {
+	t.Parallel()
+
+	var receivedKeepAlive any
+	var receivedPrompt string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		receivedKeepAlive = payload["keep_alive"]
+		if p, ok := payload["prompt"].(string); ok {
+			receivedPrompt = p
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"response":""}`))
+	}))
+	defer server.Close()
+
+	p := NewOllamaProviderWithKeepAlive(server.URL, "smart-model", "30m", 5*time.Second, nil)
+	err := p.PrewarmWith(context.Background(), PrewarmOptions{
+		Prompt:    "warmup",
+		KeepAlive: "-1",
+	})
+	if err != nil {
+		t.Fatalf("PrewarmWith: %v", err)
+	}
+	// Ollama rejects "-1" as a string ("missing unit in duration"); the
+	// JSON payload must use a raw number. encoding/json decodes JSON
+	// numbers into float64 when targeting interface{}.
+	num, ok := receivedKeepAlive.(float64)
+	if !ok || num != -1 {
+		t.Fatalf("expected keep_alive to arrive as numeric -1, got %T %v", receivedKeepAlive, receivedKeepAlive)
+	}
+	if receivedPrompt != "warmup" {
+		t.Fatalf("expected prompt=warmup, got %q", receivedPrompt)
+	}
+}
+
+func TestKeepAliveValueConvertsNumericsToInt(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]any{
+		"":     defaultOllamaKeepAlive,
+		"-1":   int64(-1),
+		"0":    int64(0),
+		"300":  int64(300),
+		"30m":  "30m",
+		"24h":  "24h",
+		"168h": "168h",
+	}
+	for input, want := range cases {
+		got := keepAliveValue(input)
+		if got != want {
+			t.Errorf("keepAliveValue(%q) = %T %v, want %T %v", input, got, got, want, want)
+		}
 	}
 }

@@ -588,3 +588,65 @@ func TestRouterDoesNotTreatSentenceAsNoArgCommand(t *testing.T) {
 		t.Fatalf("expected no match for ordinary sentence, got %#v", decision)
 	}
 }
+
+// failOnCallClassifier fails the enclosing test if Classify is invoked. Used
+// to assert that deterministic inputs (slash, explicit, alias, rule) never
+// fall through to the FAST classifier.
+type failOnCallClassifier struct {
+	t *testing.T
+}
+
+func (c failOnCallClassifier) Classify(context.Context, string) (router.Decision, bool, error) {
+	c.t.Helper()
+	c.t.Fatal("classifier must not be invoked for deterministic inputs")
+	return router.Decision{}, false, nil
+}
+
+func TestRouterDeterministicInputsDoNotCallClassifier(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	for _, s := range []skills.Skill{
+		testSkill{name: "skills"},
+		testSkill{name: "status"},
+		testSkill{name: "service_status"},
+		testSkill{name: "service_logs"},
+		testSkill{name: "watch_list"},
+		testSkill{name: "models", aliases: []string{"llm status"}},
+	} {
+		registry.MustRegister(s)
+	}
+
+	cases := []struct {
+		input     string
+		wantSkill string
+		wantSvc   string
+	}{
+		{input: "skills", wantSkill: "skills"},
+		{input: "system status", wantSkill: "status"},
+		{input: "watch list", wantSkill: "watch_list"},
+		{input: "/service_status openlight-agent", wantSkill: "service_status", wantSvc: "openlight-agent"},
+		{input: "/logs openlight-agent", wantSkill: "service_logs", wantSvc: "openlight-agent"},
+		{input: "llm status", wantSkill: "models"},
+	}
+
+	r := router.New(registry, failOnCallClassifier{t: t})
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.input, func(t *testing.T) {
+			decision, err := r.Route(context.Background(), tc.input)
+			if err != nil {
+				t.Fatalf("route returned error: %v", err)
+			}
+			if decision.SkillName != tc.wantSkill {
+				t.Fatalf("expected skill %q, got %#v", tc.wantSkill, decision)
+			}
+			if decision.Mode == router.ModeLLM || decision.Mode == router.ModeUnknown {
+				t.Fatalf("expected deterministic mode (slash/explicit/alias/rule), got %q", decision.Mode)
+			}
+			if tc.wantSvc != "" && decision.Args["service"] != tc.wantSvc {
+				t.Fatalf("expected service arg %q, got %q", tc.wantSvc, decision.Args["service"])
+			}
+		})
+	}
+}
