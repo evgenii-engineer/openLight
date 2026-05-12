@@ -64,6 +64,56 @@ Pages wired down:                          1000.
 	}
 }
 
+func TestParseSwapUsage(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name                    string
+		in                      string
+		total, used, free       uint64
+		ok                      bool
+	}{
+		{
+			name:  "real macOS output",
+			in:    "total = 3072.00M  used = 512.00M  free = 2560.00M  (encrypted)\n",
+			total: 3072 * 1024 * 1024,
+			used:  512 * 1024 * 1024,
+			free:  2560 * 1024 * 1024,
+			ok:    true,
+		},
+		{
+			name:  "no swap configured",
+			in:    "total = 0.00M  used = 0.00M  free = 0.00M\n",
+			total: 0,
+			used:  0,
+			free:  0,
+			ok:    true,
+		},
+		{
+			name: "missing fields",
+			in:   "total = 512.00M\n",
+			ok:   false,
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			total, used, free, ok := parseSwapUsage(tc.in)
+			if ok != tc.ok {
+				t.Fatalf("ok mismatch: got %v want %v", ok, tc.ok)
+			}
+			if !ok {
+				return
+			}
+			if total != tc.total || used != tc.used || free != tc.free {
+				t.Fatalf("got total=%d used=%d free=%d want total=%d used=%d free=%d",
+					total, used, free, tc.total, tc.used, tc.free)
+			}
+		})
+	}
+}
+
 func TestParseBoottimeSec(t *testing.T) {
 	t.Parallel()
 
@@ -112,6 +162,27 @@ func TestLocalProviderDarwinLive(t *testing.T) {
 		t.Errorf("MemoryStats: %v", err)
 	} else if mem.Total == 0 || mem.Available > mem.Total {
 		t.Errorf("MemoryStats invalid: %+v", mem)
+	}
+
+	// vm.swapusage exists on every modern Mac. Live test just checks the
+	// call shape — used+free should not exceed total by more than a small
+	// rounding margin.
+	if swap, err := p.SwapStats(ctx); err != nil {
+		t.Errorf("SwapStats: %v", err)
+	} else if swap.Total > 0 && swap.Used+swap.Free > swap.Total+1024*1024 {
+		t.Errorf("SwapStats invariant violated: %+v", swap)
+	}
+
+	// kern.memorystatus_vm_pressure_level should always be set; the value
+	// may legitimately be green/yellow/red. We only require it to parse.
+	if level, err := p.MemoryPressure(ctx); err != nil {
+		t.Errorf("MemoryPressure: %v", err)
+	} else {
+		switch level {
+		case PressureGreen, PressureYellow, PressureRed:
+		default:
+			t.Errorf("unexpected memory pressure level %q", level)
+		}
 	}
 
 	if up, err := p.Uptime(ctx); err != nil {

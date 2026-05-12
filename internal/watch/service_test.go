@@ -59,6 +59,12 @@ func (p fakeProvider) IPAddresses(context.Context) ([]string, error) {
 	return []string{"127.0.0.1"}, nil
 }
 func (p fakeProvider) Temperature(context.Context) (float64, error) { return p.temperature, nil }
+func (p fakeProvider) SwapStats(context.Context) (systemskills.SwapStats, error) {
+	return systemskills.SwapStats{}, nil
+}
+func (p fakeProvider) MemoryPressure(context.Context) (string, error) {
+	return systemskills.PressureGreen, nil
+}
 
 type fakeServiceManager struct {
 	service serviceskills.Info

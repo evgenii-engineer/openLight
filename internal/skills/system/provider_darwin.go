@@ -61,6 +61,46 @@ func (LocalProvider) MemoryStats(ctx context.Context) (MemoryStats, error) {
 	}, nil
 }
 
+func (LocalProvider) SwapStats(ctx context.Context) (SwapStats, error) {
+	// `sysctl -n vm.swapusage` prints e.g.:
+	//   total = 3072.00M  used = 512.34M  free = 2559.66M  (encrypted)
+	out, err := runWithContext(ctx, 2*time.Second, "sysctl", "-n", "vm.swapusage")
+	if err != nil {
+		return SwapStats{}, wrapUnavailable("swap", err)
+	}
+
+	total, used, free, ok := parseSwapUsage(string(out))
+	if !ok {
+		return SwapStats{}, wrapUnavailable("swap", fmt.Errorf("could not parse vm.swapusage"))
+	}
+	return SwapStats{Total: total, Used: used, Free: free}, nil
+}
+
+func (LocalProvider) MemoryPressure(ctx context.Context) (string, error) {
+	// kern.memorystatus_vm_pressure_level returns 1=normal, 2=warn, 4=critical
+	// on macOS. The sysctl exists on every modern macOS release but
+	// occasionally races with low-memory transitions; if the value is
+	// outside the documented set we report unknown rather than guessing.
+	out, err := runWithContext(ctx, 2*time.Second, "sysctl", "-n", "kern.memorystatus_vm_pressure_level")
+	if err != nil {
+		return "", wrapUnavailable("memory_pressure", err)
+	}
+	level, parseErr := strconv.Atoi(strings.TrimSpace(string(out)))
+	if parseErr != nil {
+		return "", wrapUnavailable("memory_pressure", parseErr)
+	}
+	switch level {
+	case 1:
+		return PressureGreen, nil
+	case 2:
+		return PressureYellow, nil
+	case 4:
+		return PressureRed, nil
+	default:
+		return "", wrapUnavailable("memory_pressure", fmt.Errorf("unexpected level %d", level))
+	}
+}
+
 func (LocalProvider) Uptime(ctx context.Context) (time.Duration, error) {
 	// `sysctl -n kern.boottime` prints something like:
 	//   { sec = 1700000000, usec = 0 } Mon Nov 14 12:00:00 2023
@@ -224,6 +264,58 @@ func splitVMStatLine(line string) (string, uint64, bool) {
 		return "", 0, false
 	}
 	return key, v, true
+}
+
+// parseSwapUsage parses `sysctl -n vm.swapusage` output. The format is:
+//   total = 3072.00M  used = 512.34M  free = 2559.66M  (encrypted)
+// Sizes are expressed in megabytes with an "M" suffix; very small systems
+// may emit "0.00M" entries that should round to zero bytes.
+func parseSwapUsage(output string) (uint64, uint64, uint64, bool) {
+	total, okT := parseSwapField(output, "total")
+	used, okU := parseSwapField(output, "used")
+	free, okF := parseSwapField(output, "free")
+	if !okT || !okU || !okF {
+		return 0, 0, 0, false
+	}
+	return total, used, free, true
+}
+
+func parseSwapField(output, name string) (uint64, bool) {
+	marker := name + " ="
+	idx := strings.Index(output, marker)
+	if idx < 0 {
+		return 0, false
+	}
+	rest := strings.TrimLeft(output[idx+len(marker):], " \t")
+	end := strings.IndexAny(rest, " \t\n")
+	if end < 0 {
+		end = len(rest)
+	}
+	token := strings.TrimSpace(rest[:end])
+	return parseMegabyteToken(token)
+}
+
+func parseMegabyteToken(token string) (uint64, bool) {
+	if token == "" {
+		return 0, false
+	}
+	multiplier := uint64(1)
+	switch last := token[len(token)-1]; last {
+	case 'K', 'k':
+		multiplier = 1024
+		token = token[:len(token)-1]
+	case 'M', 'm':
+		multiplier = 1024 * 1024
+		token = token[:len(token)-1]
+	case 'G', 'g':
+		multiplier = 1024 * 1024 * 1024
+		token = token[:len(token)-1]
+	}
+	value, err := strconv.ParseFloat(token, 64)
+	if err != nil || value < 0 {
+		return 0, false
+	}
+	return uint64(value * float64(multiplier)), true
 }
 
 func parseBoottimeSec(output string) (int64, bool) {

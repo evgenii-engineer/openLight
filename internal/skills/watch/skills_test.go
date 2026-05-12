@@ -53,6 +53,12 @@ func (stubSystemProvider) IPAddresses(context.Context) ([]string, error) {
 	return []string{"127.0.0.1"}, nil
 }
 func (stubSystemProvider) Temperature(context.Context) (float64, error) { return 0, nil }
+func (stubSystemProvider) SwapStats(context.Context) (systemskills.SwapStats, error) {
+	return systemskills.SwapStats{}, nil
+}
+func (stubSystemProvider) MemoryPressure(context.Context) (string, error) {
+	return systemskills.PressureGreen, nil
+}
 
 func newWatchEngine(t *testing.T) *watchengine.Service {
 	t.Helper()

@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 )
@@ -70,6 +71,10 @@ type Bot struct {
 	webhook     WebhookOptions
 	client      *http.Client
 	logger      *slog.Logger
+
+	healthMu     sync.Mutex
+	healthState  string
+	healthCached time.Time
 }
 
 type Options struct {
@@ -538,6 +543,35 @@ func sanitizeCommandName(value string) string {
 		}
 	}
 	return b.String()
+}
+
+// Health probes the Telegram API via /getMe with a short timeout and a
+// 30-second cache so the /status command can include a connectivity line
+// without hammering Telegram on every invocation. Returns one of
+// "connected" or "unavailable" — never blocks longer than ~2s.
+func (b *Bot) Health(ctx context.Context) string {
+	const cacheTTL = 30 * time.Second
+	b.healthMu.Lock()
+	if b.healthState != "" && time.Since(b.healthCached) < cacheTTL {
+		state := b.healthState
+		b.healthMu.Unlock()
+		return state
+	}
+	b.healthMu.Unlock()
+
+	probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	err := b.call(probeCtx, "/getMe", map[string]any{}, nil)
+
+	state := "connected"
+	if err != nil {
+		state = "unavailable"
+	}
+	b.healthMu.Lock()
+	b.healthState = state
+	b.healthCached = time.Now()
+	b.healthMu.Unlock()
+	return state
 }
 
 func (b *Bot) call(ctx context.Context, method string, payload any, out any) error {

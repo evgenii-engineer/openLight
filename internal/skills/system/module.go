@@ -2,10 +2,10 @@ package system
 
 import "openlight/internal/skills"
 
-func NewModule(provider Provider, models ModelsInfo) skills.Module {
+func NewModule(provider Provider, models ModelsInfo, hooks Hooks) skills.Module {
 	return skills.NewModule("system", func(registry *skills.Registry) error {
 		for _, skill := range []skills.Skill{
-			NewStatusSkill(provider, models),
+			NewStatusSkill(provider, models, hooks),
 			NewCPUSkill(provider),
 			NewMemorySkill(provider),
 			NewDiskSkill(provider),

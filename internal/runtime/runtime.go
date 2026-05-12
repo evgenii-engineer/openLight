@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"strings"
 	"time"
 
@@ -41,6 +42,11 @@ type Runtime struct {
 	Watch       *watchengine.Service
 	VisualWatch *visualwatch.Service
 	Closer      io.Closer
+
+	// TelegramHealth carries the Telegram connectivity probe used by the
+	// /status skill. The entrypoint binds a live probe once the bot has
+	// been constructed; until then State() returns "unknown".
+	TelegramHealth *TelegramHealthHolder
 }
 
 // ProviderTier captures the resolved FAST and SMART LLM profile metadata so
@@ -60,6 +66,15 @@ type ProviderTier struct {
 	// SmartProviderInstance is the live SMART provider used by the system
 	// skill to query /api/ps for load status. Optional.
 	SmartProviderInstance basellm.Provider
+
+	// LatencyStore receives Chat/Classify latency observations from the
+	// fast and smart providers. Optional; nil disables the
+	// "Last LLM latency" section of /status.
+	LatencyStore *systemskills.LatencyStore
+
+	// TelegramHealth is the runtime-scoped indirection through which the
+	// agent entrypoint plugs in a Telegram connectivity probe. Optional.
+	TelegramHealth *TelegramHealthHolder
 }
 
 func BuildRuntime(ctx context.Context, cfg config.Config, logger *slog.Logger) (Runtime, error) {
@@ -141,6 +156,20 @@ func BuildRuntime(ctx context.Context, cfg config.Config, logger *slog.Logger) (
 	// that historically took a single provider keep doing so.
 	llmProvider := smartProvider
 
+	// Latency tracking and Telegram health are wired before the registry
+	// is built so the /status skill's hooks can close over them.
+	latencyStore := systemskills.NewLatencyStore()
+	telegramHealth := NewTelegramHealthHolder()
+	smartForChat := wrapWithLatency(smartProvider, "smart", latencyStore)
+	fastForRouter := wrapWithLatency(fastProvider, "fast", latencyStore)
+	if fastFallback {
+		// When fast falls back to smart, the wrapper for the router uses
+		// the "fast" label so latency for classification calls is still
+		// attributed correctly even though the underlying model is shared.
+		fastForRouter = wrapWithLatency(smartProvider, "fast", latencyStore)
+	}
+	llmProvider = smartForChat
+
 	systemProvider := systemskills.NewLocalProvider()
 	serviceManager, err := serviceskills.NewManager(cfg.Services.Allowed, cfg.Access.Hosts, logger.With("component", "services"))
 	if err != nil {
@@ -179,6 +208,8 @@ func BuildRuntime(ctx context.Context, cfg config.Config, logger *slog.Logger) (
 		SmartKeepAlive:        smartProfile.KeepAlive,
 		FastFallback:          fastFallback,
 		SmartProviderInstance: smartProvider,
+		LatencyStore:          latencyStore,
+		TelegramHealth:        telegramHealth,
 	})
 	if err != nil {
 		_ = closers.Close()
@@ -206,7 +237,7 @@ func BuildRuntime(ctx context.Context, cfg config.Config, logger *slog.Logger) (
 			numPredict = cfg.LLM.DecisionNumPredict
 		}
 
-		classifier = routerllm.NewClassifier(fastProvider, registry, routerllm.Options{
+		classifier = routerllm.NewClassifier(fastForRouter, registry, routerllm.Options{
 			AllowedServices:          allowedServiceNames,
 			AllowedWorkbenchRuntimes: cfg.Workbench.AllowedRuntimes,
 			ExecuteThreshold:         executeThreshold,
@@ -220,12 +251,13 @@ func BuildRuntime(ctx context.Context, cfg config.Config, logger *slog.Logger) (
 	}
 
 	return Runtime{
-		Registry:    registry,
-		Classifier:  classifier,
-		Repository:  repository,
-		Watch:       watchService,
-		VisualWatch: visualWatchService,
-		Closer:      closers,
+		Registry:       registry,
+		Classifier:     classifier,
+		Repository:     repository,
+		Watch:          watchService,
+		VisualWatch:    visualWatchService,
+		Closer:         closers,
+		TelegramHealth: telegramHealth,
 	}, nil
 }
 
@@ -333,8 +365,9 @@ func BuildRegistryWithWatch(
 		)
 	}
 
+	systemHooks := buildSystemHooks(tier.SmartProviderInstance, tier.LatencyStore, tier.TelegramHealth, os.Getpid())
 	modules := []skills.Module{
-		systemskills.NewModule(systemProvider, buildSystemModelsInfo(cfg, tier, tier.SmartProviderInstance)),
+		systemskills.NewModule(systemProvider, buildSystemModelsInfo(cfg, tier, tier.SmartProviderInstance, systemHooks), systemHooks),
 		fileskills.NewModule(fileManager),
 		browserskills.NewModule(browserManager),
 		serviceskills.NewModule(serviceManager, cfg.Services.LogLines, cfg.Services.MaxLogChars),
@@ -447,7 +480,7 @@ func buildOCRManager(cfg config.Config) (ocrskills.Manager, error) {
 	}), nil
 }
 
-func buildSystemModelsInfo(cfg config.Config, tier ProviderTier, smartProvider basellm.Provider) systemskills.ModelsInfo {
+func buildSystemModelsInfo(cfg config.Config, tier ProviderTier, smartProvider basellm.Provider, hooks systemskills.Hooks) systemskills.ModelsInfo {
 	info := systemskills.ModelsInfo{
 		LLMProfile:      cfg.LLM.Profile,
 		LLMProvider:     cfg.LLM.Provider,
@@ -476,43 +509,13 @@ func buildSystemModelsInfo(cfg config.Config, tier ProviderTier, smartProvider b
 		VoiceProvider:   cfg.Voice.Provider,
 		VoiceModel:      cfg.Voice.ModelPath,
 	}
-
-	// Wire a live /api/ps lookup if the SMART provider exposes one. The
-	// lookup is best-effort: errors and timeouts return an empty slice so
-	// `/models` never fails because Ollama is slow.
-	if lister, ok := smartProvider.(basellm.PsLister); ok {
-		info.LoadedModelsLookup = func(ctx context.Context) []systemskills.LoadedModelInfo {
-			lookupCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-			defer cancel()
-			loaded, err := lister.ListLoadedModels(lookupCtx)
-			if err != nil || len(loaded) == 0 {
-				return nil
-			}
-			out := make([]systemskills.LoadedModelInfo, 0, len(loaded))
-			for _, m := range loaded {
-				expires := ""
-				if !m.ExpiresAt.IsZero() {
-					expires = m.ExpiresAt.Format(time.RFC3339)
-					// Ollama emits an "epoch zero" expiry when the model is
-					// pinned forever via keep_alive=-1. Render that
-					// explicitly so users can confirm.
-					if m.ExpiresAt.Unix() <= 0 {
-						expires = "forever"
-					}
-				}
-				out = append(out, systemskills.LoadedModelInfo{
-					Name:      strings.TrimSpace(m.Name),
-					Size:      m.Size,
-					SizeVRAM:  m.SizeVRAM,
-					Processor: strings.TrimSpace(m.Processor),
-					Context:   m.ContextLen,
-					ExpiresAt: expires,
-				})
-			}
-			return out
-		}
+	// /models shares the /status loaded-models lookup so a single /api/ps
+	// hit can populate both renderings (status and models). Falls through
+	// when the smart provider isn't Ollama.
+	if hooks.LoadedModels != nil {
+		info.LoadedModelsLookup = hooks.LoadedModels
 	}
-
+	_ = smartProvider // retained for symmetry with hook construction
 	return info
 }
 

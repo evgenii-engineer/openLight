@@ -8,7 +8,7 @@ Type=simple
 User=pi
 Group=pi
 WorkingDirectory=/home/pi
-ExecStart=/home/pi/openlight agent -config /etc/openlight/agent.yaml
+ExecStart=/home/pi/bin/openlight agent -config /etc/openlight/agent.yaml
 Restart=on-failure
 RestartSec=5
 Environment=GOMEMLIMIT=512MiB

@@ -7,6 +7,8 @@ PI_USER="${PI_USER:-pi}"
 PI_HOST="${PI_HOST:-raspberrypi.local}"
 PI_DEST_DIR="${PI_DEST_DIR:-/home/${PI_USER}}"
 BIN_NAME="${BIN_NAME:-openlight}"
+PI_BIN_DIR="${PI_BIN_DIR:-${PI_DEST_DIR}/bin}"
+PI_BIN_PATH="${PI_BIN_PATH:-${PI_BIN_DIR}/${BIN_NAME}}"
 SERVICE_NAME="${SERVICE_NAME:-openlight-agent}"
 
 TEMPLATE_PATH="${ROOT_DIR}/deployments/systemd/openlight-agent.service"
@@ -23,7 +25,7 @@ sed \
   -e "s|^User=.*|User=${PI_USER}|" \
   -e "s|^Group=.*|Group=${PI_USER}|" \
   -e "s|^WorkingDirectory=.*|WorkingDirectory=${PI_DEST_DIR}|" \
-  -e "s|^ExecStart=.*|ExecStart=${PI_DEST_DIR}/${BIN_NAME} agent -config /etc/openlight/agent.yaml|" \
+  -e "s|^ExecStart=.*|ExecStart=${PI_BIN_PATH} agent -config /etc/openlight/agent.yaml|" \
   "${TEMPLATE_PATH}" > "${LOCAL_TMP}"
 
 echo "Uploading systemd unit to ${PI_USER}@${PI_HOST}:${REMOTE_TMP_PATH}..."

@@ -92,6 +92,82 @@ func (LocalProvider) MemoryStats(_ context.Context) (MemoryStats, error) {
 	}, nil
 }
 
+func (LocalProvider) SwapStats(_ context.Context) (SwapStats, error) {
+	file, err := os.Open("/proc/meminfo")
+	if err != nil {
+		return SwapStats{}, wrapUnavailable("swap", err)
+	}
+	defer file.Close()
+
+	var total, free uint64
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) < 2 {
+			continue
+		}
+		value, err := strconv.ParseUint(fields[1], 10, 64)
+		if err != nil {
+			continue
+		}
+		switch fields[0] {
+		case "SwapTotal:":
+			total = value * 1024
+		case "SwapFree:":
+			free = value * 1024
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return SwapStats{}, wrapUnavailable("swap", err)
+	}
+	var used uint64
+	if total >= free {
+		used = total - free
+	}
+	return SwapStats{Total: total, Used: used, Free: free}, nil
+}
+
+func (LocalProvider) MemoryPressure(_ context.Context) (string, error) {
+	// /proc/pressure/memory (PSI) is available on Linux 4.20+. The file
+	// contains two lines: "some" (any task stalled) and "full" (all tasks
+	// stalled). We use the avg10 value from the "some" line as the proxy.
+	content, err := os.ReadFile("/proc/pressure/memory")
+	if err != nil {
+		return "", wrapUnavailable("memory_pressure", err)
+	}
+	avg10, ok := parsePSIAvg10(string(content))
+	if !ok {
+		return "", wrapUnavailable("memory_pressure", fmt.Errorf("could not parse PSI"))
+	}
+	switch {
+	case avg10 < 1.0:
+		return PressureGreen, nil
+	case avg10 < 10.0:
+		return PressureYellow, nil
+	default:
+		return PressureRed, nil
+	}
+}
+
+func parsePSIAvg10(content string) (float64, bool) {
+	for _, line := range strings.Split(content, "\n") {
+		if !strings.HasPrefix(line, "some ") {
+			continue
+		}
+		for _, field := range strings.Fields(line) {
+			if !strings.HasPrefix(field, "avg10=") {
+				continue
+			}
+			value, err := strconv.ParseFloat(strings.TrimPrefix(field, "avg10="), 64)
+			if err != nil {
+				return 0, false
+			}
+			return value, true
+		}
+	}
+	return 0, false
+}
+
 func (LocalProvider) Uptime(_ context.Context) (time.Duration, error) {
 	content, err := os.ReadFile("/proc/uptime")
 	if err != nil {

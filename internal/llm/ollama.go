@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -288,6 +289,12 @@ type LoadedModel struct {
 type PsLister interface {
 	ListLoadedModels(ctx context.Context) ([]LoadedModel, error)
 }
+
+// ErrPsListerUnsupported is returned by decorators that forward PsLister
+// when the wrapped provider doesn't actually implement /api/ps. Callers
+// can compare with errors.Is to surface "Ollama loaded: unavailable"
+// rather than treating the error as a transient failure.
+var ErrPsListerUnsupported = errors.New("llm: provider does not expose /api/ps")
 
 // ListLoadedModels queries Ollama for the set of models currently held in
 // memory. Returns an empty slice (not an error) when no models are loaded.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"openlight/internal/skills"
 	"openlight/internal/utils"
@@ -89,10 +90,11 @@ func (m ModelsInfo) hasTwoTier() bool {
 type statusSkill struct {
 	provider Provider
 	models   ModelsInfo
+	hooks    Hooks
 }
 
-func NewStatusSkill(provider Provider, models ModelsInfo) skills.Skill {
-	return &statusSkill{provider: provider, models: models}
+func NewStatusSkill(provider Provider, models ModelsInfo, hooks Hooks) skills.Skill {
+	return &statusSkill{provider: provider, models: models, hooks: hooks}
 }
 
 func (s *statusSkill) Definition() skills.Definition {
@@ -105,36 +107,250 @@ func (s *statusSkill) Definition() skills.Definition {
 	}
 }
 
+// Execute renders the operational dashboard for openLight. Each subsystem
+// is queried independently and absent metrics degrade to "unknown" or are
+// omitted entirely so a single broken probe (sysctl, Ollama, Telegram)
+// never fails the whole command.
 func (s *statusSkill) Execute(ctx context.Context, _ skills.Input) (skills.Result, error) {
-	lines := make([]string, 0, 6)
+	var sections [][]string
 
+	if basic := s.renderBasicSection(ctx); len(basic) > 0 {
+		sections = append(sections, basic)
+	}
+	if process := s.renderProcessSection(ctx); len(process) > 0 {
+		sections = append(sections, process)
+	}
+	if loaded := s.renderLoadedSection(ctx); len(loaded) > 0 {
+		sections = append(sections, loaded)
+	}
+	if profiles := renderAIProfiles(s.models); len(profiles) > 0 {
+		sections = append(sections, profiles)
+	}
+	if latency := s.renderLatencySection(); len(latency) > 0 {
+		sections = append(sections, latency)
+	}
+
+	if len(sections) == 0 {
+		return skills.Result{}, fmt.Errorf("%w: no system metrics available", skills.ErrUnavailable)
+	}
+
+	parts := make([]string, 0, len(sections))
+	for _, section := range sections {
+		parts = append(parts, strings.Join(section, "\n"))
+	}
+	return skills.Result{Text: strings.Join(parts, "\n\n")}, nil
+}
+
+func (s *statusSkill) renderBasicSection(ctx context.Context) []string {
+	lines := make([]string, 0, 8)
 	if hostname, err := s.provider.Hostname(ctx); err == nil {
 		lines = append(lines, "Hostname: "+hostname)
+	}
+	if uptime, err := s.provider.Uptime(ctx); err == nil {
+		lines = append(lines, "Uptime: "+formatUptimeShort(uptime))
 	}
 	if cpu, err := s.provider.CPUUsage(ctx); err == nil {
 		lines = append(lines, "CPU: "+utils.FormatPercent(cpu))
 	}
 	if memory, err := s.provider.MemoryStats(ctx); err == nil {
-		lines = append(lines, fmt.Sprintf("Memory: %s used / %s total", utils.FormatBytes(memory.Used), utils.FormatBytes(memory.Total)))
+		lines = append(lines, fmt.Sprintf("Memory: %s / %s", utils.FormatBytes(memory.Used), utils.FormatBytes(memory.Total)))
 	}
+	lines = append(lines, "Swap: "+s.renderSwap(ctx))
+	lines = append(lines, "Memory pressure: "+s.renderPressure(ctx))
 	if disk, err := s.provider.DiskStats(ctx, "/"); err == nil {
 		lines = append(lines, fmt.Sprintf("Disk: %s free / %s total", utils.FormatBytes(disk.Free), utils.FormatBytes(disk.Total)))
 	}
-	if uptime, err := s.provider.Uptime(ctx); err == nil {
-		lines = append(lines, "Uptime: "+utils.FormatDuration(uptime))
-	}
 	if temperature, err := s.provider.Temperature(ctx); err == nil {
-		lines = append(lines, fmt.Sprintf("Temperature: %.1fC", temperature))
+		lines = append(lines, fmt.Sprintf("CPU temp: %.0f°C", temperature))
 	}
-	if line := formatLLMSummary(s.models); line != "" {
-		lines = append(lines, line)
+	return lines
+}
+
+func (s *statusSkill) renderSwap(ctx context.Context) string {
+	swap, err := s.provider.SwapStats(ctx)
+	if err != nil {
+		return "unknown"
+	}
+	return utils.FormatBytes(swap.Used)
+}
+
+func (s *statusSkill) renderPressure(ctx context.Context) string {
+	level, err := s.provider.MemoryPressure(ctx)
+	if err != nil || strings.TrimSpace(level) == "" {
+		return "unknown"
+	}
+	return level
+}
+
+func (s *statusSkill) renderProcessSection(ctx context.Context) []string {
+	var lines []string
+	if s.hooks.Agent != nil {
+		info := s.hooks.Agent(ctx)
+		state := "stopped"
+		if info.Running {
+			state = "running"
+		}
+		lines = append(lines, "Agent: "+state)
+		if info.PID > 0 {
+			lines = append(lines, fmt.Sprintf("PID: %d", info.PID))
+		}
+	}
+	if s.hooks.Telegram != nil {
+		state := strings.TrimSpace(s.hooks.Telegram(ctx))
+		if state == "" {
+			state = TelegramUnknown
+		}
+		lines = append(lines, "Telegram: "+state)
+	}
+	return lines
+}
+
+func (s *statusSkill) renderLoadedSection(ctx context.Context) []string {
+	// The hook contract: nil LoadedModels means "no Ollama integration
+	// wired" — skip the section. A non-nil hook with an empty result
+	// plus OllamaAvailable=false means the daemon is down.
+	if s.hooks.LoadedModels == nil {
+		return nil
+	}
+	loaded := s.hooks.LoadedModels(ctx)
+	if len(loaded) == 0 {
+		if s.hooks.OllamaAvailable != nil && !s.hooks.OllamaAvailable(ctx) {
+			return []string{"Ollama loaded: unavailable"}
+		}
+		return []string{"Ollama loaded: none"}
+	}
+	lines := []string{"Ollama loaded:"}
+	for _, m := range loaded {
+		lines = append(lines, "- "+formatLoadedModelStatus(m))
+	}
+	return lines
+}
+
+func (s *statusSkill) renderLatencySection() []string {
+	if s.hooks.Latency == nil {
+		return nil
+	}
+	snapshot := s.hooks.Latency()
+	if len(snapshot) == 0 {
+		return []string{"Last LLM latency: unknown"}
+	}
+	order := []string{"fast", "smart"}
+	seen := make(map[string]struct{}, len(order))
+	lines := []string{"Last LLM latency:"}
+	for _, key := range order {
+		if d, ok := snapshot[key]; ok {
+			lines = append(lines, fmt.Sprintf("- %s: %d ms", key, d.Milliseconds()))
+			seen[key] = struct{}{}
+		}
+	}
+	for key, d := range snapshot {
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("- %s: %d ms", key, d.Milliseconds()))
+	}
+	return lines
+}
+
+// formatUptimeShort drops the seconds suffix from FormatDuration so the
+// status block stays compact in Telegram. Output: "6d 2h 16m" or "5m" for
+// short uptimes.
+func formatUptimeShort(d time.Duration) string {
+	if d < time.Minute {
+		return utils.FormatDuration(d)
+	}
+	return utils.FormatDuration(d.Truncate(time.Minute))
+}
+
+// formatLoadedModelStatus renders one entry of the "Ollama loaded:" list.
+// Example: "gemma3-12b-8k · 100% GPU · ctx 8192 · forever".
+func formatLoadedModelStatus(m LoadedModelInfo) string {
+	parts := []string{shortModelName(m.Name)}
+	if p := strings.TrimSpace(m.Processor); p != "" {
+		parts = append(parts, p)
+	}
+	if m.Context > 0 {
+		parts = append(parts, fmt.Sprintf("ctx %d", m.Context))
+	}
+	if expires := strings.TrimSpace(m.ExpiresAt); expires != "" {
+		parts = append(parts, expires)
+	}
+	return strings.Join(parts, " · ")
+}
+
+// shortModelName trims Ollama's ":latest" suffix that adds noise without
+// disambiguating anything for users who only have one tag pulled.
+func shortModelName(name string) string {
+	name = strings.TrimSpace(name)
+	return strings.TrimSuffix(name, ":latest")
+}
+
+func renderAIProfiles(info ModelsInfo) []string {
+	type profile struct {
+		label, provider, model string
+		enabled                bool
+	}
+	entries := []profile{
+		{"fast", info.FastProvider, info.FastModel, strings.TrimSpace(info.FastModel) != "" && !info.FastFallback},
+		{"smart", info.SmartProvider, info.SmartModel, strings.TrimSpace(info.SmartModel) != ""},
+		{"vision", info.VisionProvider, info.VisionModel, info.VisionEnabled},
+	}
+	// Fast can fall back to smart; surface that explicitly rather than
+	// silently dropping the line.
+	if info.FastFallback && strings.TrimSpace(info.FastModel) == "" {
+		entries[0].enabled = true
+		entries[0].provider = info.SmartProvider
+		entries[0].model = info.SmartModel + " (fallback)"
 	}
 
-	if len(lines) == 0 {
-		return skills.Result{}, fmt.Errorf("%w: no system metrics available", skills.ErrUnavailable)
+	var rendered []string
+	for _, e := range entries {
+		if !e.enabled {
+			continue
+		}
+		rendered = append(rendered, "- "+e.label+": "+formatProfileLine(e.provider, e.model))
+	}
+	if info.OCREnabled {
+		ocr := strings.TrimSpace(info.OCRProvider)
+		if ocr == "" {
+			ocr = "enabled"
+		}
+		if len(info.OCRLanguages) > 0 {
+			ocr += " / " + strings.Join(info.OCRLanguages, "+")
+		}
+		rendered = append(rendered, "- OCR: "+ocr)
+	}
+	if info.VoiceEnabled {
+		rendered = append(rendered, "- voice: "+formatProfileLine(info.VoiceProvider, info.VoiceModel))
 	}
 
-	return skills.Result{Text: strings.Join(lines, "\n")}, nil
+	// Legacy single-model configs that don't populate the tier fields:
+	// fall back to LLMProvider/LLMModel so something still shows.
+	if len(rendered) == 0 {
+		if model := strings.TrimSpace(info.LLMModel); model != "" {
+			rendered = append(rendered, "- llm: "+formatProfileLine(info.LLMProvider, info.LLMModel))
+		}
+	}
+
+	if len(rendered) == 0 {
+		return nil
+	}
+	return append([]string{"AI profiles:"}, rendered...)
+}
+
+func formatProfileLine(provider, model string) string {
+	provider = strings.TrimSpace(provider)
+	model = strings.TrimSpace(model)
+	switch {
+	case provider != "" && model != "":
+		return provider + " / " + model
+	case model != "":
+		return model
+	case provider != "":
+		return provider
+	default:
+		return "disabled"
+	}
 }
 
 type modelsSkill struct {
@@ -249,34 +465,6 @@ func formatBytesShort(n int64) string {
 	default:
 		return fmt.Sprintf("%dB", n)
 	}
-}
-
-func formatLLMSummary(info ModelsInfo) string {
-	if info.hasTwoTier() {
-		fastProv := strings.TrimSpace(info.FastProvider)
-		fastModel := strings.TrimSpace(info.FastModel)
-		smartProv := strings.TrimSpace(info.SmartProvider)
-		smartModel := strings.TrimSpace(info.SmartModel)
-		fast := fastModel
-		if fastProv != "" {
-			fast = fastProv + " / " + fastModel
-		}
-		smart := smartModel
-		if smartProv != "" {
-			smart = smartProv + " / " + smartModel
-		}
-		return fmt.Sprintf("LLM: fast=%s, smart=%s", fast, smart)
-	}
-
-	model := strings.TrimSpace(info.LLMModel)
-	if model == "" {
-		return ""
-	}
-	provider := strings.TrimSpace(info.LLMProvider)
-	if provider == "" {
-		return "LLM: " + model
-	}
-	return fmt.Sprintf("LLM: %s / %s", provider, model)
 }
 
 // formatLLMLines renders the LLM section of the /models output. It returns

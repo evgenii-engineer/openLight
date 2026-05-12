@@ -63,6 +63,9 @@ func runAgent(args []string) error {
 		},
 		Logger: logger.With("component", "telegram"),
 	})
+	if rt.TelegramHealth != nil {
+		rt.TelegramHealth.Bind(bot.Health)
+	}
 	if rt.Watch != nil {
 		rt.Watch.SetNotifier(bot)
 	}

@@ -40,7 +40,7 @@ smoke-rpi: smoke-rpi-cli ## P2: smoke the deployed CLI on the Raspberry Pi
 smoke-macmini: smoke-macmini-cli ## P2: smoke the deployed CLI on the Mac mini
 
 smoke-rpi-cli:
-	ssh $(PI_USER)@$(PI_HOST) '$(if $(strip $(SMOKE_LLM_PROFILE)),LLM_PROFILE=$(SMOKE_LLM_PROFILE) ,)$(PI_DEST_DIR)/$(BIN_NAME) cli -config /etc/openlight/agent.yaml $(SMOKE_FLAGS)'
+	ssh $(PI_USER)@$(PI_HOST) '$(if $(strip $(SMOKE_LLM_PROFILE)),LLM_PROFILE=$(SMOKE_LLM_PROFILE) ,)$(PI_BIN_PATH) cli -config /etc/openlight/agent.yaml $(SMOKE_FLAGS)'
 
 smoke-rpi-cli-ollama:
 	$(MAKE) smoke-rpi-cli SMOKE_LLM_PROFILE=ollama

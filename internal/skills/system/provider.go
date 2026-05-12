@@ -17,12 +17,26 @@ type MemoryStats struct {
 	Used      uint64
 }
 
+type SwapStats struct {
+	Total uint64
+	Used  uint64
+	Free  uint64
+}
+
 type DiskStats struct {
 	Path  string
 	Total uint64
 	Free  uint64
 	Used  uint64
 }
+
+// Pressure level constants. The OS-specific providers map their native
+// signal to one of these so the status skill can render a stable label.
+const (
+	PressureGreen  = "green"
+	PressureYellow = "yellow"
+	PressureRed    = "red"
+)
 
 // Provider is the cross-platform interface that all OS-specific providers
 // implement. Linux uses /proc and /sys; Darwin uses sysctl and friends.
@@ -31,6 +45,8 @@ type DiskStats struct {
 type Provider interface {
 	CPUUsage(ctx context.Context) (float64, error)
 	MemoryStats(ctx context.Context) (MemoryStats, error)
+	SwapStats(ctx context.Context) (SwapStats, error)
+	MemoryPressure(ctx context.Context) (string, error)
 	DiskStats(ctx context.Context, path string) (DiskStats, error)
 	Uptime(ctx context.Context) (time.Duration, error)
 	Hostname(ctx context.Context) (string, error)
