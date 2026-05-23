@@ -77,7 +77,9 @@ in — that requires real credentials and would side-effect against the host
 
 Older configs declared nodes under `access.hosts:`. That key is still
 accepted and merged into `nodes:` at load time. New configs should use
-`nodes:` directly.
+`nodes:` directly. The agent logs a one-line deprecation note on
+startup whenever a legacy key is in use, and `openlight doctor`
+surfaces the same note as a warning.
 
 ## What nodes are NOT
 

@@ -30,22 +30,32 @@ opinionated enough to be useful out of the box.
 ## Architecture in one diagram
 
 ```
-Telegram / CLI
-     │
-     ▼
-auth → router  (slash → command → alias → semantic → optional LLM)
-     │
-     ▼
-skill registry  ── system, services, files, watch, notes, memory, chat
-     │
-     ▼
-SQLite     local processes     SSH nodes     optional Ollama / OpenAI
+Telegram (polling / webhook)   CLI
+            \                 /
+             ▼               ▼
+           core.Agent
+             │   auth + persist + (voice / image inbox)
+             ▼
+           router  (slash → explicit → shortcut → alias → rules → optional LLM)
+             │
+             ▼
+           skill registry  ── system, services, files, browser, watch,
+             │              notes, memory, chat, vision, ocr, network,
+             │              visual_watch, accounts, workbench, mcp,
+             │              external_skills
+             ▼
+           SQLite    local processes    SSH nodes    optional Ollama / OpenAI
+                                                       (FAST + SMART profiles)
 ```
 
-The router is **deterministic-first**. Slash commands, explicit text, and
-semantic rules run before the LLM is consulted. The LLM never bypasses
-the Go-side allowlists — it can only choose among skills that are already
-registered and resources that are already declared in your config.
+The router is **deterministic-first**: slash commands, explicit text,
+normalized shortcuts, registry aliases, and semantic rules all run
+before any LLM is consulted. When the LLM is enabled, it is a
+**fallback classifier**, not the runtime. It can only pick from
+already-registered skills and already-allowlisted services, file
+roots, hosts, runtimes, and network targets. **Allowlisted execution**
+is enforced in Go, inside each skill. See
+[docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md).
 
 ## Quick start (60 seconds)
 
@@ -69,44 +79,68 @@ try:
 For deterministic-only mode (no LLM at all), set `LLM_ENABLED=false` before
 running the installer.
 
-## Single binary, three subcommands
+## Single binary, four subcommands
 
 ```
 openlight agent     # run the Telegram bot (production)
 openlight cli       # run a one-shot or interactive CLI session
 openlight doctor    # validate config, allowlists, and dependencies
+openlight skills    # list, validate, reload builtin + external skills
 ```
 
 `openlight doctor` is the fast feedback loop. It loads your config,
-exercises every probe (Telegram, Ollama, SSH nodes, SQLite write), and
-prints OK / WARN / FAIL per check.
+exercises every probe (Telegram, Ollama, SSH nodes, SQLite write,
+optional voice / browser / vision / ocr deps), and prints OK / WARN /
+FAIL per check.
 
 ## What it can do today
 
-- Check host status from Telegram: `/status`, `/cpu`, `/memory`, `/disk`,
-  `/uptime`, `/hostname`, `/ip`, `/temperature`.
-- Inspect, tail, and restart allowlisted services across local `systemd`,
-  Docker Compose, Docker, and named SSH **nodes**.
-- Create service and metric **watches**, then receive Telegram alerts with
-  `Restart`, `Logs`, `Status`, and `Ignore` action buttons.
-- Enable curated packs: `/enable docker`, `/enable system`, `/enable auto-heal`.
-- Run with local Ollama, deterministic-only, or remote providers like OpenAI.
+- Check host status from Telegram: `/status`, `/cpu`, `/memory`,
+  `/disk`, `/uptime`, `/hostname`, `/ip`, `/temperature`.
+- Inspect, tail, and restart allowlisted services across local
+  `systemd`, Docker Compose, Docker, and named SSH **nodes**.
+- Create service, metric, port, and TLS-cert **watches**, then receive
+  Telegram alerts with `Restart`, `Logs`, `Status`, and `Ignore`
+  action buttons.
+- Enable curated packs: `/enable docker`, `/enable system`,
+  `/enable auto-heal`, `/enable tls`, `/enable homelab`, `/enable mac`,
+  `/enable pi`.
+- Keep durable notes (`/note`) and durable memory (`/remember`,
+  `/memories`, `/forget`) in SQLite.
+- Take voice notes on Telegram and transcribe them via local
+  `whisper-cli` + `ffmpeg`.
+- Optionally fetch page titles, text, and screenshots through a
+  Playwright helper, and run periodic **visual watches** that diff
+  screenshots over time.
+- Optionally describe / OCR images that arrive in chat, and probe TCP
+  ports, HTTP endpoints, TLS certs, and DNS records on allowlisted
+  hosts.
+- Optionally expose **MCP** (Model Context Protocol) tools and
+  **external skills** (subprocess executables with a `skill.yaml`
+  manifest) alongside the builtins.
+- Run with local Ollama, deterministic-only, or remote providers like
+  OpenAI — and split the workload across **FAST** (router/classifier)
+  and **SMART** (chat, log explanations) LLM profiles.
 - Reuse the same runtime from Telegram, the CLI, and smoke tests.
 
 ## Core vs. optional
 
-openLight is split into a small **core** that defines its identity and a
-set of **optional** modules that you turn on only if you need them.
+openLight is split into a small **core** that defines its identity
+and a set of **optional** modules that you turn on only if you need
+them.
 
-**Core (always on):** `core`, `system`, `services`, `watch`, `files`,
-`notes`, `memory`.
+**Core (always registered):** `core`, `system`, `services`, `watch`,
+`files`, `browser`, `notes`, `memory`. The `browser` skill is gated by
+`browser.enabled` at call time but lives in the always-on set.
 
-**Optional (off by default):** `chat`, `accounts`, `workbench`, `browser`,
-`vision`, `ocr`, `voice`, `visual_watch`.
+**Optional (off by default):** `chat`, `vision`, `ocr`,
+`visual_watch`, `network`, `accounts`, `workbench`, `voice`, `mcp`,
+`external_skills`.
 
-If you never enable any optional module, openLight stays a deterministic,
-no-LLM, no-extra-deps Telegram bot for safe service ops. That is the
-default posture. See [docs/SKILLS.md](./docs/SKILLS.md).
+If you never enable any optional module, openLight stays a
+deterministic, no-LLM, no-extra-deps Telegram bot for safe service
+ops. That is the default posture and the recommended starting point.
+See [docs/SKILLS.md](./docs/SKILLS.md).
 
 ## Nodes
 
@@ -133,18 +167,22 @@ service. See [docs/NODES.md](./docs/NODES.md).
 
 ## Watches
 
-A **watch** is a background rule that polls and fires when a condition
-holds longer than a threshold:
+A **watch** is a background rule that polls and fires when a
+condition holds longer than a threshold:
 
 ```
 /watch add service tailscale ask for 30s cooldown 10m
 /watch add cpu > 90% for 5m cooldown 15m
+/watch add port grafana.internal:3000 for 30s
+/watch add cert example.com expires-in 14d cooldown 24h
 /watch list
 ```
 
-When the condition trips, you get a Telegram alert with action buttons.
-The buttons reuse the same skill surface as manual commands — one audit
-path for both. See [docs/WATCHES.md](./docs/WATCHES.md).
+When the condition trips, you get a Telegram alert with action
+buttons. The buttons reuse the same skill surface as manual commands
+— one audit path for both. Curated packs (`/enable docker`,
+`/enable tls`, `/enable mac`, `/enable pi`, ...) seed sensible
+defaults idempotently. See [docs/WATCHES.md](./docs/WATCHES.md).
 
 ## Run with Docker / Compose
 
@@ -231,49 +269,61 @@ Top-level keys:
 ```yaml
 telegram:    # bot token, polling/webhook mode
 auth:        # allowed_user_ids, allowed_chat_ids
-storage:     # sqlite_path
-nodes:       # named SSH-reachable machines (legacy: access.hosts)
+storage:     # sqlite_path, retention_days
+nodes:       # named SSH-reachable machines (legacy alias: access.hosts)
 services:    # allowed targets + log limits
+files:       # safe local file read/write (legacy alias: filesystem)
 watch:       # poll interval + ask TTL
-filesystem:  # safe local file read/write (legacy: files)
-llm:         # provider, endpoint, model, profiles
+llm:         # provider, endpoint, model, profiles (fast/smart/vision), warmup
 chat:        # history limits for chat skill
 notes:       # list limit
-memory:      # persistent kv notes for the LLM
+memory:      # durable kv memory; optional separate sqlite file
 agent:       # request_timeout
 log:         # level
 # Optional surfaces, off by default:
-accounts:    # provider-driven user-management commands
-workbench:   # restricted code/file execution
-browser:     # browser skill (Playwright)
-vision:      # VLM-backed image analysis
-ocr:         # Tesseract OCR
-voice:       # ffmpeg + whisper-cpp
-visual_watch: # screenshot-diff watches (uses browser + ocr)
+accounts:      # provider-driven user-management commands
+workbench:     # restricted code/file execution
+browser:       # browser skill (Playwright helper, Node.js)
+vision:        # VLM-backed image analysis
+ocr:           # Tesseract OCR (default)
+voice:         # ffmpeg + whisper-cli for Telegram voice notes
+visual_watch:  # screenshot-diff watches (uses browser + optional ocr)
+network:       # TCP / HTTP / TLS / DNS probes
+mcp:           # Model Context Protocol server tools
+external_skills: # user-defined subprocess skills (skill.yaml)
 ```
 
 Useful env overrides: `TELEGRAM_BOT_TOKEN`, `ALLOWED_USER_IDS`,
 `ALLOWED_CHAT_IDS`, `SQLITE_PATH`, `LLM_ENABLED`, `LLM_PROVIDER`,
 `LLM_ENDPOINT`, `LLM_MODEL`, `OPENAI_API_KEY`, `LLM_PROFILE`,
-`TELEGRAM_MODE`, `TELEGRAM_WEBHOOK_URL`, `TELEGRAM_WEBHOOK_LISTEN_ADDR`,
-`TELEGRAM_WEBHOOK_SECRET_TOKEN`.
+`TELEGRAM_MODE`, `TELEGRAM_WEBHOOK_URL`,
+`TELEGRAM_WEBHOOK_LISTEN_ADDR`, `TELEGRAM_WEBHOOK_SECRET_TOKEN`,
+`MEMORY_ENABLED`, `MEMORY_DB_PATH`, `BROWSER_ENABLED`,
+`BROWSER_ALLOWED_DOMAINS`, `VOICE_ENABLED`, `VOICE_WHISPER_CLI_PATH`,
+`VISION_ENABLED`, `VISION_PROVIDER`, `VISION_MODEL`, `OCR_ENABLED`,
+`VISUAL_WATCH_ENABLED`, `WORKBENCH_ENABLED`.
 
 ## Project structure
 
 ```
-cmd/openlight/      single binary: agent, cli, doctor subcommands
-internal/runtime/   wires storage, skills, optional LLM, watch
-internal/router/    deterministic + optional LLM classification
-internal/core/      request lifecycle (the Agent type)
-internal/skills/    built-in skill modules
-internal/watch/     watch rules, incidents, alert actions
-internal/storage/   SQLite repository
-internal/telegram/  bot transport + UI
-configs/            example YAMLs
-deployments/        systemd, launchd, docker
-migrations/         embedded SQLite migrations
-docs/               architecture, nodes, watches, skills
-scripts/            install + remote-deploy helpers
+cmd/openlight/        single binary: agent, cli, doctor, skills subcommands
+internal/runtime/     wires storage, skills, optional LLM, watch, visual_watch, MCP
+internal/core/        request lifecycle (Agent), image inbox, voice handoff
+internal/router/      deterministic + optional LLM classification
+internal/skills/      built-in skill modules + external skill loader
+internal/watch/       watch rules, incidents, alert actions, packs
+internal/visualwatch/ periodic screenshot diff + keyword scan
+internal/mcp/         stdio JSON-RPC client for Model Context Protocol servers
+internal/voice/       voice-note pipeline (ffmpeg + whisper-cli)
+internal/storage/     SQLite repository + embedded migrations
+internal/telegram/    bot transport + UI (callbacks, sessions, keyboards)
+configs/              example YAMLs
+deployments/          systemd, launchd, docker
+migrations/           embedded SQLite migrations
+docs/                 architecture, nodes, watches, skills
+scripts/              install + remote-deploy helpers (Pi, Mac mini)
+tools/browser-agent/  Node.js Playwright helper invoked by the browser skill
+testdata/skills/      example external skill (echo)
 ```
 
 ## Good fit / Not a fit
