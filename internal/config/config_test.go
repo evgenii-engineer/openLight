@@ -1094,10 +1094,10 @@ func TestRoleBasedKeepAliveDefaults(t *testing.T) {
 	}
 
 	cases := map[string]string{
-		"smart":  "-1",
-		"fast":   "10m",
+		"fast":   "-1",
+		"smart":  "10m",
 		"vision": "5m",
-		"misc":   "30m",
+		"misc":   "10m",
 	}
 	for role, want := range cases {
 		got := cfg.ResolveProfile(role).KeepAlive
@@ -1110,6 +1110,43 @@ func TestRoleBasedKeepAliveDefaults(t *testing.T) {
 	cfg.Profiles["smart"] = LLMProfileConfig{Model: "gemma3-12b-8k", KeepAlive: "24h"}
 	if got := cfg.ResolveProfile("smart").KeepAlive; got != "24h" {
 		t.Fatalf("explicit profile keep_alive should win, got %q", got)
+	}
+}
+
+func TestLLMConfigResolveNumCtx(t *testing.T) {
+	t.Parallel()
+
+	cfg := LLMConfig{
+		Provider: "ollama",
+		Model:    "gemma3-12b-8k",
+		NumCtx:   2048,
+		Profiles: map[string]LLMProfileConfig{
+			"fast":   {Model: "qwen2.5:1.5b", NumCtx: 1024},
+			"smart":  {Model: "gemma3-12b-8k"}, // inherits top-level
+			"vision": {Model: "qwen2.5vl:3b", NumCtx: 0},
+		},
+	}
+
+	cases := map[string]int{
+		"fast":   1024, // profile override
+		"smart":  2048, // top-level inherited
+		"vision": 2048, // explicit zero == inherit
+	}
+	for role, want := range cases {
+		if got := cfg.ResolveProfile(role).NumCtx; got != want {
+			t.Errorf("role %q num_ctx = %d, want %d", role, got, want)
+		}
+	}
+
+	// Missing profile falls back to top-level.
+	if got := cfg.ResolveProfile("missing").NumCtx; got != 2048 {
+		t.Fatalf("missing profile should inherit top-level num_ctx, got %d", got)
+	}
+
+	// Top-level zero leaves resolved value at zero (Ollama default).
+	cfgZero := LLMConfig{Provider: "ollama", Model: "x"}
+	if got := cfgZero.ResolveProfile("fast").NumCtx; got != 0 {
+		t.Fatalf("top-level zero should resolve to zero, got %d", got)
 	}
 }
 

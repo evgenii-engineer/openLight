@@ -135,6 +135,49 @@ llm:
 			errContains: "clarify_threshold",
 		},
 		{
+			name: "llm num_ctx negative top-level fails",
+			yaml: `
+telegram:
+  bot_token: "token"
+auth:
+  allowed_user_ids: [1]
+storage:
+  sqlite_path: "./agent.db"
+llm:
+  enabled: true
+  provider: "ollama"
+  execute_threshold: 0.8
+  clarify_threshold: 0.6
+  decision_input_chars: 160
+  decision_num_predict: 48
+  num_ctx: -1
+`,
+			errContains: "llm.num_ctx",
+		},
+		{
+			name: "llm profile num_ctx negative fails",
+			yaml: `
+telegram:
+  bot_token: "token"
+auth:
+  allowed_user_ids: [1]
+storage:
+  sqlite_path: "./agent.db"
+llm:
+  enabled: true
+  provider: "ollama"
+  execute_threshold: 0.8
+  clarify_threshold: 0.6
+  decision_input_chars: 160
+  decision_num_predict: 48
+  profiles:
+    fast:
+      model: "qwen2.5:1.5b"
+      num_ctx: -2
+`,
+			errContains: "num_ctx",
+		},
+		{
 			name: "files max_read_bytes zero fails",
 			yaml: `
 telegram:

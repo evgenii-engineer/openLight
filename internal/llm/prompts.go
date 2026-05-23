@@ -6,113 +6,56 @@ import (
 	"strings"
 )
 
-const defaultDecisionNumPredict = 128
+// defaultDecisionNumPredict caps generation for Ollama classifier calls when
+// the request leaves NumPredict unset. The schema-constrained output is a
+// single small JSON object, so we keep this tight to minimise wall-clock.
+const defaultDecisionNumPredict = 16
 
-func buildRoutePrompt(text string, request RouteClassificationRequest) string {
-	allowedIntents := encodePromptList(routeIntentChoices(request.Groups))
-	guide := renderRouteGuide(request.Groups)
-	return fmt.Sprintf(
-		"Pick one intent for a local Telegram agent.\n"+
-			"Return JSON only:\n"+
-			"{\"intent\":\"string\",\"confidence\":0.0,\"needs_clarification\":false}\n"+
-			"Allowed intents: %s\n"+
-			"Guide:\n%s\n"+
-			"Rules:\n"+
-			"- use one allowed intent\n"+
-			"- chat for normal conversation, free-form replies, explanations, or when the user asks you to answer with text only\n"+
-			"- if the request wants a tool, use its tool group, not chat\n"+
-			"- core handles start, welcome, onboarding, ping, help, skills, and bot capability questions\n"+
-			"- workbench handles code snippets, runtimes, and execution requests\n"+
-			"- if unclear, use unknown or ask one short question\n"+
-			"- include clarification_question only when needs_clarification=true\n"+
-			"User: %q\n",
-		allowedIntents,
-		guide,
-		text,
-	)
-}
-
+// buildOllamaRoutePrompt produces the first-stage (group) prompt. The shape is
+// deliberately telegraphic: Ollama enforces the response schema, so the model
+// only needs to know which intents are allowed and a one-word hint per group.
+// Every byte that is not the user's text inflates prefill latency on a 1.5B
+// quantised model running on a Mac mini.
 func buildOllamaRoutePrompt(text string, request RouteClassificationRequest) string {
-	allowedIntents := encodePromptList(routeIntentChoices(request.Groups))
 	return fmt.Sprintf(
-		"Choose one intent for a local agent.\n"+
-			"Return one JSON object only.\n"+
-			"Keys: intent, confidence, needs_clarification, clarification_question.\n"+
-			"Allowed intents: %s\n"+
-			"Intent hints: %s\n"+
-			"Use chat for normal text replies. Use unknown only if unclear.\n"+
-			"User: %q\n",
-		allowedIntents,
+		"intent?\nallowed: %s\nhints: %s\ntext: %q\n",
+		encodePromptList(routeIntentChoices(request.Groups)),
 		renderOllamaRouteGuide(request.Groups),
 		text,
 	)
 }
 
-func buildSkillPrompt(text string, request SkillClassificationRequest) string {
-	allowedSkills := encodePromptList(allowedSkillNames(request))
-	allowedServicesSection := ""
-	if len(request.AllowedServices) > 0 {
-		allowedServicesSection = fmt.Sprintf("Allowed services: %s\n", encodePromptList(request.AllowedServices))
-	}
-	allowedRuntimesSection := ""
-	if len(request.AllowedRuntimes) > 0 {
-		allowedRuntimesSection = fmt.Sprintf("Allowed runtimes: %s\n", encodePromptList(request.AllowedRuntimes))
-	}
-	return fmt.Sprintf(
-		"Pick one skill inside the selected group.\n"+
-			"Return JSON only:\n"+
-			"{\"skill\":\"string\",\"arguments\":{},\"needs_clarification\":false}\n"+
-			"Allowed skills: %s\n"+
-			"%s%s"+
-			"Rules:\n"+
-			"- use one allowed skill\n"+
-			"- use empty skill only when needs_clarification=true\n"+
-			"- arguments is optional; include only fields you need\n"+
-			"- do not invent values for unused arguments\n"+
-			"- for status,cpu,memory,disk,uptime,hostname,ip,temperature use empty arguments {}\n"+
-			"- service -> arguments.service, note text -> arguments.text, ids -> arguments.id\n"+
-			"- file path -> arguments.path, file content -> arguments.content\n"+
-			"- replacement old/new -> arguments.find / arguments.replace\n"+
-			"- runtime -> arguments.runtime, code -> arguments.code, watch rule -> arguments.spec\n"+
-			"- if one read-only skill clearly matches and needs no extra args, set needs_clarification=false\n"+
-			"- ask one short question only when required details are missing\n"+
-			"- include clarification_question only when needs_clarification=true\n"+
-			"User: %q\n",
-		allowedSkills,
-		allowedServicesSection,
-		allowedRuntimesSection,
-		text,
-	)
-}
-
+// buildOllamaSkillPrompt produces the second-stage (skill) prompt. The group
+// is already constrained by the caller, so the prompt only carries the allowed
+// skill names, the argument keys the model may emit, and the user's text.
 func buildOllamaSkillPrompt(text string, request SkillClassificationRequest) string {
 	allowedSkills := allowedSkillNames(request)
-	allowedServicesSection := ""
+	argKeys := allowedArgumentKeysForSkills(allowedSkills)
+
+	var b strings.Builder
+	// Pre-allocate for the common shape; avoids the tiny grow steps the
+	// default builder does for each Write.
+	b.Grow(96 + len(text))
+
+	b.WriteString("skill?\nallowed: ")
+	b.WriteString(encodePromptList(allowedSkills))
+	b.WriteString("\nargs: ")
+	b.WriteString(encodePromptList(argKeys))
+	b.WriteByte('\n')
+
 	if len(request.AllowedServices) > 0 {
-		allowedServicesSection = fmt.Sprintf("Allowed services: %s\n", encodePromptList(request.AllowedServices))
+		b.WriteString("services: ")
+		b.WriteString(encodePromptList(request.AllowedServices))
+		b.WriteByte('\n')
 	}
-	allowedRuntimesSection := ""
 	if len(request.AllowedRuntimes) > 0 {
-		allowedRuntimesSection = fmt.Sprintf("Allowed runtimes: %s\n", encodePromptList(request.AllowedRuntimes))
+		b.WriteString("runtimes: ")
+		b.WriteString(encodePromptList(request.AllowedRuntimes))
+		b.WriteByte('\n')
 	}
 
-	return fmt.Sprintf(
-		"Choose one allowed skill.\n"+
-			"Return one JSON object only.\n"+
-			"Keys: skill, arguments, needs_clarification, clarification_question.\n"+
-			"Allowed skills: %s\n"+
-			"Skill hints: %s\n"+
-			"%s%s"+
-			"Allowed argument keys: %s\n"+
-			"Use arguments:{} when no arguments are needed. Use empty skill only for clarification.\n"+
-			"User: %q\n",
-		encodePromptList(allowedSkills),
-		renderOllamaSkillGuide(request),
-		allowedServicesSection,
-		allowedRuntimesSection,
-		encodePromptList(allowedArgumentKeysForSkills(allowedSkills)),
-		text,
-	)
+	fmt.Fprintf(&b, "text: %q\n", text)
+	return b.String()
 }
 
 func buildSummaryPrompt(text string) string {
@@ -207,26 +150,12 @@ func routeIntentChoices(groups []GroupOption) []string {
 	return result
 }
 
-func renderRouteGuide(groups []GroupOption) string {
-	if len(groups) == 0 {
-		return "- chat: normal conversation\n- unknown: unclear request"
-	}
-
-	lines := make([]string, 0, len(groups)+2)
-	lines = append(lines, "- chat: normal conversation")
-	for _, group := range groups {
-		key := strings.TrimSpace(group.Key)
-		if key == "" {
-			continue
-		}
-		lines = append(lines, "- "+key+": "+shortGroupGuide(key))
-	}
-	lines = append(lines, "- unknown: unclear request")
-	return strings.Join(lines, "\n")
-}
-
+// renderOllamaRouteGuide produces a one-line, semicolon-delimited hint string
+// for groups whose keys aren't self-explanatory. "chat" and "unknown" are
+// omitted because their names already describe the intent; including hints for
+// them is pure prompt bloat.
 func renderOllamaRouteGuide(groups []GroupOption) string {
-	parts := []string{"chat=normal reply"}
+	parts := make([]string, 0, len(groups))
 	for _, group := range groups {
 		key := strings.TrimSpace(group.Key)
 		if key == "" {
@@ -234,62 +163,29 @@ func renderOllamaRouteGuide(groups []GroupOption) string {
 		}
 		parts = append(parts, key+"="+shortGroupGuide(key))
 	}
-	parts = append(parts, "unknown=unclear")
-	return strings.Join(parts, "; ")
-}
-
-func renderOllamaSkillGuide(request SkillClassificationRequest) string {
-	skills := effectiveCandidateSkills(request)
-	if len(skills) == 0 {
-		names := allowedSkillNames(request)
-		parts := make([]string, 0, len(names))
-		for _, name := range names {
-			name = strings.TrimSpace(name)
-			if name == "" {
-				continue
-			}
-			parts = append(parts, name+"="+shortSkillGuide(name))
-		}
-		if len(parts) == 0 {
-			return "(none)"
-		}
-		return strings.Join(parts, "; ")
-	}
-
-	parts := make([]string, 0, len(skills))
-	for _, skill := range skills {
-		name := strings.TrimSpace(skill.Name)
-		if name == "" {
-			continue
-		}
-		parts = append(parts, name+"="+shortSkillGuide(name))
-	}
-	if len(parts) == 0 {
-		return "(none)"
-	}
-	return strings.Join(parts, "; ")
+	return strings.Join(parts, ";")
 }
 
 func shortGroupGuide(key string) string {
 	switch key {
 	case "files":
-		return "read/list/write/replace files"
+		return "read/write/list files"
 	case "workbench":
-		return "run code snippets, choose runtimes, or execute allowed files"
+		return "run code"
 	case "system":
-		return "status,cpu,memory,disk,uptime,hostname,ip,temperature"
+		return "cpu/mem/disk/host"
 	case "services":
-		return "service status,logs,restart"
+		return "svc status/logs/restart"
 	case "watch":
-		return "watch rules and incidents"
+		return "watch rules"
 	case "accounts":
-		return "list/add/delete users"
+		return "users"
 	case "notes":
-		return "add/list/delete notes"
+		return "notes"
 	case "core":
-		return "help, skills, start, ping, onboarding, welcome"
+		return "help/start/ping"
 	default:
-		return "use this tool group when it best matches"
+		return "tool group"
 	}
 }
 

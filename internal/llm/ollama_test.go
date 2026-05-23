@@ -30,7 +30,7 @@ func TestOllamaProviderClassifyRoute(t *testing.T) {
 			if payload["model"] != "phi3" {
 				t.Fatalf("unexpected model: %v", payload["model"])
 			}
-			if payload["keep_alive"] != defaultOllamaKeepAlive {
+			if num, ok := payload["keep_alive"].(float64); !ok || num != -1 {
 				t.Fatalf("unexpected keep_alive: %#v", payload["keep_alive"])
 			}
 			if payload["think"] != false {
@@ -43,10 +43,10 @@ func TestOllamaProviderClassifyRoute(t *testing.T) {
 			if !strings.Contains(prompt, "restart tailscale") {
 				t.Fatalf("unexpected prompt: %v", payload["prompt"])
 			}
-			if !strings.Contains(prompt, "Choose one intent for a local agent.") {
+			if !strings.Contains(prompt, "intent?") {
 				t.Fatalf("prompt is missing compact route instructions: %s", prompt)
 			}
-			if !strings.Contains(prompt, "services=service status,logs,restart") {
+			if !strings.Contains(prompt, "services=svc status/logs/restart") {
 				t.Fatalf("prompt is missing compact route group context: %s", prompt)
 			}
 			options, ok := payload["options"].(map[string]any)
@@ -136,16 +136,16 @@ func TestOllamaProviderClassifySkill(t *testing.T) {
 			if !ok {
 				t.Fatalf("unexpected prompt payload: %#v", payload["prompt"])
 			}
-			if !strings.Contains(prompt, "Allowed skills: [\"service_restart\"]") {
+			if !strings.Contains(prompt, "allowed: [\"service_restart\"]") {
 				t.Fatalf("prompt is missing allowed skills list: %s", prompt)
 			}
-			if !strings.Contains(prompt, "Choose one allowed skill.") {
+			if !strings.Contains(prompt, "skill?") {
 				t.Fatalf("prompt is missing compact second-layer instructions: %s", prompt)
 			}
-			if !strings.Contains(prompt, "Allowed services") || !strings.Contains(prompt, "tailscale") {
+			if !strings.Contains(prompt, "services:") || !strings.Contains(prompt, "tailscale") {
 				t.Fatalf("prompt is missing services: %s", prompt)
 			}
-			if !strings.Contains(prompt, "Allowed argument keys: [\"service\"]") {
+			if !strings.Contains(prompt, "args: [\"service\"]") {
 				t.Fatalf("prompt is missing compact argument guide: %s", prompt)
 			}
 			format, ok := payload["format"].(map[string]any)
@@ -238,10 +238,10 @@ func TestOllamaProviderClassifySkillOmitsAllowedServicesWhenEmpty(t *testing.T) 
 			if !ok {
 				t.Fatalf("unexpected prompt payload: %#v", payload["prompt"])
 			}
-			if strings.Contains(prompt, "Allowed services") {
+			if strings.Contains(prompt, "services:") {
 				t.Fatalf("did not expect allowed services section: %s", prompt)
 			}
-			if !strings.Contains(prompt, "Allowed argument keys: []") {
+			if !strings.Contains(prompt, "args: []") {
 				t.Fatalf("expected empty argument guide: %s", prompt)
 			}
 
@@ -285,7 +285,7 @@ func TestOllamaProviderClassifySkillFallsBackToAllowedSkillsWhenCandidatesMissin
 			if !ok {
 				t.Fatalf("unexpected prompt payload: %#v", payload["prompt"])
 			}
-			if !strings.Contains(prompt, "Allowed skills: [\"status\"]") {
+			if !strings.Contains(prompt, "allowed: [\"status\"]") {
 				t.Fatalf("prompt is missing allowed-skills list: %s", prompt)
 			}
 
@@ -551,7 +551,7 @@ func TestOllamaProviderChat(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 				t.Fatalf("decode request: %v", err)
 			}
-			if payload["keep_alive"] != defaultOllamaKeepAlive {
+			if num, ok := payload["keep_alive"].(float64); !ok || num != -1 {
 				t.Fatalf("unexpected keep_alive: %#v", payload["keep_alive"])
 			}
 			if payload["think"] != false {
@@ -597,6 +597,109 @@ func jsonHTTPResponse(payload any) *http.Response {
 			"Content-Type": []string{"application/json"},
 		},
 		Body: io.NopCloser(bytes.NewReader(body)),
+	}
+}
+
+func TestOllamaProviderNumCtxOmittedWhenZero(t *testing.T) {
+	t.Parallel()
+
+	provider := NewOllamaProvider("http://ollama.local:11434", "phi3", time.Second, nil)
+	provider.client = &http.Client{
+		Timeout: time.Second,
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			options, ok := payload["options"].(map[string]any)
+			if !ok {
+				t.Fatalf("missing options payload: %#v", payload)
+			}
+			if _, present := options["num_ctx"]; present {
+				t.Fatalf("num_ctx should be omitted when unset, got %#v", options["num_ctx"])
+			}
+			return jsonHTTPResponse(map[string]any{
+				"message": map[string]any{"content": "ok"},
+			}), nil
+		}),
+	}
+	if _, err := provider.Chat(context.Background(), []ChatMessage{{Role: "user", Content: "hi"}}); err != nil {
+		t.Fatalf("Chat returned error: %v", err)
+	}
+}
+
+func TestOllamaProviderNumCtxSentInAllPayloads(t *testing.T) {
+	t.Parallel()
+
+	check := func(t *testing.T, path string, payload map[string]any) {
+		t.Helper()
+		options, ok := payload["options"].(map[string]any)
+		if !ok {
+			t.Fatalf("[%s] missing options payload: %#v", path, payload)
+		}
+		got, ok := options["num_ctx"].(float64)
+		if !ok || int(got) != 1024 {
+			t.Fatalf("[%s] num_ctx = %#v, want 1024", path, options["num_ctx"])
+		}
+	}
+
+	provider := NewOllamaProviderWithOptions(
+		"http://ollama.local:11434",
+		"phi3",
+		OllamaProviderOptions{NumCtx: 1024},
+		time.Second,
+		nil,
+	)
+	provider.client = &http.Client{
+		Timeout: time.Second,
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			check(t, r.URL.Path, payload)
+			switch r.URL.Path {
+			case "/api/chat":
+				return jsonHTTPResponse(map[string]any{
+					"message": map[string]any{"content": "ok"},
+				}), nil
+			case "/api/generate":
+				return jsonHTTPResponse(map[string]any{
+					"response": `{"summary":"ok"}`,
+				}), nil
+			default:
+				t.Fatalf("unexpected path: %s", r.URL.Path)
+				return nil, nil
+			}
+		}),
+	}
+
+	// Chat path.
+	if _, err := provider.Chat(context.Background(), []ChatMessage{{Role: "user", Content: "hi"}}); err != nil {
+		t.Fatalf("Chat returned error: %v", err)
+	}
+	// generate path (via Summarize).
+	if _, err := provider.Summarize(context.Background(), "text"); err != nil {
+		t.Fatalf("Summarize returned error: %v", err)
+	}
+	// Prewarm path.
+	if err := provider.Prewarm(context.Background()); err != nil {
+		t.Fatalf("Prewarm returned error: %v", err)
+	}
+}
+
+func TestOllamaProviderNumCtxNegativeClampsToZero(t *testing.T) {
+	t.Parallel()
+
+	p := NewOllamaProviderWithOptions(
+		"http://127.0.0.1:11434",
+		"x",
+		OllamaProviderOptions{NumCtx: -5},
+		time.Second,
+		nil,
+	)
+	if p.numCtx != 0 {
+		t.Fatalf("expected negative NumCtx to clamp to 0, got %d", p.numCtx)
 	}
 }
 
@@ -717,7 +820,7 @@ func TestKeepAliveValueConvertsNumericsToInt(t *testing.T) {
 	t.Parallel()
 
 	cases := map[string]any{
-		"":     defaultOllamaKeepAlive,
+		"":     int64(-1),
 		"-1":   int64(-1),
 		"0":    int64(0),
 		"300":  int64(300),

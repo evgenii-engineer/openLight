@@ -73,14 +73,22 @@ llm:
   # Two-tier routing: FAST handles cheap classification / argument extraction
   # / route decisions; SMART handles reasoning, final answers, and log
   # explanations. Leave `profiles` empty to use the legacy single-model setup.
+  #
+  # `num_ctx` caps the Ollama context window per profile. Zero (or omitted)
+  # leaves Ollama on its model default — which in Ollama is often only 4096
+  # even for models that natively support 128k. Trim the window to free VRAM
+  # for the KV cache: FAST barely needs more than ~512 tokens, SMART needs
+  # room for history (~900 chars) + system prompt + answer.
   profiles:
     fast:
       model: "qwen2.5:1.5b"
       decision_input_chars: 160
       decision_num_predict: 64
+      num_ctx: 1024
     smart:
       model: "gemma3-12b-8k"
       decision_num_predict: 256
+      num_ctx: 4096
 
 chat:
   history_limit: 6

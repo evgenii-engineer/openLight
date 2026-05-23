@@ -17,10 +17,17 @@ import (
 const (
 	defaultExecuteThreshold = 0.80
 	defaultClarifyThreshold = 0.60
-	defaultRouteInputChars  = 96
-	defaultRouteNumPredict  = 32
-	defaultSkillInputChars  = 128
-	defaultSkillNumPredict  = 48
+	// Input chars are kept tight: at q4_K_M on Apple Silicon, prefill dominates
+	// classifier latency, and operational requests are almost always short.
+	defaultRouteInputChars = 64
+	defaultSkillInputChars = 96
+	// num_predict bounds the schema-constrained JSON the model emits. The
+	// route response is `{intent,confidence,needs_clarification}` (~16-20
+	// tokens on Qwen); skill responses add an `arguments` map (~6-12 more).
+	// Ollama stops generating once the schema's required fields are satisfied,
+	// so these values act as a worst-case ceiling, not a target.
+	defaultRouteNumPredict = 16
+	defaultSkillNumPredict = 24
 )
 
 type Options struct {

@@ -539,6 +539,7 @@ func buildProfileProvider(cfg config.Config, name string, logger *slog.Logger) (
 		APIKey:    profile.APIKey,
 		Timeout:   cfg.Agent.RequestTimeout,
 		KeepAlive: profile.KeepAlive,
+		NumCtx:    profile.NumCtx,
 	}, llmLogger)
 	if err != nil {
 		return nil, profile, fmt.Errorf("build %q llm profile: %w", name, err)

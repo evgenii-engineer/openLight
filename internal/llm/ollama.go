@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -15,7 +16,7 @@ import (
 	"unicode/utf8"
 )
 
-const defaultOllamaKeepAlive = "30m"
+const defaultOllamaKeepAlive = "-1"
 
 // keepAliveValue converts a user-provided keep_alive string into the JSON
 // shape Ollama actually accepts. Ollama parses duration strings ("30m",
@@ -25,7 +26,7 @@ const defaultOllamaKeepAlive = "30m"
 func keepAliveValue(raw string) any {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return defaultOllamaKeepAlive
+		raw = defaultOllamaKeepAlive
 	}
 	if n, err := strconv.ParseInt(raw, 10, 64); err == nil {
 		return n
@@ -37,30 +38,81 @@ type OllamaProvider struct {
 	endpoint  string
 	model     string
 	keepAlive string
+	numCtx    int
 	client    *http.Client
 	logger    *slog.Logger
 }
 
+// OllamaProviderOptions bundles optional knobs that have grown past what a
+// positional constructor can carry cleanly.
+type OllamaProviderOptions struct {
+	KeepAlive string
+	// NumCtx caps the context window Ollama allocates for this profile.
+	// Zero leaves Ollama on its model default (typically 4096 in Ollama,
+	// even for models that natively support 128k). Smaller values free
+	// significant VRAM for the KV cache — useful on Mac mini where SMART
+	// and FAST share GPU memory.
+	NumCtx int
+}
+
 func NewOllamaProvider(endpoint, model string, timeout time.Duration, logger *slog.Logger) *OllamaProvider {
-	return NewOllamaProviderWithKeepAlive(endpoint, model, "", timeout, logger)
+	return NewOllamaProviderWithOptions(endpoint, model, OllamaProviderOptions{}, timeout, logger)
 }
 
 // NewOllamaProviderWithKeepAlive lets callers pin a model in memory across
 // long idle periods. Accepts a Go duration string ("30m", "168h") or "-1"
 // to keep the model loaded indefinitely. Empty string falls back to 30m.
 func NewOllamaProviderWithKeepAlive(endpoint, model, keepAlive string, timeout time.Duration, logger *slog.Logger) *OllamaProvider {
-	keepAlive = strings.TrimSpace(keepAlive)
+	return NewOllamaProviderWithOptions(endpoint, model, OllamaProviderOptions{KeepAlive: keepAlive}, timeout, logger)
+}
+
+// NewOllamaProviderWithOptions is the full constructor. Use it when you
+// need to set num_ctx or any future per-profile knob alongside keep_alive.
+func NewOllamaProviderWithOptions(endpoint, model string, opts OllamaProviderOptions, timeout time.Duration, logger *slog.Logger) *OllamaProvider {
+	keepAlive := strings.TrimSpace(opts.KeepAlive)
 	if keepAlive == "" {
 		keepAlive = defaultOllamaKeepAlive
+	}
+	numCtx := opts.NumCtx
+	if numCtx < 0 {
+		numCtx = 0
 	}
 	return &OllamaProvider{
 		endpoint:  strings.TrimRight(strings.TrimSpace(endpoint), "/"),
 		model:     strings.TrimSpace(model),
 		keepAlive: keepAlive,
+		numCtx:    numCtx,
 		client: &http.Client{
-			Timeout: timeout,
+			Timeout:   timeout,
+			Transport: newOllamaTransport(),
 		},
 		logger: logger,
+	}
+}
+
+// newOllamaTransport returns an http.Transport tuned for high-frequency calls
+// to a co-located Ollama daemon. Defaults matter here: net/http's
+// DefaultTransport caps MaxIdleConnsPerHost at 2 and leaves HTTP/2 negotiation
+// on, which forces a TLS-style ALPN handshake on every cold connection — wasted
+// time when we're talking to http://127.0.0.1:11434. Reusing one keep-alive
+// connection across route → skill classifier calls eliminates per-request
+// TCP/handshake overhead, the second-largest source of fixed latency after
+// prefill on a Mac mini.
+func newOllamaTransport() *http.Transport {
+	return &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   5 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:     false,
+		MaxIdleConns:          16,
+		MaxIdleConnsPerHost:   8,
+		MaxConnsPerHost:       8,
+		IdleConnTimeout:       5 * time.Minute,
+		TLSHandshakeTimeout:   5 * time.Second,
+		ExpectContinueTimeout: 0,
+		DisableCompression:    true,
 	}
 }
 
@@ -127,18 +179,22 @@ func (p *OllamaProvider) Summarize(ctx context.Context, text string) (string, er
 }
 
 func (p *OllamaProvider) Chat(ctx context.Context, messages []ChatMessage) (string, error) {
+	options := map[string]any{
+		"temperature":    0.2,
+		"top_p":          0.9,
+		"repeat_penalty": 1.05,
+		"num_predict":    64,
+	}
+	if p.numCtx > 0 {
+		options["num_ctx"] = p.numCtx
+	}
 	payload := map[string]any{
 		"model":      p.model,
 		"messages":   messages,
 		"stream":     false,
 		"think":      false,
 		"keep_alive": keepAliveValue(p.keepAlive),
-		"options": map[string]any{
-			"temperature":    0.2,
-			"top_p":          0.9,
-			"repeat_penalty": 1.05,
-			"num_predict":    64,
-		},
+		"options":    options,
 	}
 
 	body, err := json.Marshal(payload)
@@ -212,16 +268,20 @@ func (p *OllamaProvider) PrewarmWith(ctx context.Context, opts PrewarmOptions) e
 		keepAlive = p.keepAlive
 	}
 
+	options := map[string]any{
+		"temperature": 0.0,
+		"num_predict": 1,
+	}
+	if p.numCtx > 0 {
+		options["num_ctx"] = p.numCtx
+	}
 	payload := map[string]any{
 		"model":      p.model,
 		"prompt":     prompt,
 		"stream":     false,
 		"think":      false,
 		"keep_alive": keepAliveValue(keepAlive),
-		"options": map[string]any{
-			"temperature": 0.0,
-			"num_predict": 1,
-		},
+		"options":    options,
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -325,6 +385,14 @@ func (p *OllamaProvider) ListLoadedModels(ctx context.Context) ([]LoadedModel, e
 }
 
 func (p *OllamaProvider) generate(ctx context.Context, prompt string, format any, temperature float64, numPredict int) (string, error) {
+	options := map[string]any{
+		"temperature": temperature,
+		"top_p":       0.9,
+		"num_predict": numPredict,
+	}
+	if p.numCtx > 0 {
+		options["num_ctx"] = p.numCtx
+	}
 	payload := map[string]any{
 		"model":      p.model,
 		"prompt":     prompt,
@@ -332,11 +400,7 @@ func (p *OllamaProvider) generate(ctx context.Context, prompt string, format any
 		"think":      false,
 		"format":     format,
 		"keep_alive": keepAliveValue(p.keepAlive),
-		"options": map[string]any{
-			"temperature": temperature,
-			"top_p":       0.9,
-			"num_predict": numPredict,
-		},
+		"options":    options,
 	}
 
 	body, err := json.Marshal(payload)

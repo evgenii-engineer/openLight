@@ -72,7 +72,7 @@ type UI interface {
 	StartSkillInput(ctx context.Context, chatID, userID int64, skill skills.Skill, args map[string]string) (bool, error)
 	CancelPending(chatID int64)
 	MapReplyKeyboard(text string) (string, bool)
-	OpenScreen(ctx context.Context, chatID int64, screen string) error
+	OpenScreen(ctx context.Context, chatID, userID int64, screen string) error
 	SendHome(ctx context.Context, chatID int64) error
 	IsFreeChat(chatID int64) bool
 	SetFreeChat(chatID int64, enabled bool)
@@ -269,7 +269,7 @@ func (a *Agent) handleUIPipeline(ctx context.Context, message telegram.IncomingM
 	// input flow — they let the user escape if they got stuck.
 	if screen, ok := a.ui.MapReplyKeyboard(message.Text); ok {
 		a.ui.CancelPending(message.ChatID)
-		if err := a.ui.OpenScreen(ctx, message.ChatID, screen); err != nil {
+		if err := a.ui.OpenScreen(ctx, message.ChatID, message.UserID, screen); err != nil {
 			a.logError("open ui screen", "screen", screen, "error", err)
 			return true, a.reply(ctx, message.ChatID, message.UserID, withReplyPrefix(replyPrefix, "internal error"))
 		}
@@ -455,18 +455,23 @@ func (a *Agent) executeSkillAndReply(
 		return a.reply(ctx, message.ChatID, message.UserID, withReplyPrefix(replyPrefix, userMessageForError(execErr)))
 	}
 
+	if replyPrefix != "" {
+		result.Text = withReplyPrefix(replyPrefix, result.Text)
+	}
+
+	sendStart := time.Now()
+	sendErr := a.replyResult(ctx, message.ChatID, message.UserID, result)
+	sendMS := time.Since(sendStart).Milliseconds()
+
 	a.logDebug(
 		"skill execution completed",
 		"skill", skill.Definition().Name,
 		"mode", decision.Mode,
 		"args", sanitizedArgs(decision.Args),
 		"duration_ms", durationMS,
+		"send_ms", sendMS,
 	)
-
-	if replyPrefix != "" {
-		result.Text = withReplyPrefix(replyPrefix, result.Text)
-	}
-	return a.replyResult(ctx, message.ChatID, message.UserID, result)
+	return sendErr
 }
 
 // runFreeChat executes the chat skill directly with the user's text, skipping

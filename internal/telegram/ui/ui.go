@@ -217,8 +217,9 @@ func (u *UI) MapReplyKeyboard(text string) (string, bool) {
 	switch strings.TrimSpace(text) {
 	case "Skills":
 		return "groups", true
-	case "Quick Actions":
-		return "quick", true
+	case "Status":
+		// Run the `status` skill directly instead of opening a sub-menu.
+		return "skill:status", true
 	case "System":
 		return "g:system", true
 	case "Watches":
@@ -253,7 +254,7 @@ func (u *UI) SetFreeChat(chatID int64, enabled bool) {
 
 // OpenScreen sends a fresh message for one of the named screens. Used when
 // the user taps a reply-keyboard label or runs /menu.
-func (u *UI) OpenScreen(ctx context.Context, chatID int64, screen string) error {
+func (u *UI) OpenScreen(ctx context.Context, chatID, userID int64, screen string) error {
 	switch {
 	case screen == "groups":
 		u.SetFreeChat(chatID, false)
@@ -263,6 +264,14 @@ func (u *UI) OpenScreen(ctx context.Context, chatID int64, screen string) error 
 		u.SetFreeChat(chatID, false)
 		return u.transport.SendTextWithButtons(ctx, chatID,
 			"Quick Actions:", keyboards.QuickActionsMenu(u.quickActionMetas()))
+	case strings.HasPrefix(screen, "skill:"):
+		u.SetFreeChat(chatID, false)
+		name := strings.TrimPrefix(screen, "skill:")
+		skill, ok := u.reg.Get(name)
+		if !ok {
+			return u.transport.SendText(ctx, chatID, "Skill not registered: "+name)
+		}
+		return u.runSkill(ctx, callback.Message{ChatID: chatID, UserID: userID}, skill, nil, false)
 	case screen == "chat":
 		u.SetFreeChat(chatID, true)
 		return u.transport.SendText(ctx, chatID,

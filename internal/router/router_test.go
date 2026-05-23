@@ -650,3 +650,71 @@ func TestRouterDeterministicInputsDoNotCallClassifier(t *testing.T) {
 		})
 	}
 }
+
+// TestRouterNormalizedShortcutBypassesClassifier asserts that single
+// normalized tokens (English or Russian after semantic rewriting) reach the
+// matching skill without invoking the LLM classifier. This is the fast path
+// targeted at common operational queries on the Mac mini build.
+func TestRouterNormalizedShortcutBypassesClassifier(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	for _, name := range []string{"cpu", "memory", "disk", "uptime", "status", "temperature", "hostname", "service_list", "note_list"} {
+		registry.MustRegister(testSkill{name: name})
+	}
+
+	cases := []struct {
+		input     string
+		wantSkill string
+	}{
+		{input: "проц", wantSkill: "cpu"},
+		{input: "Память", wantSkill: "memory"},
+		{input: "диск", wantSkill: "disk"},
+		{input: "аптайм", wantSkill: "uptime"},
+		{input: "статус", wantSkill: "status"},
+		{input: "температура", wantSkill: "temperature"},
+		{input: "хост", wantSkill: "hostname"},
+		{input: "сервисы", wantSkill: "service_list"},
+		{input: "заметки", wantSkill: "note_list"},
+	}
+
+	r := router.New(registry, failOnCallClassifier{t: t})
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.input, func(t *testing.T) {
+			decision, err := r.Route(context.Background(), tc.input)
+			if err != nil {
+				t.Fatalf("route returned error: %v", err)
+			}
+			if decision.SkillName != tc.wantSkill {
+				t.Fatalf("expected skill %q, got %#v", tc.wantSkill, decision)
+			}
+			if decision.Mode != router.ModeShortcut && decision.Mode != router.ModeExplicit {
+				t.Fatalf("expected deterministic shortcut/explicit mode, got %q", decision.Mode)
+			}
+		})
+	}
+}
+
+// TestRouterNormalizedShortcutSkipsMultiToken keeps multi-token input out of
+// the shortcut path so qualifiers ("cpu of nginx", "memory please") still go
+// through the rules / LLM pipeline that can use the surrounding context.
+func TestRouterNormalizedShortcutSkipsMultiToken(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "cpu"})
+
+	classifier := stubClassifier{
+		decision: router.Decision{Mode: router.ModeLLM, SkillName: "cpu", Args: map[string]string{}},
+		ok:       true,
+	}
+
+	decision, err := router.New(registry, classifier).Route(context.Background(), "memory please thanks")
+	if err != nil {
+		t.Fatalf("route returned error: %v", err)
+	}
+	if decision.Mode == router.ModeShortcut {
+		t.Fatalf("multi-token input must not hit the shortcut path: %#v", decision)
+	}
+}

@@ -21,14 +21,14 @@ func RootReply() [][]string {
 	return [][]string{
 		{"Skills", "AI"},
 		{"Watches", "Services"},
-		{"System", "Quick Actions"},
+		{"System", "Status"},
 	}
 }
 
 // RootReplyLabels returns the labels used in RootReply, useful for matching
 // inbound messages without duplicating strings.
 func RootReplyLabels() []string {
-	return []string{"Skills", "AI", "Watches", "Services", "System", "Quick Actions"}
+	return []string{"Skills", "AI", "Watches", "Services", "System", "Status"}
 }
 
 // GroupsMenu builds an inline keyboard listing all non-empty skill groups.

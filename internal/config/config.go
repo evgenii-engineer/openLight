@@ -162,6 +162,12 @@ type LLMConfig struct {
 	// fast=10m, vision=5m) win when this is empty.
 	KeepAlive string `yaml:"keep_alive"`
 
+	// NumCtx caps the context window Ollama allocates for the model.
+	// Zero leaves Ollama on its model default. Smaller values free
+	// significant VRAM for the KV cache and matter most on shared-GPU
+	// hosts (Mac mini) where FAST and SMART compete for memory.
+	NumCtx int `yaml:"num_ctx"`
+
 	// Warmup describes the always-warm policy executed on agent startup.
 	// See LLMWarmupConfig.
 	Warmup LLMWarmupConfig `yaml:"warmup"`
@@ -243,6 +249,9 @@ type LLMProfileConfig struct {
 	// KeepAlive overrides llm.keep_alive for this profile only. Useful for
 	// pinning SMART forever while letting FAST evict normally.
 	KeepAlive string `yaml:"keep_alive"`
+	// NumCtx overrides llm.num_ctx for this profile only. Zero inherits
+	// the top-level value (which itself may be zero = Ollama default).
+	NumCtx int `yaml:"num_ctx"`
 }
 
 // HasProfile reports whether a profile with the given name is configured.
@@ -272,6 +281,7 @@ func (c LLMConfig) ResolveProfile(name string) LLMProfileConfig {
 		DecisionInputChars: c.DecisionInputChars,
 		DecisionNumPredict: c.DecisionNumPredict,
 		KeepAlive:          c.KeepAlive,
+		NumCtx:             c.NumCtx,
 	}
 	if !c.HasProfile(name) {
 		return base
@@ -304,29 +314,32 @@ func (c LLMConfig) ResolveProfile(name string) LLMProfileConfig {
 	if v := strings.TrimSpace(profile.KeepAlive); v != "" {
 		base.KeepAlive = v
 	}
+	if profile.NumCtx > 0 {
+		base.NumCtx = profile.NumCtx
+	}
 	if strings.TrimSpace(base.KeepAlive) == "" {
 		base.KeepAlive = defaultKeepAliveForRole(name)
 	}
 	return base
 }
 
-// defaultKeepAliveForRole returns the sensible keep_alive default for a
-// well-known profile role:
-//   - smart  → "-1"  (always warm; this is the user-facing model)
-//   - fast   → "10m" (cheap to reload; evict during idle)
+// defaultKeepAliveForRole returns the default keep_alive for a profile
+// role:
+//   - fast   → "-1"  (router classifier runs on every request; pin it)
+//   - smart  → "10m" (big model; evict during idle to free VRAM)
 //   - vision → "5m"  (rarely called; release VRAM aggressively)
 //
-// Unrecognized profile names fall back to "30m".
+// Unrecognized profile names fall back to "10m".
 func defaultKeepAliveForRole(name string) string {
 	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "smart":
-		return "-1"
 	case "fast":
+		return "-1"
+	case "smart":
 		return "10m"
 	case "vision":
 		return "5m"
 	default:
-		return "30m"
+		return "10m"
 	}
 }
 
@@ -585,6 +598,8 @@ func (c Config) Validate() error {
 		return errors.New("llm.decision_input_chars must be greater than zero")
 	case c.LLM.DecisionNumPredict <= 0:
 		return errors.New("llm.decision_num_predict must be greater than zero")
+	case c.LLM.NumCtx < 0:
+		return errors.New("llm.num_ctx must not be negative")
 	case c.Agent.RequestTimeout <= 0:
 		return errors.New("agent.request_timeout must be greater than zero")
 	case c.Telegram.PollTimeout <= 0:
@@ -663,6 +678,9 @@ func (c Config) Validate() error {
 		}
 		if profile.DecisionNumPredict < 0 {
 			return fmt.Errorf("llm.profiles.%s.decision_num_predict must not be negative", name)
+		}
+		if profile.NumCtx < 0 {
+			return fmt.Errorf("llm.profiles.%s.num_ctx must not be negative", name)
 		}
 	}
 

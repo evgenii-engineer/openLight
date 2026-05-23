@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"openlight/internal/router/rules"
 	"openlight/internal/router/semantic"
@@ -17,6 +18,7 @@ type Mode string
 const (
 	ModeSlash    Mode = "slash"
 	ModeExplicit Mode = "explicit"
+	ModeShortcut Mode = "shortcut"
 	ModeAlias    Mode = "alias"
 	ModeRule     Mode = "rule"
 	ModeLLM      Mode = "llm"
@@ -68,8 +70,13 @@ func (r *Router) Route(ctx context.Context, text string) (Decision, error) {
 		return Decision{Mode: ModeUnknown}, nil
 	}
 
+	routeStart := time.Now()
 	sanitizedText := utils.RedactSensitiveText(text)
+
+	normalizeStart := time.Now()
 	sanitizedNormalized := semantic.Normalize(sanitizedText)
+	normalizeMS := time.Since(normalizeStart).Milliseconds()
+
 	r.logDebug(
 		"router pipeline started",
 		"text", shortTextForLog(sanitizedText),
@@ -77,17 +84,27 @@ func (r *Router) Route(ctx context.Context, text string) (Decision, error) {
 		"classifier_enabled", r.classifier != nil,
 	)
 
+	deterministicStart := time.Now()
 	if decision, ok := routeSlash(text); ok {
+		r.logRouteTiming(decision.Mode, normalizeMS, time.Since(deterministicStart).Milliseconds(), 0, time.Since(routeStart).Milliseconds())
 		r.logDebug("router matched slash command", "skill", decision.SkillName, "args", utils.RedactSensitiveArgs(decision.Args))
 		return decision, nil
 	}
 
 	if decision, ok := routeExplicit(text); ok {
+		r.logRouteTiming(decision.Mode, normalizeMS, time.Since(deterministicStart).Milliseconds(), 0, time.Since(routeStart).Milliseconds())
 		r.logDebug("router matched explicit command", "skill", decision.SkillName, "args", utils.RedactSensitiveArgs(decision.Args))
 		return decision, nil
 	}
 
+	if decision, ok := routeNormalizedShortcut(sanitizedNormalized); ok {
+		r.logRouteTiming(decision.Mode, normalizeMS, time.Since(deterministicStart).Milliseconds(), 0, time.Since(routeStart).Milliseconds())
+		r.logDebug("router matched normalized shortcut", "skill", decision.SkillName)
+		return decision, nil
+	}
+
 	if skill, ok := r.registry.ResolveIdentifier(text); ok {
+		r.logRouteTiming(ModeAlias, normalizeMS, time.Since(deterministicStart).Milliseconds(), 0, time.Since(routeStart).Milliseconds())
 		r.logDebug("router matched registry alias", "skill", skill.Definition().Name)
 		return Decision{
 			Mode:      ModeAlias,
@@ -97,6 +114,7 @@ func (r *Router) Route(ctx context.Context, text string) (Decision, error) {
 	}
 
 	if match, ok := rules.Parse(text); ok {
+		r.logRouteTiming(ModeRule, normalizeMS, time.Since(deterministicStart).Milliseconds(), 0, time.Since(routeStart).Milliseconds())
 		r.logDebug("router matched semantic rule", "skill", match.SkillName, "args", utils.RedactSensitiveArgs(match.Args), "normalized_text", shortTextForLog(sanitizedNormalized))
 		return Decision{
 			Mode:      ModeRule,
@@ -104,22 +122,49 @@ func (r *Router) Route(ctx context.Context, text string) (Decision, error) {
 			Args:      match.Args,
 		}, nil
 	}
+	deterministicMS := time.Since(deterministicStart).Milliseconds()
 
 	if r.classifier != nil {
 		r.logDebug("router invoking llm classifier", "normalized_text", shortTextForLog(sanitizedNormalized))
+		classifierStart := time.Now()
 		decision, ok, err := r.classifier.Classify(ctx, text)
+		classifierMS := time.Since(classifierStart).Milliseconds()
 		if err != nil {
+			r.logRouteTiming(ModeLLM, normalizeMS, deterministicMS, classifierMS, time.Since(routeStart).Milliseconds())
 			return Decision{}, err
 		}
 		if ok {
+			r.logRouteTiming(decision.Mode, normalizeMS, deterministicMS, classifierMS, time.Since(routeStart).Milliseconds())
 			r.logDebug("router accepted llm classifier decision", "skill", decision.SkillName, "confidence", decision.Confidence, "clarify", decision.ShouldClarify())
 			return decision, nil
 		}
+		r.logRouteTiming(ModeUnknown, normalizeMS, deterministicMS, classifierMS, time.Since(routeStart).Milliseconds())
 		r.logDebug("router classifier produced no executable match")
+		return Decision{Mode: ModeUnknown}, nil
 	}
 
+	r.logRouteTiming(ModeUnknown, normalizeMS, deterministicMS, 0, time.Since(routeStart).Milliseconds())
 	r.logDebug("router finished with no match", "normalized_text", shortTextForLog(sanitizedNormalized))
 	return Decision{Mode: ModeUnknown}, nil
+}
+
+// logRouteTiming emits one structured line per Route call so the operator can
+// see in the log stream exactly where wall-clock went: normalization, the
+// deterministic scan (slash/explicit/shortcut/alias/rule), and the LLM
+// classifier (zero when the deterministic path matched). Total includes all
+// three plus any uncategorised overhead.
+func (r *Router) logRouteTiming(mode Mode, normalizeMS, deterministicMS, classifierMS, totalMS int64) {
+	if r.logger == nil {
+		return
+	}
+	r.logger.Debug(
+		"router timing",
+		"mode", mode,
+		"normalize_ms", normalizeMS,
+		"deterministic_ms", deterministicMS,
+		"classifier_ms", classifierMS,
+		"total_ms", totalMS,
+	)
 }
 
 const maxLoggedTextChars = 160
@@ -723,4 +768,53 @@ func looksLikeRuntime(value string) bool {
 func looksLikeURL(value string) bool {
 	value = strings.ToLower(strings.TrimSpace(value))
 	return strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://")
+}
+
+// normalizedShortcuts maps single normalized tokens straight to a skill name.
+// semantic.Normalize already collapses Russian variants ("проц" → "cpu",
+// "память" → "memory", "статус" → "status", etc.), so this single O(1) lookup
+// short-circuits the most common operational queries without ever invoking
+// the rules scanner or the LLM. Keep entries to no-arg, read-only skills:
+// anything that needs an argument or has side effects should still go through
+// routeExplicit or the rules pipeline so its parsing logic stays in one place.
+var normalizedShortcuts = map[string]string{
+	"status":      "status",
+	"cpu":         "cpu",
+	"memory":      "memory",
+	"disk":        "disk",
+	"uptime":      "uptime",
+	"ip":          "ip",
+	"hostname":    "hostname",
+	"temperature": "temperature",
+	"skills":      "skills",
+	"help":        "help",
+	"ping":        "ping",
+	"services":    "service_list",
+	"notes":       "note_list",
+}
+
+// routeNormalizedShortcut performs a single-token alias lookup against the
+// already-normalized text. It matches the entire message, not a prefix, so
+// "cpu please" or "memory and disk" continue to the rules/LLM path where the
+// surrounding context can be considered.
+func routeNormalizedShortcut(normalizedText string) (Decision, bool) {
+	normalizedText = strings.TrimSpace(normalizedText)
+	if normalizedText == "" {
+		return Decision{}, false
+	}
+	// Reject anything that isn't a single token — multi-token messages may
+	// have qualifiers that change the intended skill ("cpu of nginx" should
+	// not be routed to the cpu metric skill).
+	if strings.IndexByte(normalizedText, ' ') >= 0 {
+		return Decision{}, false
+	}
+	skill, ok := normalizedShortcuts[normalizedText]
+	if !ok {
+		return Decision{}, false
+	}
+	return Decision{
+		Mode:      ModeShortcut,
+		SkillName: skill,
+		Args:      map[string]string{},
+	}, true
 }

@@ -21,6 +21,9 @@ type ProviderConfig struct {
 	APIKey    string
 	Timeout   time.Duration
 	KeepAlive string
+	// NumCtx caps the Ollama context window for this profile (0 keeps the
+	// Ollama default). Ignored by non-Ollama providers.
+	NumCtx int
 }
 
 type ProviderFactory interface {
@@ -215,7 +218,10 @@ func buildOllamaProvider(cfg ProviderConfig, logger *slog.Logger) (Provider, err
 	if strings.TrimSpace(cfg.Model) == "" {
 		return nil, fmt.Errorf("llm.model is required for provider %q", ProviderOllama)
 	}
-	return NewOllamaProviderWithKeepAlive(cfg.Endpoint, cfg.Model, cfg.KeepAlive, cfg.Timeout, logger), nil
+	return NewOllamaProviderWithOptions(cfg.Endpoint, cfg.Model, OllamaProviderOptions{
+		KeepAlive: cfg.KeepAlive,
+		NumCtx:    cfg.NumCtx,
+	}, cfg.Timeout, logger), nil
 }
 
 func buildOpenAIProvider(cfg ProviderConfig, logger *slog.Logger) (Provider, error) {

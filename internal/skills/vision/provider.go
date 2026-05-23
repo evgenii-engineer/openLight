@@ -94,7 +94,7 @@ func (p *ollamaProvider) Prewarm(ctx context.Context) error {
 		"model":      p.model,
 		"prompt":     "hi",
 		"stream":     false,
-		"keep_alive": "30m",
+		"keep_alive": -1,
 		"options": map[string]any{
 			"temperature": 0.0,
 			"num_predict": 1,
