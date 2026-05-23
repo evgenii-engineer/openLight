@@ -37,6 +37,7 @@ type Config struct {
 	Browser    BrowserConfig   `yaml:"browser"`
 	Network    NetworkConfig   `yaml:"network"`
 	MCP        MCPConfig       `yaml:"mcp"`
+	External    ExternalSkillsConfig `yaml:"external_skills"`
 	Vision      VisionConfig      `yaml:"vision"`
 	OCR         OCRConfig         `yaml:"ocr"`
 	VisualWatch VisualWatchConfig `yaml:"visual_watch"`
@@ -395,6 +396,24 @@ type MCPServerConfig struct {
 	Env          map[string]string `yaml:"env"`
 	EnvFrom      map[string]string `yaml:"env_from"`
 	AllowedTools []string          `yaml:"allowed_tools"`
+}
+
+// ExternalSkillsConfig governs loading of user-defined skills declared
+// on disk. Each root is scanned at startup; every immediate subdirectory
+// that contains a `skill.yaml` is registered alongside the builtin
+// skills. Roots that don't exist are silently skipped so operators can
+// safely point at `~/.openlight/skills` whether they've created it yet
+// or not.
+//
+// Enabled defaults to true (via normalize) whenever at least one root
+// is configured, so the simplest config is just:
+//
+//	external_skills:
+//	  roots:
+//	    - ~/.openlight/skills
+type ExternalSkillsConfig struct {
+	Enabled bool     `yaml:"enabled"`
+	Roots   []string `yaml:"roots"`
 }
 
 type VisionConfig struct {
@@ -1114,6 +1133,17 @@ func normalize(cfg *Config) {
 	}
 	if cfg.VisualWatch.RequestTimeout <= 0 {
 		cfg.VisualWatch.RequestTimeout = 60 * time.Second
+	}
+
+	cfg.External.Roots = normalizeStrings(cfg.External.Roots)
+	if len(cfg.External.Roots) > 0 && !cfg.External.Enabled {
+		// Make the common case ("declare a root, get external skills")
+		// just work. Operators who want to keep the roots configured
+		// but disable loading can set `enabled: false` explicitly —
+		// the YAML decoder distinguishes unset from false only via the
+		// pointer dance we deliberately don't do here, so the rule is:
+		// roots present implies enabled.
+		cfg.External.Enabled = true
 	}
 
 	cfg.LLM.Profile = strings.ToLower(strings.TrimSpace(cfg.LLM.Profile))

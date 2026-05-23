@@ -718,3 +718,38 @@ func TestRouterNormalizedShortcutSkipsMultiToken(t *testing.T) {
 		t.Fatalf("multi-token input must not hit the shortcut path: %#v", decision)
 	}
 }
+
+func TestRouterRegistryGeneric_ExternalSkillWithArgs(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "echo"})
+
+	decision, err := router.New(registry, nil).Route(context.Background(), "echo hello mac mini")
+	if err != nil {
+		t.Fatalf("route returned error: %v", err)
+	}
+	if decision.SkillName != "echo" {
+		t.Fatalf("expected SkillName=echo, got %#v", decision)
+	}
+	if decision.Args["text"] != "hello mac mini" {
+		t.Fatalf("expected args.text=%q, got %q", "hello mac mini", decision.Args["text"])
+	}
+}
+
+func TestRouterRegistryGeneric_UnknownFirstWordFallsThrough(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "echo"})
+
+	// No skill named "totally" — without an LLM classifier the route
+	// should report unknown, not invent a match from the second token.
+	decision, err := router.New(registry, nil).Route(context.Background(), "totally unrelated text")
+	if err != nil {
+		t.Fatalf("route returned error: %v", err)
+	}
+	if decision.Mode != router.ModeUnknown {
+		t.Fatalf("expected ModeUnknown, got %#v", decision)
+	}
+}

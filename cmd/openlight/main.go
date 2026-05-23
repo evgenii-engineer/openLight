@@ -31,6 +31,8 @@ func main() {
 		runOrExit(runCLI(args))
 	case "doctor":
 		runOrExit(runDoctor(args))
+	case "skills":
+		runOrExit(runSkills(args))
 	case "version", "-v", "--version":
 		fmt.Println(version())
 	case "help", "-h", "--help":
@@ -60,6 +62,7 @@ Commands:
   agent     Run the Telegram bot
   cli       Run a one-shot or interactive CLI session
   doctor    Validate config, allowlists, and dependencies
+  skills    Inspect and validate builtin + external skills
   version   Print version
   help      Show this message
 

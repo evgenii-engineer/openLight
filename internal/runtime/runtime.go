@@ -17,6 +17,7 @@ import (
 	accountskills "openlight/internal/skills/accounts"
 	browserskills "openlight/internal/skills/browser"
 	chatskills "openlight/internal/skills/chat"
+	externalskills "openlight/internal/skills/external"
 	fileskills "openlight/internal/skills/files"
 	mcpskills "openlight/internal/skills/mcp"
 	memoryskills "openlight/internal/skills/memory"
@@ -424,6 +425,14 @@ func BuildRegistryWithWatch(
 			MaxResponseChars: cfg.Chat.MaxResponseChars,
 		}))
 	}
+	// External (user-defined) skills register last so a builtin module
+	// can never be shadowed by a same-named manifest on disk — that
+	// invariant keeps audit logs honest about which code actually ran.
+	modules = append(modules, externalskills.NewModule(externalskills.Options{
+		Enabled: cfg.External.Enabled,
+		Roots:   cfg.External.Roots,
+	}, logger.With("component", "external-skills")))
+
 	modules = append(modules, skills.NewCoreModule())
 
 	if err := skills.RegisterModules(registry, modules...); err != nil {

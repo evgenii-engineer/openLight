@@ -113,6 +113,17 @@ func (r *Router) Route(ctx context.Context, text string) (Decision, error) {
 		}, nil
 	}
 
+	// Generic first-word lookup: if the leading token resolves to ANY
+	// registered skill (builtin or external), route to it with the
+	// remainder as the `text` argument. This is the only mechanism by
+	// which external skills with arguments reach the agent — builtin
+	// commands have their own hardcoded parsers in [routeCommand].
+	if decision, ok := routeRegistryGeneric(text, r.registry); ok {
+		r.logRouteTiming(decision.Mode, normalizeMS, time.Since(deterministicStart).Milliseconds(), 0, time.Since(routeStart).Milliseconds())
+		r.logDebug("router matched registry generic", "skill", decision.SkillName)
+		return decision, nil
+	}
+
 	if match, ok := rules.Parse(text); ok {
 		r.logRouteTiming(ModeRule, normalizeMS, time.Since(deterministicStart).Milliseconds(), 0, time.Since(routeStart).Milliseconds())
 		r.logDebug("router matched semantic rule", "skill", match.SkillName, "args", utils.RedactSensitiveArgs(match.Args), "normalized_text", shortTextForLog(sanitizedNormalized))
@@ -791,6 +802,46 @@ var normalizedShortcuts = map[string]string{
 	"ping":        "ping",
 	"services":    "service_list",
 	"notes":       "note_list",
+}
+
+// routeRegistryGeneric extracts the first token of text, normalizes it,
+// and asks the registry to resolve it as a skill identifier. The rest
+// of the text becomes the `text` argument so external skills can read
+// what the user typed after the command. Returns ok=false when the
+// first token isn't a registered identifier.
+//
+// This sits below the hardcoded builtin parsers in the pipeline so
+// builtins keep their custom argument-parsing semantics; only skills
+// that don't have a dedicated case here fall through to this generic
+// path. Without it, external skills with arguments would be
+// unreachable — the registry already maps their name, but the route
+// stack never asked.
+func routeRegistryGeneric(text string, registry *skills.Registry) (Decision, bool) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return Decision{}, false
+	}
+	fields := strings.Fields(text)
+	if len(fields) == 0 {
+		return Decision{}, false
+	}
+	command := normalizeRouteCommand(fields[0])
+	if command == "" {
+		return Decision{}, false
+	}
+	skill, ok := registry.ResolveIdentifier(command)
+	if !ok {
+		return Decision{}, false
+	}
+	argsText := ""
+	if len(fields) > 1 {
+		argsText = strings.TrimSpace(strings.Join(fields[1:], " "))
+	}
+	return Decision{
+		Mode:      ModeAlias,
+		SkillName: skill.Definition().Name,
+		Args:      map[string]string{"text": argsText},
+	}, true
 }
 
 // routeNormalizedShortcut performs a single-token alias lookup against the
