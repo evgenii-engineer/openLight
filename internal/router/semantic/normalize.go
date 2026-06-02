@@ -55,6 +55,9 @@ var tokenRewriteRules = []rewriteRule{
 	{from: []string{"статус"}, to: "status"},
 	{from: []string{"состояние"}, to: "status"},
 	{from: []string{"температура"}, to: "temperature"},
+	{from: []string{"температуру"}, to: "temperature"},
+	{from: []string{"температуры"}, to: "temperature"},
+	{from: []string{"температуре"}, to: "temperature"},
 	{from: []string{"темпа"}, to: "temperature"},
 	{from: []string{"аптайм"}, to: "uptime"},
 	{from: []string{"хост"}, to: "hostname"},
@@ -64,6 +67,8 @@ var tokenRewriteRules = []rewriteRule{
 	{from: []string{"заметка"}, to: "note"},
 	{from: []string{"добавить"}, to: "add"},
 	{from: []string{"добавь"}, to: "add"},
+	{from: []string{"создай"}, to: "add"},
+	{from: []string{"создать"}, to: "add"},
 	{from: []string{"запомни"}, to: "remember"},
 	{from: []string{"удалить"}, to: "delete"},
 	{from: []string{"удали"}, to: "delete"},
@@ -74,6 +79,18 @@ var tokenRewriteRules = []rewriteRule{
 	{from: []string{"возможности"}, to: "skills"},
 	{from: []string{"навыки"}, to: "skills"},
 	{from: []string{"интернет"}, to: "network"},
+	{from: []string{"сервер"}, to: "server"},
+	{from: []string{"сервера"}, to: "server"},
+	{from: []string{"сервере"}, to: "server"},
+	{from: []string{"серверу"}, to: "server"},
+	{from: []string{"сервак"}, to: "server"},
+	// Transliterations of common self-hosted service names so deterministic
+	// routing keeps working when commands are spoken in Russian.
+	{from: []string{"джитси"}, to: "jitsi"},
+	{from: []string{"синапс"}, to: "synapse"},
+	{from: []string{"распбери"}, to: "raspberry"},
+	{from: []string{"малинка"}, to: "raspberry"},
+	{from: []string{"малинку"}, to: "raspberry"},
 }
 
 func Normalize(value string) string {

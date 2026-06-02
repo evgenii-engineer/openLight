@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -49,6 +50,7 @@ func runDoctor(args []string) error {
 	checkFiles(report, cfg)
 	checkWatch(report, cfg)
 	checkOptional(report, cfg)
+	checkVoice(report, cfg)
 	checkSecurity(report, cfg)
 
 	report.summary()
@@ -214,9 +216,6 @@ func checkOptional(r *doctorReport, cfg config.Config) {
 	if cfg.OCR.Enabled {
 		r.ok("optional:ocr", cfg.OCR.Provider)
 	}
-	if cfg.Voice.Enabled {
-		r.ok("optional:voice", cfg.Voice.Provider)
-	}
 	if cfg.Browser.Enabled {
 		r.ok("optional:browser", cfg.Browser.HelperPath)
 	}
@@ -287,7 +286,76 @@ func checkSecurity(r *doctorReport, cfg config.Config) {
 	}
 }
 
+// checkVoice probes the Telegram voice-note transcription pipeline: the ffmpeg +
+// whisper binaries and the STT model file. This is the place an operator looks
+// first when voice notes sent to the bot fail to transcribe.
+func checkVoice(r *doctorReport, cfg config.Config) {
+	if !cfg.Voice.Enabled {
+		r.skip("voice", "disabled in config")
+		return
+	}
+
+	ffmpeg := firstNonEmpty(cfg.Voice.FFmpegPath, "ffmpeg")
+	if path, err := resolveBinary(ffmpeg); err != nil {
+		r.fail("voice:ffmpeg", ffmpeg+": "+err.Error())
+	} else {
+		r.ok("voice:ffmpeg", path)
+	}
+
+	whisper := firstNonEmpty(cfg.Voice.WhisperCLIPath, "whisper-cli")
+	if path, err := resolveBinary(whisper); err != nil {
+		r.warn("voice:whisper", whisper+": "+err.Error())
+	} else {
+		r.ok("voice:whisper", path)
+	}
+
+	rawModel := strings.TrimSpace(cfg.Voice.ModelPath)
+	switch {
+	case rawModel == "":
+		r.warn("voice:model", "voice.model_path is empty; transcription will fail")
+	case strings.HasPrefix(rawModel, "~"):
+		// exec does not run a shell, so "~" is passed to whisper-cli literally
+		// and never expands. Flag it even if the expanded file exists on disk.
+		r.fail("voice:model", "model_path uses \"~\" ("+rawModel+") which is NOT expanded; use an absolute path")
+	default:
+		if _, err := os.Stat(rawModel); err != nil {
+			r.fail("voice:model", "model not found: "+rawModel)
+		} else {
+			r.ok("voice:model", rawModel)
+		}
+	}
+}
+
 // ---- Helpers --------------------------------------------------------------
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if s := strings.TrimSpace(v); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+// resolveBinary returns the absolute path of an executable. A bare name is
+// looked up on PATH; a path containing a separator is stat'd directly.
+func resolveBinary(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", fmt.Errorf("empty path")
+	}
+	if strings.ContainsRune(path, os.PathSeparator) {
+		info, err := os.Stat(path)
+		if err != nil {
+			return "", err
+		}
+		if info.IsDir() {
+			return "", fmt.Errorf("%q is a directory", path)
+		}
+		return path, nil
+	}
+	return exec.LookPath(path)
+}
 
 func probeHTTP(url string, timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)

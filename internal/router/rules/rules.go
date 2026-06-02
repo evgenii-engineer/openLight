@@ -88,7 +88,7 @@ func Parse(text string) (Match, bool) {
 	}
 
 	switch {
-	case containsAny(normalized, "system status", "overall status", "agent status"):
+	case containsAny(normalized, "system status", "overall status", "agent status", "server status", "status server"):
 		return Match{SkillName: "status", Args: map[string]string{}}, true
 	case containsAny(normalized, "cpu", "processor usage"):
 		return Match{SkillName: "cpu", Args: map[string]string{}}, true
@@ -294,7 +294,7 @@ func isLogsContextWord(field string) bool {
 
 func isGenericServiceWord(field string) bool {
 	switch field {
-	case "", "show", "check", "service", "services", "status", "restart", "logs", "log", "for", "of", "the", "me", "please", "recent", "latest", "last", "system", "overall", "agent", "all", "whole", "entire":
+	case "", "show", "check", "service", "services", "status", "restart", "logs", "log", "for", "of", "the", "me", "please", "recent", "latest", "last", "system", "overall", "agent", "all", "whole", "entire", "server":
 		return true
 	default:
 		return false

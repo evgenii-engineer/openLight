@@ -7,6 +7,9 @@ telegram:
   api_base_url: "https://api.telegram.org"
   mode: "polling"
   poll_timeout: 25s
+  # Drop the backlog of updates queued while the agent was offline so a restart
+  # starts clean instead of replaying old messages. Defaults to true.
+  drop_pending_updates: true
 
 auth:
   allowed_user_ids:
@@ -103,9 +106,12 @@ memory:
   db_path: ""
   list_limit: 20
 
+# Telegram voice-note transcription: when a voice note arrives in chat, ffmpeg
+# converts it and whisper transcribes it locally.
 voice:
   enabled: true
   provider: "whisper_cli"
+  language: "ru"
   whisper_cli_path: "/opt/homebrew/bin/whisper-cli"
   model_path: "~/models/ggml-small.bin"
   ffmpeg_path: "/opt/homebrew/bin/ffmpeg"

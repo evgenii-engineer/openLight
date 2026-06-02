@@ -6,6 +6,10 @@ telegram:
   api_base_url: "https://api.telegram.org"
   mode: "polling"
   poll_timeout: 25s
+  # Drop the backlog of updates Telegram queued while the agent was offline, so
+  # a restart starts clean instead of replaying every message/command that piled
+  # up. Defaults to true; set false to process the backlog on restart.
+  drop_pending_updates: true
   webhook:
     url: "https://bot.example.com/openlight/webhook"
     listen_addr: ":8081"
@@ -186,12 +190,17 @@ memory:
   db_path: ""
   list_limit: 20
 
+# Telegram voice-note transcription: when a voice note arrives in chat, ffmpeg
+# converts it and whisper transcribes it locally.
 voice:
   enabled: false
   provider: "whisper_cli"
+  # Language whisper decodes incoming voice notes with (Russian by default).
+  language: "ru"
   whisper_cli_path: "/opt/homebrew/bin/whisper-cli"
   model_path: "~/models/ggml-small.bin"
   ffmpeg_path: "/opt/homebrew/bin/ffmpeg"
+  # Reply to a voice note with its transcript before the agent acts on it.
   reply_with_transcript: true
 
 browser:

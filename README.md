@@ -184,6 +184,36 @@ buttons. The buttons reuse the same skill surface as manual commands
 `/enable tls`, `/enable mac`, `/enable pi`, ...) seed sensible
 defaults idempotently. See [docs/WATCHES.md](./docs/WATCHES.md).
 
+## Voice notes (local transcription, Russian-first)
+
+Send a voice note to the Telegram bot and openLight transcribes it locally
+with whisper.cpp, then routes the text through the **same** router, auth,
+allowlists, and audit path as a typed message. Audio never leaves the
+machine.
+
+Pipeline: `Telegram voice note → ffmpeg → whisper.cpp (ru) → openLight router → skill`.
+
+Needs `voice.enabled: true` in the config plus `ffmpeg`, `whisper-cli`, and a
+model on the host (`make install-voice-deps`). Diagnose it with
+`openlight doctor` — it checks the ffmpeg/whisper binaries and the STT model
+file.
+
+Config (see `configs/agent.example.yaml`):
+
+```yaml
+voice:
+  enabled: true
+  language: "ru"
+  whisper_cli_path: "/opt/homebrew/bin/whisper-cli"
+  model_path: "~/models/ggml-small.bin"
+  ffmpeg_path: "/opt/homebrew/bin/ffmpeg"
+  reply_with_transcript: true
+```
+
+With `reply_with_transcript: true` the bot first echoes what it heard, then
+acts on it. Audio is never persisted — the temp file is deleted right after
+transcription.
+
 ## Run with Docker / Compose
 
 If you cloned the repo, the top-level

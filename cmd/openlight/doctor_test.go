@@ -109,6 +109,20 @@ func TestCheckSecurityFlagsBrowserBypass(t *testing.T) {
 	}
 }
 
+func TestCheckVoiceDisabledSkips(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	r := newDoctorReport(&buf)
+	checkVoice(r, config.Config{})
+	if r.skipped != 1 || r.failures != 0 {
+		t.Fatalf("expected a single skip, got skipped=%d failures=%d output=%s", r.skipped, r.failures, buf.String())
+	}
+	if !strings.Contains(buf.String(), "SKIP") || !strings.Contains(buf.String(), "voice") {
+		t.Fatalf("expected voice skip line, got:\n%s", buf.String())
+	}
+}
+
 func TestCheckSecurityCleanConfig(t *testing.T) {
 	t.Parallel()
 

@@ -51,10 +51,11 @@ func runAgent(args []string) error {
 	defer runtime.CloseRuntime(rt)
 
 	bot := telegram.NewBot(telegram.Options{
-		Token:       cfg.Telegram.BotToken,
-		BaseURL:     cfg.Telegram.APIBaseURL,
-		Mode:        cfg.Telegram.Mode,
-		PollTimeout: cfg.Telegram.PollTimeout,
+		Token:              cfg.Telegram.BotToken,
+		BaseURL:            cfg.Telegram.APIBaseURL,
+		Mode:               cfg.Telegram.Mode,
+		PollTimeout:        cfg.Telegram.PollTimeout,
+		DropPendingUpdates: cfg.Telegram.ShouldDropPendingUpdates(),
 		Webhook: telegram.WebhookOptions{
 			URL:                cfg.Telegram.Webhook.URL,
 			ListenAddr:         cfg.Telegram.Webhook.ListenAddr,
@@ -98,6 +99,7 @@ func runAgent(args []string) error {
 				voice.WhisperCLITranscriber{
 					BinaryPath: cfg.Voice.WhisperCLIPath,
 					ModelPath:  cfg.Voice.ModelPath,
+					Language:   cfg.Voice.STTLanguage(),
 				},
 			),
 			cfg.Voice.ReplyWithTranscript,

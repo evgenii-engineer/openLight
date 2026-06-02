@@ -1,6 +1,7 @@
 package voice
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -135,6 +136,9 @@ func (c FFmpegConverter) ConvertToWAV(ctx context.Context, inputPath string) (st
 type WhisperCLITranscriber struct {
 	BinaryPath string
 	ModelPath  string
+	// Language is the ISO code passed to whisper.cpp via -l (e.g. "ru"). When
+	// empty whisper auto-detects, which is less reliable for Russian commands.
+	Language string
 }
 
 func (t WhisperCLITranscriber) Transcribe(ctx context.Context, audioPath string) (string, error) {
@@ -145,17 +149,32 @@ func (t WhisperCLITranscriber) Transcribe(ctx context.Context, audioPath string)
 	defer os.RemoveAll(outputDir)
 
 	outputBase := filepath.Join(outputDir, "transcript")
-	cmd := exec.CommandContext(
-		ctx,
-		strings.TrimSpace(t.BinaryPath),
+	args := []string{
 		"-m", strings.TrimSpace(t.ModelPath),
 		"-f", audioPath,
 		"-of", outputBase,
 		"-otxt",
 		"-nt",
+	}
+	if lang := strings.TrimSpace(t.Language); lang != "" {
+		args = append(args, "-l", lang)
+	}
+	cmd := exec.CommandContext(
+		ctx,
+		strings.TrimSpace(t.BinaryPath),
+		args...,
 	)
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
 	if err := cmd.Run(); err != nil {
-		return "", skills.NewUserError(skills.ErrUnavailable, "voice transcription failed")
+		detail := strings.TrimSpace(output.String())
+		if detail == "" {
+			detail = "no whisper output — check that the binary and model_path are correct and the model file exists"
+		}
+		wrapped := fmt.Errorf("%w: whisper-cli %q (model %q) failed: %v: %s",
+			skills.ErrUnavailable, strings.TrimSpace(t.BinaryPath), strings.TrimSpace(t.ModelPath), err, detail)
+		return "", skills.NewUserError(wrapped, "voice transcription failed")
 	}
 
 	content, err := os.ReadFile(outputBase + ".txt")

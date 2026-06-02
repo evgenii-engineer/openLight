@@ -222,6 +222,7 @@ func (a *Agent) preprocessAttachments(ctx context.Context, message *telegram.Inc
 		downloader, _ := a.transport.(voice.Downloader)
 		result, err := a.voiceProcessor.Process(ctx, *message, downloader)
 		if err != nil {
+			a.logWarn("voice processing failed", "error", err)
 			return "", true, a.reply(ctx, message.ChatID, message.UserID, userMessageForError(err))
 		}
 		message.Text = result.RoutedText

@@ -64,13 +64,14 @@ type Button struct {
 }
 
 type Bot struct {
-	token       string
-	baseURL     string
-	mode        string
-	pollTimeout time.Duration
-	webhook     WebhookOptions
-	client      *http.Client
-	logger      *slog.Logger
+	token              string
+	baseURL            string
+	mode               string
+	pollTimeout        time.Duration
+	dropPendingUpdates bool
+	webhook            WebhookOptions
+	client             *http.Client
+	logger             *slog.Logger
 
 	healthMu     sync.Mutex
 	healthState  string
@@ -82,8 +83,11 @@ type Options struct {
 	BaseURL     string
 	Mode        string
 	PollTimeout time.Duration
-	Webhook     WebhookOptions
-	Logger      *slog.Logger
+	// DropPendingUpdates discards the backlog Telegram queued while the agent
+	// was offline, so a restart starts clean instead of replaying old messages.
+	DropPendingUpdates bool
+	Webhook            WebhookOptions
+	Logger             *slog.Logger
 }
 
 type WebhookOptions struct {
@@ -97,10 +101,11 @@ const maxTelegramMessageRunes = 3500
 
 func NewBot(options Options) *Bot {
 	return &Bot{
-		token:       strings.TrimSpace(options.Token),
-		baseURL:     strings.TrimRight(strings.TrimSpace(options.BaseURL), "/"),
-		mode:        strings.ToLower(strings.TrimSpace(options.Mode)),
-		pollTimeout: options.PollTimeout,
+		token:              strings.TrimSpace(options.Token),
+		baseURL:            strings.TrimRight(strings.TrimSpace(options.BaseURL), "/"),
+		mode:               strings.ToLower(strings.TrimSpace(options.Mode)),
+		pollTimeout:        options.PollTimeout,
+		dropPendingUpdates: options.DropPendingUpdates,
 		webhook: WebhookOptions{
 			URL:                strings.TrimSpace(options.Webhook.URL),
 			ListenAddr:         strings.TrimSpace(options.Webhook.ListenAddr),
@@ -122,8 +127,14 @@ func (b *Bot) Poll(ctx context.Context, handler func(context.Context, IncomingMe
 }
 
 func (b *Bot) pollUpdates(ctx context.Context, handler func(context.Context, IncomingMessage) error) error {
-	if err := b.deleteWebhook(ctx, false); err != nil {
+	// deleteWebhook with drop_pending_updates=true clears the queue Telegram
+	// accumulated while the agent was offline, so a restart starts clean
+	// instead of replaying every message/command that piled up.
+	if err := b.deleteWebhook(ctx, b.dropPendingUpdates); err != nil {
 		return err
+	}
+	if b.dropPendingUpdates && b.logger != nil {
+		b.logger.Info("dropped pending telegram updates on startup")
 	}
 
 	var offset int64
@@ -403,15 +414,15 @@ type update struct {
 }
 
 type tgMessage struct {
-	MessageID int64        `json:"message_id"`
-	Text      string       `json:"text"`
-	Caption   string       `json:"caption"`
-	Chat      tgChat       `json:"chat"`
-	From      tgUser       `json:"from"`
-	Voice     *tgFile      `json:"voice"`
-	Audio     *tgFile      `json:"audio"`
+	MessageID int64         `json:"message_id"`
+	Text      string        `json:"text"`
+	Caption   string        `json:"caption"`
+	Chat      tgChat        `json:"chat"`
+	From      tgUser        `json:"from"`
+	Voice     *tgFile       `json:"voice"`
+	Audio     *tgFile       `json:"audio"`
 	Photo     []tgPhotoSize `json:"photo"`
-	Document  *tgFile      `json:"document"`
+	Document  *tgFile       `json:"document"`
 }
 
 type tgPhotoSize struct {
@@ -471,7 +482,7 @@ func (b *Bot) setWebhook(ctx context.Context) error {
 	err := b.call(ctx, "/setWebhook", map[string]any{
 		"url":                  b.webhook.URL,
 		"allowed_updates":      []string{"message", "callback_query"},
-		"drop_pending_updates": b.webhook.DropPendingUpdates,
+		"drop_pending_updates": b.dropPendingUpdates || b.webhook.DropPendingUpdates,
 		"secret_token":         b.webhook.SecretToken,
 	}, nil)
 	if err != nil {
@@ -950,9 +961,9 @@ func replyKeyboardMarkup(rows [][]string, persistent bool) map[string]any {
 		}
 	}
 	markup := map[string]any{
-		"keyboard":          keyboard,
-		"resize_keyboard":   true,
-		"is_persistent":     persistent,
+		"keyboard":                keyboard,
+		"resize_keyboard":         true,
+		"is_persistent":           persistent,
 		"input_field_placeholder": "Type or tap…",
 	}
 	return markup

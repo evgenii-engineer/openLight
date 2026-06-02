@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -16,33 +17,33 @@ const defaultTelegramAPIBaseURL = "https://api.telegram.org"
 const defaultOpenAIAPIBaseURL = "https://api.openai.com/v1"
 
 type Config struct {
-	Telegram   TelegramConfig  `yaml:"telegram"`
-	Auth       AuthConfig      `yaml:"auth"`
-	Storage    StorageConfig   `yaml:"storage"`
-	Access     AccessConfig    `yaml:"access"`
+	Telegram TelegramConfig `yaml:"telegram"`
+	Auth     AuthConfig     `yaml:"auth"`
+	Storage  StorageConfig  `yaml:"storage"`
+	Access   AccessConfig   `yaml:"access"`
 	// Nodes is the canonical, top-level way to declare remote SSH targets.
 	// Equivalent to access.hosts; both are accepted and merged at load time.
-	Nodes      map[string]NodeConfig `yaml:"nodes"`
-	Accounts   AccountsConfig  `yaml:"accounts"`
-	Files      FilesConfig     `yaml:"files"`
-	Filesystem FilesConfig     `yaml:"filesystem"`
-	Workbench  WorkbenchConfig `yaml:"workbench"`
-	Services   ServicesConfig  `yaml:"services"`
-	Watch      WatchConfig     `yaml:"watch"`
-	LLM        LLMConfig       `yaml:"llm"`
-	Chat       ChatConfig      `yaml:"chat"`
-	Notes      NotesConfig     `yaml:"notes"`
-	Memory     MemoryConfig    `yaml:"memory"`
-	Voice      VoiceConfig     `yaml:"voice"`
-	Browser    BrowserConfig   `yaml:"browser"`
-	Network    NetworkConfig   `yaml:"network"`
-	MCP        MCPConfig       `yaml:"mcp"`
-	External    ExternalSkillsConfig `yaml:"external_skills"`
-	Vision      VisionConfig      `yaml:"vision"`
-	OCR         OCRConfig         `yaml:"ocr"`
-	VisualWatch VisualWatchConfig `yaml:"visual_watch"`
-	Agent      AgentConfig     `yaml:"agent"`
-	Log        LogConfig       `yaml:"log"`
+	Nodes       map[string]NodeConfig `yaml:"nodes"`
+	Accounts    AccountsConfig        `yaml:"accounts"`
+	Files       FilesConfig           `yaml:"files"`
+	Filesystem  FilesConfig           `yaml:"filesystem"`
+	Workbench   WorkbenchConfig       `yaml:"workbench"`
+	Services    ServicesConfig        `yaml:"services"`
+	Watch       WatchConfig           `yaml:"watch"`
+	LLM         LLMConfig             `yaml:"llm"`
+	Chat        ChatConfig            `yaml:"chat"`
+	Notes       NotesConfig           `yaml:"notes"`
+	Memory      MemoryConfig          `yaml:"memory"`
+	Voice       VoiceConfig           `yaml:"voice"`
+	Browser     BrowserConfig         `yaml:"browser"`
+	Network     NetworkConfig         `yaml:"network"`
+	MCP         MCPConfig             `yaml:"mcp"`
+	External    ExternalSkillsConfig  `yaml:"external_skills"`
+	Vision      VisionConfig          `yaml:"vision"`
+	OCR         OCRConfig             `yaml:"ocr"`
+	VisualWatch VisualWatchConfig     `yaml:"visual_watch"`
+	Agent       AgentConfig           `yaml:"agent"`
+	Log         LogConfig             `yaml:"log"`
 
 	// Deprecations is populated at load time. It lists keys the user is
 	// still using that have a preferred replacement. The runtime logs
@@ -56,7 +57,24 @@ type TelegramConfig struct {
 	APIBaseURL  string        `yaml:"api_base_url"`
 	Mode        string        `yaml:"mode"`
 	PollTimeout time.Duration `yaml:"poll_timeout"`
-	Webhook     WebhookConfig `yaml:"webhook"`
+	// DropPendingUpdates, when true (the default), discards the backlog of
+	// updates Telegram queued while the agent was offline, so a restart starts
+	// clean instead of replaying every message/command that piled up. In
+	// polling mode this drops the queue on startup; in webhook mode it is also
+	// honoured (alongside webhook.drop_pending_updates). Set to false to
+	// process the backlog on restart.
+	DropPendingUpdates *bool         `yaml:"drop_pending_updates"`
+	Webhook            WebhookConfig `yaml:"webhook"`
+}
+
+// ShouldDropPendingUpdates reports whether the backlog of updates queued while
+// the agent was offline should be discarded on startup. It defaults to true
+// when unset so a restart starts clean.
+func (c TelegramConfig) ShouldDropPendingUpdates() bool {
+	if c.DropPendingUpdates == nil {
+		return true
+	}
+	return *c.DropPendingUpdates
 }
 
 type WebhookConfig struct {
@@ -360,13 +378,22 @@ type MemoryConfig struct {
 	ListLimit int    `yaml:"list_limit"`
 }
 
+// VoiceConfig configures the Telegram voice-note transcription path: when a
+// voice note arrives in chat, ffmpeg converts it and whisper transcribes it.
 type VoiceConfig struct {
 	Enabled             bool   `yaml:"enabled"`
 	Provider            string `yaml:"provider"`
+	Language            string `yaml:"language"`
 	WhisperCLIPath      string `yaml:"whisper_cli_path"`
 	ModelPath           string `yaml:"model_path"`
 	FFmpegPath          string `yaml:"ffmpeg_path"`
 	ReplyWithTranscript bool   `yaml:"reply_with_transcript"`
+}
+
+// STTLanguage returns the language whisper should decode incoming voice notes
+// with, from voice.language.
+func (v VoiceConfig) STTLanguage() string {
+	return strings.TrimSpace(v.Language)
 }
 
 type BrowserConfig struct {
@@ -387,8 +414,8 @@ type NetworkConfig struct {
 }
 
 type MCPConfig struct {
-	Enabled bool                         `yaml:"enabled"`
-	Servers map[string]MCPServerConfig   `yaml:"servers"`
+	Enabled bool                       `yaml:"enabled"`
+	Servers map[string]MCPServerConfig `yaml:"servers"`
 }
 
 type MCPServerConfig struct {
@@ -417,15 +444,15 @@ type ExternalSkillsConfig struct {
 }
 
 type VisionConfig struct {
-	Enabled         bool          `yaml:"enabled"`
-	Provider        string        `yaml:"provider"`
-	Endpoint        string        `yaml:"endpoint"`
-	Model           string        `yaml:"model"`
-	APIKey          string        `yaml:"api_key"`
-	MaxImageSizeMB  int           `yaml:"max_image_size_mb"`
-	Timeout         time.Duration `yaml:"timeout"`
-	DefaultPrompt   string        `yaml:"default_prompt"`
-	MaxResponseChars int          `yaml:"max_response_chars"`
+	Enabled          bool          `yaml:"enabled"`
+	Provider         string        `yaml:"provider"`
+	Endpoint         string        `yaml:"endpoint"`
+	Model            string        `yaml:"model"`
+	APIKey           string        `yaml:"api_key"`
+	MaxImageSizeMB   int           `yaml:"max_image_size_mb"`
+	Timeout          time.Duration `yaml:"timeout"`
+	DefaultPrompt    string        `yaml:"default_prompt"`
+	MaxResponseChars int           `yaml:"max_response_chars"`
 }
 
 type OCRConfig struct {
@@ -556,6 +583,7 @@ func defaultConfig() Config {
 		},
 		Voice: VoiceConfig{
 			Provider:       "whisper_cli",
+			Language:       "ru",
 			WhisperCLIPath: "whisper-cli",
 			FFmpegPath:     "ffmpeg",
 		},
@@ -754,6 +782,10 @@ func overrideFromEnv(cfg *Config) {
 	}
 	if value := strings.TrimSpace(os.Getenv("TELEGRAM_MODE")); value != "" {
 		cfg.Telegram.Mode = value
+	}
+	if value := strings.TrimSpace(os.Getenv("TELEGRAM_DROP_PENDING_UPDATES")); value != "" {
+		v := parseBool(value)
+		cfg.Telegram.DropPendingUpdates = &v
 	}
 	if value := parseInt64ListEnv("ALLOWED_USER_IDS"); len(value) > 0 {
 		cfg.Auth.AllowedUserIDs = value
@@ -1044,14 +1076,20 @@ func normalize(cfg *Config) {
 	if cfg.Voice.Provider == "" {
 		cfg.Voice.Provider = "whisper_cli"
 	}
-	cfg.Voice.WhisperCLIPath = strings.TrimSpace(cfg.Voice.WhisperCLIPath)
+	cfg.Voice.WhisperCLIPath = expandHomePath(strings.TrimSpace(cfg.Voice.WhisperCLIPath))
 	if cfg.Voice.WhisperCLIPath == "" {
 		cfg.Voice.WhisperCLIPath = "whisper-cli"
 	}
-	cfg.Voice.ModelPath = strings.TrimSpace(cfg.Voice.ModelPath)
-	cfg.Voice.FFmpegPath = strings.TrimSpace(cfg.Voice.FFmpegPath)
+	// Expand a leading "~" because these paths are passed to exec (no shell), so
+	// the shell would never expand them and whisper/ffmpeg would not find them.
+	cfg.Voice.ModelPath = expandHomePath(strings.TrimSpace(cfg.Voice.ModelPath))
+	cfg.Voice.FFmpegPath = expandHomePath(strings.TrimSpace(cfg.Voice.FFmpegPath))
 	if cfg.Voice.FFmpegPath == "" {
 		cfg.Voice.FFmpegPath = "ffmpeg"
+	}
+	cfg.Voice.Language = strings.ToLower(strings.TrimSpace(cfg.Voice.Language))
+	if cfg.Voice.Language == "" {
+		cfg.Voice.Language = "ru"
 	}
 	cfg.Browser.NodePath = strings.TrimSpace(cfg.Browser.NodePath)
 	if cfg.Browser.NodePath == "" {
@@ -1218,6 +1256,23 @@ func applySelectedLLMProfile(cfg *Config, requestedProfile string) error {
 	}
 
 	return nil
+}
+
+// expandHomePath replaces a leading "~" (alone or "~/...") with the current
+// user's home directory. Paths are otherwise returned unchanged. Used for
+// exec'd tool paths where no shell is involved to expand the tilde.
+func expandHomePath(path string) string {
+	if path != "~" && !strings.HasPrefix(path, "~/") {
+		return path
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return path
+	}
+	if path == "~" {
+		return home
+	}
+	return filepath.Join(home, path[2:])
 }
 
 func normalizeStrings(values []string) []string {

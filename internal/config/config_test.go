@@ -178,7 +178,11 @@ log:
 	if !cfg.Memory.Enabled || cfg.Memory.DBPath != "./memory.db" || cfg.Memory.ListLimit != 12 {
 		t.Fatalf("unexpected memory config: %#v", cfg.Memory)
 	}
-	if !cfg.Voice.Enabled || cfg.Voice.Provider != "whisper_cli" || cfg.Voice.ModelPath != "~/models/ggml-small.bin" || !cfg.Voice.ReplyWithTranscript {
+	wantModel := "~/models/ggml-small.bin"
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		wantModel = filepath.Join(home, "models/ggml-small.bin")
+	}
+	if !cfg.Voice.Enabled || cfg.Voice.Provider != "whisper_cli" || cfg.Voice.ModelPath != wantModel || !cfg.Voice.ReplyWithTranscript {
 		t.Fatalf("unexpected voice config: %#v", cfg.Voice)
 	}
 	if !cfg.Browser.Enabled || !cfg.Browser.AllowAllDomains || cfg.Browser.NodePath != "/opt/homebrew/bin/node" || cfg.Browser.TimeoutSeconds != 18 {
@@ -227,6 +231,9 @@ storage:
 	if cfg.Telegram.Webhook.ListenAddr != ":8081" {
 		t.Fatalf("unexpected webhook listen addr default: %q", cfg.Telegram.Webhook.ListenAddr)
 	}
+	if !cfg.Telegram.ShouldDropPendingUpdates() {
+		t.Fatalf("expected drop_pending_updates to default to true")
+	}
 	if cfg.Workbench.WorkspaceDir != "/tmp/openlight" {
 		t.Fatalf("unexpected workbench dir default: %q", cfg.Workbench.WorkspaceDir)
 	}
@@ -271,6 +278,31 @@ storage:
 	}
 	if cfg.Log.Level != "info" {
 		t.Fatalf("unexpected log level: %q", cfg.Log.Level)
+	}
+}
+
+func TestLoadDropPendingUpdatesExplicitFalse(t *testing.T) {
+	clearConfigEnv(t)
+
+	configPath := filepath.Join(t.TempDir(), "agent.yaml")
+	writeConfig(t, configPath, `
+telegram:
+  bot_token: "token"
+  drop_pending_updates: false
+
+auth:
+  allowed_user_ids: [1]
+
+storage:
+  sqlite_path: "./agent.db"
+`)
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.Telegram.ShouldDropPendingUpdates() {
+		t.Fatalf("expected drop_pending_updates=false to be honoured")
 	}
 }
 
