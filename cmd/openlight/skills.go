@@ -84,7 +84,7 @@ func runSkillsList(args []string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	rt, err := runtime.BuildRuntime(ctx, cfg, logger)
+	rt, err := runtime.BuildRuntimeWithOptions(ctx, cfg, logger, runtime.BuildOptions{StartBrainServer: false})
 	if err != nil {
 		return err
 	}

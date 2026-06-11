@@ -24,6 +24,10 @@ type ProviderConfig struct {
 	// NumCtx caps the Ollama context window for this profile (0 keeps the
 	// Ollama default). Ignored by non-Ollama providers.
 	NumCtx int
+	// Think enables Gemma 4's reasoning mode for this provider instance.
+	// Only meaningful for Ollama. Use for coding/planning profiles; leave
+	// false for normal conversation to avoid multi-second latency spikes.
+	Think bool
 }
 
 type ProviderFactory interface {
@@ -221,6 +225,7 @@ func buildOllamaProvider(cfg ProviderConfig, logger *slog.Logger) (Provider, err
 	return NewOllamaProviderWithOptions(cfg.Endpoint, cfg.Model, OllamaProviderOptions{
 		KeepAlive: cfg.KeepAlive,
 		NumCtx:    cfg.NumCtx,
+		Think:     cfg.Think,
 	}, cfg.Timeout, logger), nil
 }
 

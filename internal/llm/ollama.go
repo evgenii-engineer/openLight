@@ -39,6 +39,7 @@ type OllamaProvider struct {
 	model     string
 	keepAlive string
 	numCtx    int
+	think     bool
 	client    *http.Client
 	logger    *slog.Logger
 }
@@ -53,6 +54,9 @@ type OllamaProviderOptions struct {
 	// significant VRAM for the KV cache — useful on Mac mini where SMART
 	// and FAST share GPU memory.
 	NumCtx int
+	// Think enables Gemma 4's reasoning mode. Use for coding, planning,
+	// and architecture tasks. Avoid for normal conversation (high latency).
+	Think bool
 }
 
 func NewOllamaProvider(endpoint, model string, timeout time.Duration, logger *slog.Logger) *OllamaProvider {
@@ -82,6 +86,7 @@ func NewOllamaProviderWithOptions(endpoint, model string, opts OllamaProviderOpt
 		model:     strings.TrimSpace(model),
 		keepAlive: keepAlive,
 		numCtx:    numCtx,
+		think:     opts.Think,
 		client: &http.Client{
 			Timeout:   timeout,
 			Transport: newOllamaTransport(),
@@ -192,7 +197,7 @@ func (p *OllamaProvider) Chat(ctx context.Context, messages []ChatMessage) (stri
 		"model":      p.model,
 		"messages":   messages,
 		"stream":     false,
-		"think":      false,
+		"think":      p.think,
 		"keep_alive": keepAliveValue(p.keepAlive),
 		"options":    options,
 	}
@@ -279,7 +284,7 @@ func (p *OllamaProvider) PrewarmWith(ctx context.Context, opts PrewarmOptions) e
 		"model":      p.model,
 		"prompt":     prompt,
 		"stream":     false,
-		"think":      false,
+		"think":      false, // warmup always skips reasoning
 		"keep_alive": keepAliveValue(keepAlive),
 		"options":    options,
 	}
@@ -397,7 +402,7 @@ func (p *OllamaProvider) generate(ctx context.Context, prompt string, format any
 		"model":      p.model,
 		"prompt":     prompt,
 		"stream":     false,
-		"think":      false,
+		"think":      p.think,
 		"format":     format,
 		"keep_alive": keepAliveValue(p.keepAlive),
 		"options":    options,

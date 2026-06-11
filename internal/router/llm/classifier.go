@@ -22,12 +22,12 @@ const (
 	defaultRouteInputChars = 64
 	defaultSkillInputChars = 96
 	// num_predict bounds the schema-constrained JSON the model emits. The
-	// route response is `{intent,confidence,needs_clarification}` (~16-20
+	// route response is `{intent,confidence,needs_clarification}` (~32-48
 	// tokens on Qwen); skill responses add an `arguments` map (~6-12 more).
 	// Ollama stops generating once the schema's required fields are satisfied,
 	// so these values act as a worst-case ceiling, not a target.
-	defaultRouteNumPredict = 16
-	defaultSkillNumPredict = 24
+	defaultRouteNumPredict = 48
+	defaultSkillNumPredict = 64
 )
 
 type Options struct {
@@ -281,17 +281,11 @@ func effectiveLayerInputChars(base int, limit int) int {
 	}
 }
 
-func effectiveLayerNumPredict(base int, limit int) int {
-	switch {
-	case base <= 0:
-		return limit
-	case limit <= 0:
-		return base
-	case base < limit:
-		return base
-	default:
-		return limit
+func effectiveLayerNumPredict(base int, defaultVal int) int {
+	if base <= 0 {
+		return defaultVal
 	}
+	return base
 }
 
 func (c *Classifier) allowedServicesForGroup(groupKey string) []string {

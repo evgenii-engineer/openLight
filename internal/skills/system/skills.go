@@ -40,6 +40,18 @@ type ModelsInfo struct {
 	FastKeepAlive  string
 	SmartKeepAlive string
 
+	// SmartThink and SmartNumCtx describe the reasoning flag and context
+	// window of the smart profile. Shown in /status and /models.
+	SmartThink  bool
+	SmartNumCtx int
+
+	// Deep profile fields. DeepModel is empty when the profile is not configured.
+	DeepModel    string
+	DeepProvider string
+	DeepThink    bool
+	DeepNumCtx   int
+	DeepKeepAlive string
+
 	// Warmup snapshot — what the agent will pin into Ollama at startup.
 	WarmupEnabled   bool
 	WarmupProfiles  []string
@@ -293,6 +305,7 @@ func renderAIProfiles(info ModelsInfo) []string {
 	entries := []profile{
 		{"fast", info.FastProvider, info.FastModel, strings.TrimSpace(info.FastModel) != "" && !info.FastFallback},
 		{"smart", info.SmartProvider, info.SmartModel, strings.TrimSpace(info.SmartModel) != ""},
+		{"deep", info.DeepProvider, info.DeepModel, strings.TrimSpace(info.DeepModel) != ""},
 		{"vision", info.VisionProvider, info.VisionModel, info.VisionEnabled},
 	}
 	// Fast can fall back to smart; surface that explicitly rather than
@@ -308,7 +321,15 @@ func renderAIProfiles(info ModelsInfo) []string {
 		if !e.enabled {
 			continue
 		}
-		rendered = append(rendered, "- "+e.label+": "+formatProfileLine(e.provider, e.model))
+		line := "- " + e.label + ": " + formatProfileLine(e.provider, e.model)
+		// Append think/ctx meta for smart and deep profiles.
+		switch e.label {
+		case "smart":
+			line += formatModelMeta(info.SmartThink, info.SmartNumCtx, "")
+		case "deep":
+			line += formatModelMeta(info.DeepThink, info.DeepNumCtx, "")
+		}
+		rendered = append(rendered, line)
 	}
 	if info.OCREnabled {
 		ocr := strings.TrimSpace(info.OCRProvider)
@@ -495,10 +516,20 @@ func formatLLMLines(info ModelsInfo) []string {
 		} else {
 			smartLine += smartModel
 		}
-		if ka := strings.TrimSpace(info.SmartKeepAlive); ka != "" {
-			smartLine += " (keep_alive=" + ka + ")"
-		}
+		smartLine += formatModelMeta(info.SmartThink, info.SmartNumCtx, info.SmartKeepAlive)
 		lines = append(lines, smartLine)
+
+		if deepModel := strings.TrimSpace(info.DeepModel); deepModel != "" {
+			deepProv := strings.TrimSpace(info.DeepProvider)
+			deepLine := "- deep: "
+			if deepProv != "" {
+				deepLine += deepProv + " / " + deepModel
+			} else {
+				deepLine += deepModel
+			}
+			deepLine += formatModelMeta(info.DeepThink, info.DeepNumCtx, info.DeepKeepAlive)
+			lines = append(lines, deepLine)
+		}
 
 		endpoint := strings.TrimSpace(info.SmartEndpoint)
 		if endpoint == "" {
@@ -521,6 +552,28 @@ func formatLLMLines(info ModelsInfo) []string {
 		return nil
 	}
 	return []string{line}
+}
+
+// formatModelMeta returns the parenthetical suffix for a model line:
+// think, ctx, and keep_alive. Empty fields are omitted.
+// Example: " (think=true · ctx=8192 · keep_alive=10m)"
+func formatModelMeta(think bool, numCtx int, keepAlive string) string {
+	var parts []string
+	if think {
+		parts = append(parts, "think=true")
+	} else {
+		parts = append(parts, "think=false")
+	}
+	if numCtx > 0 {
+		parts = append(parts, fmt.Sprintf("ctx=%d", numCtx))
+	}
+	if ka := strings.TrimSpace(keepAlive); ka != "" {
+		parts = append(parts, "keep_alive="+ka)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " (" + strings.Join(parts, " · ") + ")"
 }
 
 func formatLegacyLLMLine(info ModelsInfo) string {

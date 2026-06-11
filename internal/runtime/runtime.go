@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"openlight/internal/brain"
 	"openlight/internal/config"
 	basellm "openlight/internal/llm"
 	"openlight/internal/router"
@@ -16,6 +17,7 @@ import (
 	"openlight/internal/skills"
 	accountskills "openlight/internal/skills/accounts"
 	browserskills "openlight/internal/skills/browser"
+	displayskills "openlight/internal/skills/display"
 	chatskills "openlight/internal/skills/chat"
 	externalskills "openlight/internal/skills/external"
 	fileskills "openlight/internal/skills/files"
@@ -43,6 +45,7 @@ type Runtime struct {
 	Watch       *watchengine.Service
 	VisualWatch *visualwatch.Service
 	Closer      io.Closer
+	BrainServer *brain.Server
 
 	// TelegramHealth carries the Telegram connectivity probe used by the
 	// /status skill. The entrypoint binds a live probe once the bot has
@@ -62,11 +65,24 @@ type ProviderTier struct {
 	SmartModel     string
 	SmartEndpoint  string
 	SmartKeepAlive string
+	SmartThink     bool
+	SmartNumCtx    int
 	FastFallback   bool
+
+	// Deep profile metadata for /status and /models display.
+	DeepModel     string
+	DeepProvider  string
+	DeepThink     bool
+	DeepNumCtx    int
+	DeepKeepAlive string
 
 	// SmartProviderInstance is the live SMART provider used by the system
 	// skill to query /api/ps for load status. Optional.
 	SmartProviderInstance basellm.Provider
+
+	// DeepProviderInstance is the live DEEP provider passed to the /think
+	// skill. Optional; nil disables /think.
+	DeepProviderInstance basellm.Provider
 
 	// LatencyStore receives Chat/Classify latency observations from the
 	// fast and smart providers. Optional; nil disables the
@@ -78,7 +94,20 @@ type ProviderTier struct {
 	TelegramHealth *TelegramHealthHolder
 }
 
+// BuildOptions controls optional behaviour of BuildRuntime.
+type BuildOptions struct {
+	// StartBrainServer, when true and node_role=brain, starts the HTTP API
+	// server on cfg.Node.ListenAddr. Set to true only from the agent
+	// entrypoint — CLI and doctor must leave it false to avoid binding the
+	// same port as the running agent.
+	StartBrainServer bool
+}
+
 func BuildRuntime(ctx context.Context, cfg config.Config, logger *slog.Logger) (Runtime, error) {
+	return BuildRuntimeWithOptions(ctx, cfg, logger, BuildOptions{StartBrainServer: true})
+}
+
+func BuildRuntimeWithOptions(ctx context.Context, cfg config.Config, logger *slog.Logger, opts BuildOptions) (Runtime, error) {
 	for _, msg := range cfg.Deprecations {
 		logger.Warn("deprecated config", "message", msg)
 	}
@@ -112,9 +141,12 @@ func BuildRuntime(ctx context.Context, cfg config.Config, logger *slog.Logger) (
 	var (
 		smartProvider basellm.Provider
 		fastProvider  basellm.Provider
+		deepProvider  basellm.Provider
 		smartProfile  config.LLMProfileConfig
 		fastProfile   config.LLMProfileConfig
+		deepProfile   config.LLMProfileConfig
 		fastFallback  bool
+		brainSrv      *brain.Server
 	)
 	if cfg.LLM.Enabled {
 		smartProvider, smartProfile, err = buildProfileProvider(cfg, "smart", logger)
@@ -122,7 +154,11 @@ func BuildRuntime(ctx context.Context, cfg config.Config, logger *slog.Logger) (
 			_ = closers.Close()
 			return Runtime{}, err
 		}
-		if cfg.LLM.HasProfile("fast") {
+		if cfg.LLM.HasProfile("fast") || cfg.Node.IsEdge() {
+			// Edge nodes always get a dedicated fast provider even without
+			// profiles.fast in config — buildProfileProvider returns a
+			// RemoteLLMProvider with profile="fast" so the brain routes it
+			// to the fast local model.
 			fastProvider, fastProfile, err = buildProfileProvider(cfg, "fast", logger)
 			if err != nil {
 				_ = closers.Close()
@@ -136,6 +172,17 @@ func BuildRuntime(ctx context.Context, cfg config.Config, logger *slog.Logger) (
 			fastFallback = true
 		}
 
+		if cfg.LLM.HasProfile("deep") || cfg.Node.IsEdge() {
+			deepProvider, deepProfile, err = buildProfileProvider(cfg, "deep", logger)
+			if err != nil {
+				_ = closers.Close()
+				return Runtime{}, err
+			}
+		}
+
+		// Warmup is only meaningful for local (brain) providers. Edge nodes
+		// use RemoteLLMProvider which does not implement Prewarmer, so these
+		// calls are safe but will be no-ops on edge nodes.
 		warmupFast := cfg.LLM.Warmup.Includes("fast")
 		warmupSmart := cfg.LLM.Warmup.Includes("smart")
 		if fastFallback {
@@ -151,6 +198,39 @@ func BuildRuntime(ctx context.Context, cfg config.Config, logger *slog.Logger) (
 			if warmupSmart {
 				runWarmup(ctx, smartProvider, "smart", smartProfile.Model, cfg.LLM.Warmup, logger)
 			}
+			if cfg.LLM.Warmup.Includes("deep") && deepProvider != nil {
+				runWarmup(ctx, deepProvider, "deep", deepProfile.Model, cfg.LLM.Warmup, logger)
+			}
+		}
+
+		// Brain node: start the HTTP API server so edge nodes can forward
+		// inference requests to it. Only started in agent mode — CLI and
+		// doctor skip this to avoid conflicting with the running agent.
+		if opts.StartBrainServer && cfg.Node.IsBrain() && strings.TrimSpace(cfg.Node.ListenAddr) != "" {
+			brainModel := smartProfile.Model
+			if brainModel == "" {
+				brainModel = cfg.LLM.Model
+			}
+			brainSrv = brain.NewServer(
+				smartProvider,
+				cfg.Node.ListenAddr,
+				cfg.Node.NodeID,
+				brainModel,
+				logger.With("component", "brain-server"),
+			)
+			if !fastFallback && fastProvider != nil {
+				brainSrv.SetFastProvider(fastProvider)
+				brainSrv.SetFastModel(fastProfile.Model)
+			}
+			if deepProvider != nil {
+				brainSrv.SetDeepProvider(deepProvider)
+				brainSrv.SetDeepModel(deepProfile.Model)
+			}
+			go func() {
+				if startErr := brainSrv.Start(ctx); startErr != nil {
+					logger.Error("brain API server exited", "error", startErr)
+				}
+			}()
 		}
 	}
 	// llmProvider remains the chat-facing (SMART) provider. Other modules
@@ -207,14 +287,34 @@ func BuildRuntime(ctx context.Context, cfg config.Config, logger *slog.Logger) (
 		SmartModel:            smartProfile.Model,
 		SmartEndpoint:         smartProfile.Endpoint,
 		SmartKeepAlive:        smartProfile.KeepAlive,
+		SmartThink:            smartProfile.Think,
+		SmartNumCtx:           smartProfile.NumCtx,
 		FastFallback:          fastFallback,
+		DeepModel:             deepProfile.Model,
+		DeepProvider:          deepProfile.Provider,
+		DeepThink:             deepProfile.Think,
+		DeepNumCtx:            deepProfile.NumCtx,
+		DeepKeepAlive:         deepProfile.KeepAlive,
 		SmartProviderInstance: smartProvider,
+		DeepProviderInstance:  deepProvider,
 		LatencyStore:          latencyStore,
 		TelegramHealth:        telegramHealth,
 	})
 	if err != nil {
 		_ = closers.Close()
 		return Runtime{}, err
+	}
+
+	// Wire the skill registry into the brain server so edge nodes can discover
+	// and invoke brain-only skills via /skills and /skills/invoke.
+	if brainSrv != nil {
+		brainSrv.SetRegistry(registry)
+	}
+
+	// Edge nodes: register remote skill proxies. Definitions are fetched from
+	// the brain at startup; if the brain is offline the edge runs without them.
+	if cfg.Node.IsEdge() && (cfg.Node.RemoteAllSkills || len(cfg.Node.RemoteSkills) > 0) {
+		registerRemoteSkills(cfg.Node, registry, logger)
 	}
 
 	var classifier router.Classifier
@@ -258,6 +358,7 @@ func BuildRuntime(ctx context.Context, cfg config.Config, logger *slog.Logger) (
 		Watch:          watchService,
 		VisualWatch:    visualWatchService,
 		Closer:         closers,
+		BrainServer:    brainSrv,
 		TelegramHealth: telegramHealth,
 	}, nil
 }
@@ -366,24 +467,38 @@ func BuildRegistryWithWatch(
 		)
 	}
 
+	isEdge := cfg.Node.IsEdge()
+
 	systemHooks := buildSystemHooks(tier.SmartProviderInstance, tier.LatencyStore, tier.TelegramHealth, os.Getpid())
 	modules := []skills.Module{
 		systemskills.NewModule(systemProvider, buildSystemModelsInfo(cfg, tier, tier.SmartProviderInstance, systemHooks), systemHooks),
 		fileskills.NewModule(fileManager),
-		browserskills.NewModule(browserManager),
 		serviceskills.NewModule(serviceManager, cfg.Services.LogLines, cfg.Services.MaxLogChars),
 		memoryskills.NewModule(memoryStore, cfg.Memory.ListLimit, cfg.Memory.Enabled),
 		notes.NewModule(repository, cfg.Notes.ListLimit),
 		watchskills.NewModule(watchService),
 	}
-	if cfg.Vision.Enabled {
-		modules = append(modules, visionskills.NewModule(visionManager))
+	// display_message is only useful on nodes with a local framebuffer.
+	if _, err := os.Stat("/dev/fb0"); err == nil {
+		if regErr := registry.Register(displayskills.New()); regErr != nil {
+			logger.Warn("display_message skill not registered", "err", regErr)
+		}
 	}
-	if cfg.OCR.Enabled {
-		modules = append(modules, ocrskills.NewModule(ocrManager))
-	}
-	if visualWatchService != nil {
-		modules = append(modules, visualwatchskills.NewModule(repository, visualWatchService))
+
+	// Browser, vision, OCR and visual-watch are brain-only capabilities.
+	// On edge nodes they are skipped — the remote-skills mechanism provides
+	// them as proxies once the registry is built.
+	if !isEdge {
+		modules = append(modules, browserskills.NewModule(browserManager))
+		if cfg.Vision.Enabled {
+			modules = append(modules, visionskills.NewModule(visionManager))
+		}
+		if cfg.OCR.Enabled {
+			modules = append(modules, ocrskills.NewModule(ocrManager))
+		}
+		if visualWatchService != nil {
+			modules = append(modules, visualwatchskills.NewModule(repository, visualWatchService))
+		}
 	}
 	if cfg.Network.Enabled {
 		networkManager, err := networkskills.NewLocalManager(true, cfg.Network.Allowed, cfg.Network.Timeout)
@@ -419,7 +534,7 @@ func BuildRegistryWithWatch(
 		modules = append(modules, workbenchskills.NewModule(workbenchManager))
 	}
 	if llmProvider != nil {
-		modules = append(modules, chatskills.NewModule(llmProvider, repository, chatskills.Options{
+		modules = append(modules, chatskills.NewModuleWithDeep(llmProvider, tier.DeepProviderInstance, repository, chatskills.Options{
 			HistoryLimit:     cfg.Chat.HistoryLimit,
 			HistoryChars:     cfg.Chat.HistoryChars,
 			MaxResponseChars: cfg.Chat.MaxResponseChars,
@@ -504,6 +619,13 @@ func buildSystemModelsInfo(cfg config.Config, tier ProviderTier, smartProvider b
 		FastFallback:    tier.FastFallback,
 		FastKeepAlive:   tier.FastKeepAlive,
 		SmartKeepAlive:  tier.SmartKeepAlive,
+		SmartThink:      tier.SmartThink,
+		SmartNumCtx:     tier.SmartNumCtx,
+		DeepModel:       tier.DeepModel,
+		DeepProvider:    tier.DeepProvider,
+		DeepThink:       tier.DeepThink,
+		DeepNumCtx:      tier.DeepNumCtx,
+		DeepKeepAlive:   tier.DeepKeepAlive,
 		WarmupEnabled:   cfg.LLM.Warmup.Enabled,
 		WarmupProfiles:  append([]string(nil), cfg.LLM.Warmup.Profiles...),
 		WarmupKeepAlive: cfg.LLM.Warmup.KeepAliveString(),
@@ -531,8 +653,26 @@ func buildSystemModelsInfo(cfg config.Config, tier ProviderTier, smartProvider b
 // buildProfileProvider resolves the named profile against cfg.LLM and
 // constructs the corresponding provider. The resolved profile is also
 // returned so the caller can pick thresholds and report metadata.
+//
+// On edge nodes (cfg.Node.IsEdge()) all profiles resolve to
+// RemoteLLMProvider pointing at cfg.Node.BrainURL. No local model is
+// initialised regardless of what llm.provider says in the config.
 func buildProfileProvider(cfg config.Config, name string, logger *slog.Logger) (basellm.Provider, config.LLMProfileConfig, error) {
 	profile := cfg.LLM.ResolveProfile(name)
+
+	// Edge nodes must route all inference to the brain. Bypass the local
+	// provider factory entirely — using RemoteLLMProvider is the only
+	// permitted path. This enforces the strict rule: no local LLM on edge.
+	if cfg.Node.IsEdge() {
+		llmLogger := logger.With(
+			"component", "llm-remote",
+			"profile", strings.ToLower(strings.TrimSpace(name)),
+			"brain_url", cfg.Node.BrainURL,
+		)
+		provider := basellm.NewRemoteLLMProvider(cfg.Node.BrainURL, strings.ToLower(strings.TrimSpace(name)), cfg.Agent.RequestTimeout, llmLogger)
+		return provider, profile, nil
+	}
+
 	if strings.TrimSpace(profile.Provider) == "" {
 		return nil, profile, fmt.Errorf("llm: cannot resolve provider for %q profile", name)
 	}
@@ -549,6 +689,7 @@ func buildProfileProvider(cfg config.Config, name string, logger *slog.Logger) (
 		Timeout:   cfg.Agent.RequestTimeout,
 		KeepAlive: profile.KeepAlive,
 		NumCtx:    profile.NumCtx,
+		Think:     profile.Think,
 	}, llmLogger)
 	if err != nil {
 		return nil, profile, fmt.Errorf("build %q llm profile: %w", name, err)
@@ -709,4 +850,59 @@ func (c multiCloser) Close() error {
 		}
 	}
 	return firstErr
+}
+
+// registerRemoteSkills fetches skill definitions from the brain and registers
+// proxy stubs. If cfg.RemoteSkills contains "*", ALL skills from brain are
+// registered (skipping any already present locally). Otherwise only the
+// explicitly named skills are registered.
+func registerRemoteSkills(nodeCfg config.NetworkNodeConfig, registry *skills.Registry, logger *slog.Logger) {
+	defs, err := skills.FetchRemoteSkillDefinitions(nodeCfg.BrainURL, 10*time.Second)
+	if err != nil {
+		logger.Warn("remote skills: brain unreachable, skipping", "error", err)
+		return
+	}
+
+	invokeURL := strings.TrimRight(strings.TrimSpace(nodeCfg.BrainURL), "/") + "/skills/invoke"
+
+	// remote_all_skills:true or remote_skills:["*"] → register everything from brain not already local.
+	wildcard := nodeCfg.RemoteAllSkills
+	for _, s := range nodeCfg.RemoteSkills {
+		if s == "*" {
+			wildcard = true
+			break
+		}
+	}
+
+	if wildcard {
+		for _, d := range defs {
+			s := skills.NewRemoteSkill(d, invokeURL, 5*time.Minute)
+			if err := registry.Register(s); err != nil {
+				// Already registered locally — that's fine, skip silently.
+				logger.Debug("remote skill skipped (already local)", "skill", d.Name)
+			} else {
+				logger.Info("remote skill registered", "skill", d.Name)
+			}
+		}
+		return
+	}
+
+	// Explicit list: index by name for O(1) lookup.
+	byName := make(map[string]skills.RemoteSkillDefinition, len(defs))
+	for _, d := range defs {
+		byName[d.Name] = d
+	}
+	for _, name := range nodeCfg.RemoteSkills {
+		d, ok := byName[name]
+		if !ok {
+			logger.Warn("remote skill not found on brain", "skill", name)
+			continue
+		}
+		s := skills.NewRemoteSkill(d, invokeURL, 5*time.Minute)
+		if err := registry.Register(s); err != nil {
+			logger.Warn("remote skill register failed", "skill", name, "error", err)
+		} else {
+			logger.Info("remote skill registered", "skill", name)
+		}
+	}
 }

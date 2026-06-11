@@ -1,0 +1,82 @@
+# Edge node configuration — Raspberry Pi forwarding all LLM to Mac mini brain.
+# Strict rule: no local Ollama, no local LLM of any kind.
+# All AI inference is routed to the brain node at OPENLIGHT_BRAIN_URL.
+
+# ── node role ─────────────────────────────────────────────────────────────────
+node:
+  node_id: "raspberry-pi-5"
+  node_role: "edge"                    # never "brain" on Pi
+  brain_url: "http://openclaw-m1:8787" # Tailscale hostname of Mac mini
+  llm_mode: "remote_only"              # hard block: no local LLM fallback
+  local_llm_enabled: false
+
+# ── telegram ──────────────────────────────────────────────────────────────────
+telegram:
+  bot_token: "${TELEGRAM_BOT_TOKEN}"
+  mode: "polling"
+  poll_timeout: 25s
+
+auth:
+  allowed_user_ids:
+    - 111111111
+  allowed_chat_ids:
+    - 111111111
+
+# ── storage ───────────────────────────────────────────────────────────────────
+storage:
+  sqlite_path: "/home/pi/openlight/data/agent.db"
+
+# ── llm ───────────────────────────────────────────────────────────────────────
+# llm.enabled must be true so the agent routes via RemoteLLMProvider.
+# The provider/endpoint/model fields here are ignored on edge nodes —
+# all inference goes to node.brain_url instead.
+llm:
+  enabled: true
+  provider: "generic"      # ignored on edge; kept for config validity
+  endpoint: "placeholder"  # ignored on edge; RemoteLLMProvider uses brain_url
+  model: ""
+  execute_threshold: 0.80
+  clarify_threshold: 0.60
+  decision_input_chars: 160
+  decision_num_predict: 48
+  # Warmup is skipped automatically on edge nodes (RemoteLLMProvider does
+  # not implement Prewarmer).
+  warmup:
+    enabled: false
+
+# ── services (local Pi services only) ────────────────────────────────────────
+services:
+  allowed:
+    - tailscale
+    # Add Pi-local services here. Do NOT add Ollama — it must not run on Pi.
+  log_lines: 100
+  max_log_chars: 3000
+
+# ── files ────────────────────────────────────────────────────────────────────
+files:
+  allowed:
+    - /tmp/openlight
+    - /home/pi/scripts
+  max_read_bytes: 4096
+  list_limit: 40
+
+# ── watch ────────────────────────────────────────────────────────────────────
+watch:
+  enabled: true
+  poll_interval: 15s
+  ask_ttl: 10m
+
+# ── chat ─────────────────────────────────────────────────────────────────────
+chat:
+  history_limit: 6
+  history_chars: 900
+  max_response_chars: 400
+
+notes:
+  list_limit: 20
+
+agent:
+  request_timeout: 15s   # allow extra time for round-trip to brain
+
+log:
+  level: "info"

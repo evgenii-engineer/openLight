@@ -37,6 +37,9 @@ type Config struct {
 	Voice       VoiceConfig           `yaml:"voice"`
 	Browser     BrowserConfig         `yaml:"browser"`
 	Network     NetworkConfig         `yaml:"network"`
+	// Node declares the role of this instance in a multi-node openLight
+	// network. Leave empty for single-node (brain) mode.
+	Node        NetworkNodeConfig     `yaml:"node"`
 	MCP         MCPConfig             `yaml:"mcp"`
 	External    ExternalSkillsConfig  `yaml:"external_skills"`
 	Vision      VisionConfig          `yaml:"vision"`
@@ -271,6 +274,9 @@ type LLMProfileConfig struct {
 	// NumCtx overrides llm.num_ctx for this profile only. Zero inherits
 	// the top-level value (which itself may be zero = Ollama default).
 	NumCtx int `yaml:"num_ctx"`
+	// Think enables the model's reasoning mode (e.g. Gemma 4). Set to true
+	// for the "deep" profile; leave false (default) for fast/smart.
+	Think bool `yaml:"think"`
 }
 
 // HasProfile reports whether a profile with the given name is configured.
@@ -336,6 +342,9 @@ func (c LLMConfig) ResolveProfile(name string) LLMProfileConfig {
 	if profile.NumCtx > 0 {
 		base.NumCtx = profile.NumCtx
 	}
+	if profile.Think {
+		base.Think = true
+	}
 	if strings.TrimSpace(base.KeepAlive) == "" {
 		base.KeepAlive = defaultKeepAliveForRole(name)
 	}
@@ -354,6 +363,8 @@ func defaultKeepAliveForRole(name string) string {
 	case "fast":
 		return "-1"
 	case "smart":
+		return "10m"
+	case "deep":
 		return "10m"
 	case "vision":
 		return "5m"
@@ -480,6 +491,57 @@ type AgentConfig struct {
 
 type LogConfig struct {
 	Level string `yaml:"level"`
+}
+
+// NetworkNodeConfig declares the role of this openLight instance in a
+// multi-node network. When NodeRole is "edge" all LLM inference is
+// forwarded to the brain node at BrainURL; no local model is used.
+// When NodeRole is "brain" (or empty) the instance runs LLM locally and
+// optionally exposes the brain API on ListenAddr.
+type NetworkNodeConfig struct {
+	// NodeID is a human-readable identifier for this node (e.g. "raspberry-pi-5").
+	NodeID string `yaml:"node_id"`
+	// NodeRole is "brain" or "edge". Defaults to "brain" when empty.
+	NodeRole string `yaml:"node_role"`
+	// BrainURL is the HTTP base URL of the brain node (e.g.
+	// "http://openclaw-m1:8787"). Required when NodeRole is "edge".
+	BrainURL string `yaml:"brain_url"`
+	// LLMMode controls how LLM inference is routed. "remote_only" means
+	// the node never calls a local model, even as a fallback.
+	// Defaults to "remote_only" on edge nodes and "local" on brain nodes.
+	LLMMode string `yaml:"llm_mode"`
+	// LocalLLMEnabled, when false, prevents the node from initialising any
+	// local LLM provider. Automatically false on edge nodes.
+	LocalLLMEnabled *bool `yaml:"local_llm_enabled"`
+	// ListenAddr is the TCP address the brain API server listens on (e.g.
+	// ":8787"). Used only when NodeRole is "brain". Empty disables the API.
+	ListenAddr string `yaml:"listen_addr"`
+	// RemoteSkills is the list of skill names (as defined on the brain) that
+	// edge nodes should fetch and expose as remote proxies. The brain must
+	// have those skills registered; the edge fetches their definitions from
+	// GET {BrainURL}/skills at startup and executes them via
+	// POST {BrainURL}/skills/invoke.
+	// Set to ["*"] or leave empty with RemoteAllSkills:true to fetch all.
+	RemoteSkills []string `yaml:"remote_skills"`
+	// RemoteAllSkills, when true, registers all skills available on the brain
+	// that are not already registered locally. Equivalent to remote_skills: ["*"].
+	RemoteAllSkills bool `yaml:"remote_all_skills"`
+}
+
+// IsEdge reports whether this node is configured as an edge node.
+func (n NetworkNodeConfig) IsEdge() bool {
+	return strings.EqualFold(strings.TrimSpace(n.NodeRole), "edge")
+}
+
+// IsBrain reports whether this node is configured as (or defaults to) a brain node.
+func (n NetworkNodeConfig) IsBrain() bool {
+	role := strings.ToLower(strings.TrimSpace(n.NodeRole))
+	return role == "brain" || role == ""
+}
+
+// IsExplicitBrain reports whether this node's role is explicitly set to "brain".
+func (n NetworkNodeConfig) IsExplicitBrain() bool {
+	return strings.ToLower(strings.TrimSpace(n.NodeRole)) == "brain"
 }
 
 func Load(path string) (Config, error) {
@@ -626,10 +688,14 @@ func defaultConfig() Config {
 }
 
 func (c Config) Validate() error {
+	telegramEnabled := strings.TrimSpace(c.Telegram.BotToken) != ""
 	switch {
-	case strings.TrimSpace(c.Telegram.BotToken) == "":
+	case !telegramEnabled && c.Node.IsExplicitBrain():
+		// Brain-only node: Telegram is optional. The agent process is not
+		// started; only the brain API server runs.
+	case !telegramEnabled:
 		return errors.New("TELEGRAM_BOT_TOKEN is required")
-	case c.Telegram.Mode != "polling" && c.Telegram.Mode != "webhook":
+	case telegramEnabled && c.Telegram.Mode != "polling" && c.Telegram.Mode != "webhook":
 		return errors.New("telegram.mode must be one of: polling, webhook")
 	case strings.TrimSpace(c.Storage.SQLitePath) == "":
 		return errors.New("SQLITE_PATH is required")
@@ -647,11 +713,15 @@ func (c Config) Validate() error {
 		return errors.New("llm.decision_num_predict must be greater than zero")
 	case c.LLM.NumCtx < 0:
 		return errors.New("llm.num_ctx must not be negative")
+	case c.Node.IsEdge() && strings.TrimSpace(c.Node.BrainURL) == "":
+		return errors.New("node.brain_url is required when node.node_role is edge")
+	case c.Node.IsEdge() && c.Node.LLMMode == "local":
+		return errors.New("node.llm_mode cannot be local when node.node_role is edge")
 	case c.Agent.RequestTimeout <= 0:
 		return errors.New("agent.request_timeout must be greater than zero")
-	case c.Telegram.PollTimeout <= 0:
+	case telegramEnabled && c.Telegram.PollTimeout <= 0:
 		return errors.New("telegram.poll_timeout must be greater than zero")
-	case c.Telegram.Mode == "webhook" && strings.TrimSpace(c.Telegram.Webhook.URL) == "":
+	case telegramEnabled && c.Telegram.Mode == "webhook" && strings.TrimSpace(c.Telegram.Webhook.URL) == "":
 		return errors.New("telegram.webhook.url is required when telegram.mode is webhook")
 	case c.Telegram.Mode == "webhook" && !strings.HasPrefix(strings.ToLower(strings.TrimSpace(c.Telegram.Webhook.URL)), "https://"):
 		return errors.New("telegram.webhook.url must start with https://")
@@ -665,7 +735,7 @@ func (c Config) Validate() error {
 		return errors.New("memory.list_limit must be greater than zero")
 	case c.Voice.Enabled && strings.TrimSpace(c.Voice.Provider) == "":
 		return errors.New("voice.provider is required when voice.enabled is true")
-	case c.Voice.Enabled && strings.EqualFold(strings.TrimSpace(c.Voice.Provider), "whisper_cli") && strings.TrimSpace(c.Voice.ModelPath) == "":
+	case c.Voice.Enabled && strings.EqualFold(strings.TrimSpace(c.Voice.Provider), "whisper_cli") && strings.TrimSpace(c.Voice.ModelPath) == "" && !c.Node.IsEdge():
 		return errors.New("voice.model_path is required when voice.enabled is true")
 	case c.Browser.TimeoutSeconds <= 0:
 		return errors.New("browser.timeout_seconds must be greater than zero")
@@ -1021,6 +1091,25 @@ func overrideFromEnv(cfg *Config) {
 	if value := strings.TrimSpace(os.Getenv("CHAT_MAX_RESPONSE_CHARS")); value != "" {
 		cfg.Chat.MaxResponseChars = parseInt(value, cfg.Chat.MaxResponseChars)
 	}
+	if value := strings.TrimSpace(os.Getenv("OPENLIGHT_NODE_ID")); value != "" {
+		cfg.Node.NodeID = value
+	}
+	if value := strings.TrimSpace(os.Getenv("OPENLIGHT_NODE_ROLE")); value != "" {
+		cfg.Node.NodeRole = value
+	}
+	if value := strings.TrimSpace(os.Getenv("OPENLIGHT_BRAIN_URL")); value != "" {
+		cfg.Node.BrainURL = value
+	}
+	if value := strings.TrimSpace(os.Getenv("OPENLIGHT_LLM_MODE")); value != "" {
+		cfg.Node.LLMMode = value
+	}
+	if value := strings.TrimSpace(os.Getenv("OPENLIGHT_LOCAL_LLM_ENABLED")); value != "" {
+		v := parseBool(value)
+		cfg.Node.LocalLLMEnabled = &v
+	}
+	if value := strings.TrimSpace(os.Getenv("OPENLIGHT_BRAIN_LISTEN_ADDR")); value != "" {
+		cfg.Node.ListenAddr = value
+	}
 }
 
 func normalize(cfg *Config) {
@@ -1171,6 +1260,29 @@ func normalize(cfg *Config) {
 	}
 	if cfg.VisualWatch.RequestTimeout <= 0 {
 		cfg.VisualWatch.RequestTimeout = 60 * time.Second
+	}
+
+	cfg.Node.NodeID = strings.TrimSpace(cfg.Node.NodeID)
+	cfg.Node.NodeRole = strings.ToLower(strings.TrimSpace(cfg.Node.NodeRole))
+	cfg.Node.BrainURL = strings.TrimRight(strings.TrimSpace(cfg.Node.BrainURL), "/")
+	cfg.Node.LLMMode = strings.ToLower(strings.TrimSpace(cfg.Node.LLMMode))
+	if cfg.Node.IsEdge() {
+		// Edge nodes must never use a local LLM. Enforce defaults.
+		if cfg.Node.LLMMode == "" {
+			cfg.Node.LLMMode = "remote_only"
+		}
+		if cfg.Node.LocalLLMEnabled == nil {
+			f := false
+			cfg.Node.LocalLLMEnabled = &f
+		}
+	}
+	if cfg.Node.IsBrain() {
+		if cfg.Node.LLMMode == "" {
+			cfg.Node.LLMMode = "local"
+		}
+		if cfg.Node.ListenAddr == "" && strings.TrimSpace(cfg.Node.NodeRole) == "brain" {
+			cfg.Node.ListenAddr = ":8787"
+		}
 	}
 
 	cfg.External.Roots = normalizeStrings(cfg.External.Roots)

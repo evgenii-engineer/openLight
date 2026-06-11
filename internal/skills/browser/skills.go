@@ -168,19 +168,30 @@ func (s *checkSkill) UI() skills.UIDescriptor {
 func (s *checkSkill) Execute(ctx context.Context, input skills.Input) (skills.Result, error) {
 	url := strings.TrimSpace(input.Args["url"])
 	expected := strings.TrimSpace(input.Args["expected_text"])
-	if url == "" || expected == "" {
+	if url == "" {
 		// Slash-command fallback. Format:
 		//   /browser_check https://example.com :: expected text
 		text := stripCommandPrefix(input.RawText, []string{
 			"/browser_check", "/browser check", "browser_check", "browser check", "page check",
 		})
 		fallbackURL, fallbackText := splitURLExpected(text)
-		if url == "" {
-			url = fallbackURL
-		}
+		url = fallbackURL
 		if expected == "" {
 			expected = fallbackText
 		}
+	}
+	if url == "" {
+		return skills.Result{}, fmt.Errorf("invalid arguments: url is required")
+	}
+	// expected_text is optional — if omitted, just verify the page loads
+	if expected == "" {
+		response, err := s.manager.Title(ctx, url)
+		if err != nil {
+			return skills.Result{}, err
+		}
+		return skills.Result{
+			Text: fmt.Sprintf("Page loaded OK\nTitle: %s", fallbackValue(response.Title, "(untitled)")),
+		}, nil
 	}
 	response, err := s.manager.Check(ctx, url, expected)
 	if err != nil {
@@ -191,7 +202,7 @@ func (s *checkSkill) Execute(ctx context.Context, input skills.Input) (skills.Re
 		status = "present"
 	}
 	return skills.Result{
-		Text: fmt.Sprintf("Page title: %s\nExpected text: %s", fallbackValue(response.Title, "(untitled)"), status),
+		Text: fmt.Sprintf("Page title: %s\nExpected text (%q): %s", fallbackValue(response.Title, "(untitled)"), expected, status),
 	}, nil
 }
 

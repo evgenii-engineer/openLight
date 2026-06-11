@@ -84,6 +84,7 @@ type PrewarmOptions struct {
 
 type HTTPProvider struct {
 	endpoint string
+	profile  string // optional; when set, sent as "profile" in every request
 	client   *http.Client
 	logger   *slog.Logger
 }
@@ -96,6 +97,15 @@ func NewHTTPProvider(endpoint string, timeout time.Duration, logger *slog.Logger
 		},
 		logger: logger,
 	}
+}
+
+// WithProfile returns a copy of the provider that includes "profile": name
+// in every request payload. Used by RemoteLLMProvider so the brain can route
+// to the correct local model (fast vs smart).
+func (p *HTTPProvider) WithProfile(name string) *HTTPProvider {
+	copy := *p
+	copy.profile = name
+	return &copy
 }
 
 func (p *HTTPProvider) ClassifyRoute(ctx context.Context, text string, request RouteClassificationRequest) (RouteClassification, error) {
@@ -171,6 +181,9 @@ func (p *HTTPProvider) Chat(ctx context.Context, messages []ChatMessage) (string
 }
 
 func (p *HTTPProvider) do(ctx context.Context, payload map[string]any, out any) error {
+	if p.profile != "" {
+		payload["profile"] = p.profile
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("marshal llm payload: %w", err)

@@ -45,7 +45,7 @@ func runCLI(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	rt, err := runtime.BuildRuntime(ctx, cfg, logger)
+	rt, err := runtime.BuildRuntimeWithOptions(ctx, cfg, logger, runtime.BuildOptions{StartBrainServer: false})
 	if err != nil {
 		return err
 	}

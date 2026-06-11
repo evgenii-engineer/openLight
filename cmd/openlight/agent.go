@@ -50,6 +50,14 @@ func runAgent(args []string) error {
 	}
 	defer runtime.CloseRuntime(rt)
 
+	// Brain-only mode: no Telegram token configured. The brain API server
+	// is already running (started by BuildRuntime). Just wait for shutdown.
+	if strings.TrimSpace(cfg.Telegram.BotToken) == "" {
+		logger.Info("brain-only mode: Telegram disabled, serving brain API only")
+		<-runCtx.Done()
+		return nil
+	}
+
 	bot := telegram.NewBot(telegram.Options{
 		Token:              cfg.Telegram.BotToken,
 		BaseURL:            cfg.Telegram.APIBaseURL,
@@ -92,15 +100,27 @@ func runAgent(args []string) error {
 	})
 	agent.SetUI(ui)
 	if cfg.Voice.Enabled {
+		var transcriber voice.Transcriber
+		if cfg.Node.IsEdge() && cfg.Node.BrainURL != "" {
+			transcriber = voice.RemoteTranscriber{
+				BrainURL: cfg.Node.BrainURL,
+				Timeout:  2 * time.Minute,
+			}
+		} else {
+			transcriber = voice.WhisperCLITranscriber{
+				BinaryPath: cfg.Voice.WhisperCLIPath,
+				ModelPath:  cfg.Voice.ModelPath,
+				Language:   cfg.Voice.STTLanguage(),
+			}
+			if rt.BrainServer != nil {
+				rt.BrainServer.SetTranscriber(transcriber)
+			}
+		}
 		agent.SetVoiceProcessor(
 			voice.NewProcessor(
 				true,
 				voice.FFmpegConverter{BinaryPath: cfg.Voice.FFmpegPath},
-				voice.WhisperCLITranscriber{
-					BinaryPath: cfg.Voice.WhisperCLIPath,
-					ModelPath:  cfg.Voice.ModelPath,
-					Language:   cfg.Voice.STTLanguage(),
-				},
+				transcriber,
 			),
 			cfg.Voice.ReplyWithTranscript,
 		)

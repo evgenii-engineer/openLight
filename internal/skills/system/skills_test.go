@@ -493,7 +493,7 @@ func TestModelsSkillRendersWarmupSection(t *testing.T) {
 
 	for _, want := range []string{
 		"- fast: ollama / qwen2.5:1.5b (keep_alive=10m)",
-		"- smart: ollama / gemma3-12b-8k (keep_alive=-1)",
+		"- smart: ollama / gemma3-12b-8k (think=false · keep_alive=-1)",
 		"Warmup:",
 		"- state: enabled",
 		"- profiles: smart",

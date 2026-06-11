@@ -1,0 +1,93 @@
+# Brain node configuration — Mac mini M1 running local LLM inference.
+# This node exposes the brain API on :8787 for edge nodes to forward requests.
+# Single LLM provider for the entire network: this node only.
+
+# ── node role ─────────────────────────────────────────────────────────────────
+node:
+  node_id: "openclaw-m1"
+  node_role: "brain"
+  llm_mode: "local"
+  # Brain API listen address. Edge nodes connect to this.
+  # Use Tailscale IP/hostname for secure cross-node communication.
+  listen_addr: ":8787"
+
+# ── telegram ──────────────────────────────────────────────────────────────────
+telegram:
+  bot_token: "${TELEGRAM_BOT_TOKEN}"
+  mode: "polling"
+  poll_timeout: 25s
+
+auth:
+  allowed_user_ids:
+    - 111111111
+  allowed_chat_ids:
+    - 111111111
+
+# ── storage ───────────────────────────────────────────────────────────────────
+storage:
+  sqlite_path: "/Users/damk/openlight/data/agent.db"
+
+# ── llm ───────────────────────────────────────────────────────────────────────
+# The brain runs local Ollama. All edge LLM requests are proxied here.
+llm:
+  enabled: true
+  provider: "ollama"
+  endpoint: "http://localhost:11434"
+  model: "gemma3:12b"
+  execute_threshold: 0.80
+  clarify_threshold: 0.60
+  decision_input_chars: 160
+  decision_num_predict: 48
+  profiles:
+    fast:
+      provider: "ollama"
+      endpoint: "http://localhost:11434"
+      model: "qwen2.5:0.5b"
+      decision_num_predict: 48
+    smart:
+      provider: "ollama"
+      endpoint: "http://localhost:11434"
+      model: "gemma3:12b"
+  warmup:
+    enabled: true
+    profiles:
+      - "smart"
+      - "fast"
+    keep_alive: -1
+
+# ── services ──────────────────────────────────────────────────────────────────
+services:
+  allowed:
+    - tailscale
+    - ollama
+  log_lines: 100
+  max_log_chars: 3000
+
+# ── files ────────────────────────────────────────────────────────────────────
+files:
+  allowed:
+    - /tmp/openlight
+    - /Users/damk/scripts
+  max_read_bytes: 8192
+  list_limit: 40
+
+# ── watch ────────────────────────────────────────────────────────────────────
+watch:
+  enabled: true
+  poll_interval: 15s
+  ask_ttl: 10m
+
+# ── chat ─────────────────────────────────────────────────────────────────────
+chat:
+  history_limit: 10
+  history_chars: 1200
+  max_response_chars: 600
+
+notes:
+  list_limit: 20
+
+agent:
+  request_timeout: 30s   # local inference can be slow on first token
+
+log:
+  level: "info"

@@ -20,7 +20,7 @@ check-config: ## Fail if $(CONFIG_LOCAL) is missing
 
 ##@ Deploy: Raspberry Pi
 
-.PHONY: deploy-rpi deploy-rpi-service deploy-rpi-config \
+.PHONY: deploy-rpi deploy-rpi-service deploy-rpi-config deploy-rpi-display \
         deploy-rpi-all deploy-rpi-full deploy-pi
 
 # openlight is a single binary: `openlight agent`, `openlight cli`,
@@ -36,7 +36,10 @@ deploy-rpi-service: ## Install + restart the systemd unit on the Pi
 deploy-rpi-config: ## Push the local Pi config to the Pi
 	./scripts/deploy-rpi-config.sh
 
-deploy-rpi-all: deploy-rpi-config deploy-rpi deploy-rpi-service ## config + binary + service
+deploy-rpi-display: ## Upload display-dashboard.py + install openlight-display.service on the Pi
+	./scripts/deploy-rpi-display.sh
+
+deploy-rpi-all: deploy-rpi-config deploy-rpi deploy-rpi-service deploy-rpi-display ## config + binary + agent service + display service
 
 deploy-rpi-full: deploy-rpi-all ## Alias for deploy-rpi-all (the CLI ships in the same binary)
 

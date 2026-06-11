@@ -1352,13 +1352,13 @@ func TestClassifierPassesDecisionLimitsToProvider(t *testing.T) {
 	if provider.routeRequest.InputChars != defaultRouteInputChars {
 		t.Fatalf("unexpected route input chars: %#v", provider.routeRequest)
 	}
-	if provider.routeRequest.NumPredict != defaultRouteNumPredict {
+	if provider.routeRequest.NumPredict != 128 {
 		t.Fatalf("unexpected route num_predict: %#v", provider.routeRequest)
 	}
 	if provider.skillRequest.InputChars != defaultSkillInputChars {
 		t.Fatalf("unexpected skill input chars: %#v", provider.skillRequest)
 	}
-	if provider.skillRequest.NumPredict != defaultSkillNumPredict {
+	if provider.skillRequest.NumPredict != 128 {
 		t.Fatalf("unexpected skill num_predict: %#v", provider.skillRequest)
 	}
 }

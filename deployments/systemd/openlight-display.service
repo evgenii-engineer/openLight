@@ -1,0 +1,23 @@
+[Unit]
+Description=openLight MHS35 status dashboard
+After=network-online.target openlight-agent.service
+Wants=openlight-agent.service
+
+[Service]
+Type=simple
+User=damk
+Group=damk
+WorkingDirectory=/home/damk
+ExecStart=/usr/bin/python3 /home/damk/openlight/scripts/display-dashboard.py
+Restart=on-failure
+RestartSec=5
+Environment=OPENLIGHT_BIN=/home/damk/bin/openlight
+Environment=OPENLIGHT_CFG=/etc/openlight/agent.yaml
+Environment=OPENLIGHT_FB=/dev/fb0
+Environment=OPENLIGHT_BRAIN_URL=http://openclaw-m1.tailf71ccd.ts.net:8787
+Environment=OPENLIGHT_NODE_ID=raspberry-pi-5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
