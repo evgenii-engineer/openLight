@@ -2,6 +2,49 @@
 
 This file tracks released tags and summarizes what each release added or changed.
 
+## v0.3.0 - 2026-06-22
+
+Compared with `v0.2.0`, this release introduces an edge/brain network topology
+that lets Raspberry Pi edge nodes offload LLM inference, voice transcription,
+and skill execution to a central brain node over a lightweight HTTP API, while
+keeping the full single-node path intact for deployments that don't need it.
+Voice handling is tightened and the status command is wired through a new hooks
+layer.
+
+### What shipped
+
+- Added an edge/brain network architecture: a `brain` node (Mac mini or server)
+  exposes an HTTP API (`internal/brain/server.go`); `edge` nodes (Raspberry Pi)
+  can route LLM calls, voice transcription, and skill invocations to it via new
+  `remote` providers (`internal/llm/remote.go`, `internal/voice/remote.go`,
+  `internal/skills/remote.go`). New example configs
+  (`configs/agent.brain.example.yaml`, `configs/agent.edge.example.yaml`)
+  document the topology end-to-end.
+- Added a `display` skill and a Python display dashboard
+  (`scripts/display-dashboard.py`) for Raspberry Pi nodes with a screen, plus
+  a deploy script (`scripts/deploy-rpi-display.sh`) and systemd unit
+  (`deployments/systemd/openlight-display.service`).
+- Added a `think` skill (`internal/skills/chat/think_skill.go`) that exposes
+  an explicit reasoning step through the normal routing pipeline.
+- Improved voice handling: extended config validation for `whisper_path`,
+  `model_path`, and `language`; tightened the Telegram voice-message client;
+  added Russian-language routing tests; expanded `openlight doctor` voice
+  probes.
+- Fixed the `/status` command by wiring it through a new runtime hooks layer
+  (`internal/runtime/`), replacing the previous direct call path.
+
+### Upgrade notes
+
+- Existing `v0.2.0` configs work unchanged. The edge/brain topology is entirely
+  opt-in: copy `configs/agent.brain.example.yaml` to the brain node and
+  `configs/agent.edge.example.yaml` to each edge node, fill in the shared
+  token, and restart.
+- The display dashboard requires Python 3 and its dependencies on the Pi.
+  Run `scripts/deploy-rpi-display.sh` to install them; the script is
+  idempotent.
+- The `think` skill is registered automatically alongside other chat skills;
+  no config change is needed to enable it.
+
 ## v0.2.0 - 2026-05-23
 
 Compared with `v0.1.0`, this release widens the safe surface around the
