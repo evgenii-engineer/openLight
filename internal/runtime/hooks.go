@@ -2,7 +2,9 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -118,11 +120,13 @@ func (p *latencyProvider) ListLoadedModels(ctx context.Context) ([]basellm.Loade
 // buildSystemHooks assembles the status-skill Hooks struct: Ollama
 // loaded-models lookup (with availability tracking), Telegram health,
 // latency snapshot, and agent self-status (PID + running flag).
+// brainURL, when non-empty, activates the BrainStatus hook for edge nodes.
 func buildSystemHooks(
 	smartProvider basellm.Provider,
 	latency *systemskills.LatencyStore,
 	telegramHolder *TelegramHealthHolder,
 	pid int,
+	brainURL string,
 ) systemskills.Hooks {
 	hooks := systemskills.Hooks{
 		Agent: func(_ context.Context) systemskills.AgentInfo {
@@ -134,6 +138,10 @@ func buildSystemHooks(
 	}
 	if telegramHolder != nil {
 		hooks.Telegram = telegramHolder.State
+	}
+
+	if url := strings.TrimSpace(brainURL); url != "" {
+		hooks.BrainStatus = buildBrainStatusProbe(url)
 	}
 
 	lister, ok := smartProvider.(basellm.PsLister)
@@ -245,4 +253,81 @@ func (a *ollamaAvailability) Get() bool {
 		return true
 	}
 	return a.available
+}
+
+// buildBrainStatusProbe returns a BrainStatus hook that probes the brain's
+// /health endpoint each time /status is rendered.
+func buildBrainStatusProbe(brainURL string) func(ctx context.Context) systemskills.BrainStatusInfo {
+	base := strings.TrimRight(brainURL, "/")
+	return func(ctx context.Context) systemskills.BrainStatusInfo {
+		probeCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
+		defer cancel()
+
+		t0 := time.Now()
+		req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, base+"/health", nil)
+		if err != nil {
+			return systemskills.BrainStatusInfo{Error: err.Error()}
+		}
+		resp, err := http.DefaultClient.Do(req)
+		pingMs := float64(time.Since(t0).Milliseconds())
+		if err != nil {
+			msg := err.Error()
+			if len(msg) > 60 {
+				msg = msg[:60]
+			}
+			return systemskills.BrainStatusInfo{Error: msg}
+		}
+		defer resp.Body.Close()
+
+		var h map[string]any
+		if decErr := json.NewDecoder(resp.Body).Decode(&h); decErr != nil {
+			return systemskills.BrainStatusInfo{Online: true, PingMs: pingMs}
+		}
+
+		info := systemskills.BrainStatusInfo{
+			Online: h["status"] == "ok",
+			PingMs: pingMs,
+		}
+		if v, ok := h["node_id"].(string); ok {
+			info.NodeID = v
+		}
+		if v, ok := h["model"].(string); ok {
+			info.Model = v
+		}
+		if v, ok := h["fast_model"].(string); ok {
+			info.FastModel = v
+		}
+		if v, ok := h["smart_latency_ms"].(float64); ok {
+			info.SmartLatencyMs = v
+		}
+		if v, ok := h["fast_latency_ms"].(float64); ok {
+			info.FastLatencyMs = v
+		}
+		if v, ok := h["uptime_s"].(float64); ok {
+			info.UptimeS = int64(v)
+		}
+
+		if info.Online {
+			sysReq, sysErr := http.NewRequestWithContext(ctx, http.MethodGet, base+"/system", nil)
+			if sysErr == nil {
+				if sysResp, sysDoErr := http.DefaultClient.Do(sysReq); sysDoErr == nil {
+					var s map[string]any
+					if json.NewDecoder(sysResp.Body).Decode(&s) == nil {
+						if v, ok := s["cpu_pct"].(float64); ok {
+							info.CPUPct = v
+						}
+						if v, ok := s["mem_used_gb"].(float64); ok {
+							info.MemUsedGB = v
+						}
+						if v, ok := s["mem_total_gb"].(float64); ok {
+							info.MemTotalGB = v
+						}
+					}
+					sysResp.Body.Close()
+				}
+			}
+		}
+
+		return info
+	}
 }

@@ -469,7 +469,11 @@ func BuildRegistryWithWatch(
 
 	isEdge := cfg.Node.IsEdge()
 
-	systemHooks := buildSystemHooks(tier.SmartProviderInstance, tier.LatencyStore, tier.TelegramHealth, os.Getpid())
+	var brainURL string
+	if isEdge {
+		brainURL = cfg.Node.BrainURL
+	}
+	systemHooks := buildSystemHooks(tier.SmartProviderInstance, tier.LatencyStore, tier.TelegramHealth, os.Getpid(), brainURL)
 	modules := []skills.Module{
 		systemskills.NewModule(systemProvider, buildSystemModelsInfo(cfg, tier, tier.SmartProviderInstance, systemHooks), systemHooks),
 		fileskills.NewModule(fileManager),

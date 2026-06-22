@@ -37,12 +37,34 @@ type Hooks struct {
 	// ("fast", "smart"). Profiles with no observation are absent. When the
 	// map is empty the section renders as "Last LLM latency: unknown".
 	Latency func() map[string]time.Duration
+
+	// BrainStatus returns connectivity info for the upstream brain node.
+	// When nil the brain section is omitted — on brain-role nodes this
+	// should always be nil (the node IS the brain).
+	BrainStatus func(ctx context.Context) BrainStatusInfo
 }
 
 // AgentInfo is a minimal snapshot of the openLight process itself.
 type AgentInfo struct {
 	Running bool
 	PID     int
+}
+
+// BrainStatusInfo is a snapshot of the upstream brain node returned by the
+// BrainStatus hook. Online==false means the HTTP probe timed-out or failed.
+type BrainStatusInfo struct {
+	Online         bool
+	NodeID         string
+	PingMs         float64
+	Model          string
+	FastModel      string
+	SmartLatencyMs float64
+	FastLatencyMs  float64
+	UptimeS        int64
+	CPUPct         float64
+	MemUsedGB      float64
+	MemTotalGB     float64
+	Error          string
 }
 
 // Telegram state labels surfaced by the Hooks.Telegram callback.

@@ -138,6 +138,9 @@ func (s *statusSkill) Execute(ctx context.Context, _ skills.Input) (skills.Resul
 	if profiles := renderAIProfiles(s.models); len(profiles) > 0 {
 		sections = append(sections, profiles)
 	}
+	if brain := s.renderBrainSection(ctx); len(brain) > 0 {
+		sections = append(sections, brain)
+	}
 	if latency := s.renderLatencySection(); len(latency) > 0 {
 		sections = append(sections, latency)
 	}
@@ -234,6 +237,51 @@ func (s *statusSkill) renderLoadedSection(ctx context.Context) []string {
 	lines := []string{"Ollama loaded:"}
 	for _, m := range loaded {
 		lines = append(lines, "- "+formatLoadedModelStatus(m))
+	}
+	return lines
+}
+
+func (s *statusSkill) renderBrainSection(ctx context.Context) []string {
+	if s.hooks.BrainStatus == nil {
+		return nil
+	}
+	info := s.hooks.BrainStatus(ctx)
+	state := "OFFLINE"
+	if info.Online {
+		state = "ONLINE"
+	}
+	header := "Brain: " + state
+	if info.NodeID != "" {
+		header += " (" + info.NodeID + ")"
+	}
+	lines := []string{header}
+	if info.Online {
+		lines = append(lines, fmt.Sprintf("- ping: %.0f ms", info.PingMs))
+		if info.CPUPct > 0 {
+			lines = append(lines, "- CPU: "+utils.FormatPercent(info.CPUPct))
+		}
+		if info.MemTotalGB > 0 {
+			lines = append(lines, fmt.Sprintf("- Memory: %.1f GiB / %.1f GiB", info.MemUsedGB, info.MemTotalGB))
+		}
+		if info.UptimeS > 0 {
+			lines = append(lines, "- uptime: "+formatUptimeShort(time.Duration(info.UptimeS)*time.Second))
+		}
+		if info.Model != "" {
+			line := "- smart: " + info.Model
+			if info.SmartLatencyMs > 0 {
+				line += fmt.Sprintf(" (%.0f ms)", info.SmartLatencyMs)
+			}
+			lines = append(lines, line)
+		}
+		if info.FastModel != "" {
+			line := "- fast: " + info.FastModel
+			if info.FastLatencyMs > 0 {
+				line += fmt.Sprintf(" (%.0f ms)", info.FastLatencyMs)
+			}
+			lines = append(lines, line)
+		}
+	} else if info.Error != "" {
+		lines = append(lines, "- error: "+info.Error)
 	}
 	return lines
 }
