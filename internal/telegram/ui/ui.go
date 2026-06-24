@@ -203,11 +203,29 @@ func (u *UI) HandlePendingInput(ctx context.Context, msg telegram.IncomingMessag
 	}
 	if advanced.StepIndex < len(hints.Inputs) {
 		next := hints.Inputs[advanced.StepIndex]
-		return true, u.transport.SendText(ctx, msg.ChatID, prompt(next))
+		cancel := keyboards.CancelOnly(callback.Action{
+			Kind:   callback.KindBack,
+			Target: "g",
+			Extra:  skill.Definition().Group.Key,
+		})
+		return true, u.transport.SendTextWithButtons(ctx, msg.ChatID, prompt(next), cancel)
 	}
 	args := advanced.Collected
 	u.sessions.ClearInput(msg.ChatID)
 	cm := callback.Message{ChatID: msg.ChatID, UserID: msg.UserID}
+
+	// Mutating skills still need confirmation even when args arrived via
+	// the conversational input flow. Check here because startSkill only
+	// reaches confirmAndRun when all args were already present.
+	def := skill.Definition()
+	hints2 := skills.DescribeUI(skill)
+	if def.Mutating || strings.TrimSpace(hints2.Confirm) != "" {
+		prompt := strings.TrimSpace(hints2.Confirm)
+		if prompt == "" {
+			prompt = "Run " + humanReadable(def.Name) + "?"
+		}
+		return true, u.confirmAndRun(ctx, cm, skill, args, prompt)
+	}
 	return true, u.runSkill(ctx, cm, skill, args, false)
 }
 

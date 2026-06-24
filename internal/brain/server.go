@@ -381,20 +381,38 @@ func (s *Server) handleSkillsList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defs := s.registry.List()
+	type wireInputField struct {
+		Name        string `json:"name"`
+		Prompt      string `json:"prompt"`
+		Placeholder string `json:"placeholder"`
+	}
 	type wireSkill struct {
-		Name        string   `json:"name"`
-		Group       string   `json:"group"`
-		Description string   `json:"description"`
-		Aliases     []string `json:"aliases"`
-		Usage       string   `json:"usage"`
-		Examples    []string `json:"examples"`
-		Mutating    bool     `json:"mutating"`
-		Hidden      bool     `json:"hidden"`
+		Name        string           `json:"name"`
+		Group       string           `json:"group"`
+		Description string           `json:"description"`
+		Aliases     []string         `json:"aliases"`
+		Usage       string           `json:"usage"`
+		Examples    []string         `json:"examples"`
+		Mutating    bool             `json:"mutating"`
+		Hidden      bool             `json:"hidden"`
+		Inputs      []wireInputField `json:"inputs,omitempty"`
 	}
 	out := make([]wireSkill, 0, len(defs))
 	for _, d := range defs {
 		if d.Hidden {
 			continue
+		}
+		skill, ok := s.registry.Get(d.Name)
+		var wireInputs []wireInputField
+		if ok {
+			ui := skills.DescribeUI(skill)
+			for _, f := range ui.Inputs {
+				wireInputs = append(wireInputs, wireInputField{
+					Name:        f.Name,
+					Prompt:      f.Prompt,
+					Placeholder: f.Placeholder,
+				})
+			}
 		}
 		out = append(out, wireSkill{
 			Name:        d.Name,
@@ -405,6 +423,7 @@ func (s *Server) handleSkillsList(w http.ResponseWriter, r *http.Request) {
 			Examples:    d.Examples,
 			Mutating:    d.Mutating,
 			Hidden:      d.Hidden,
+			Inputs:      wireInputs,
 		})
 	}
 	w.Header().Set("Content-Type", "application/json")

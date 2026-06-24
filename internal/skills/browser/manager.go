@@ -103,7 +103,16 @@ func (r CommandRunner) Run(ctx context.Context, request Request) (Response, erro
 
 	var response Response
 	if err := json.Unmarshal(stdout.Bytes(), &response); err != nil {
-		return Response{}, fmt.Errorf("decode browser response: %w", err)
+		raw := strings.TrimSpace(stdout.String())
+		const limit = 400
+		if runes := []rune(raw); len(runes) > limit {
+			raw = string(runes[:limit]) + "…"
+		}
+		detail := "browser helper returned invalid output"
+		if raw != "" {
+			detail += ": " + raw
+		}
+		return Response{}, skills.NewUserError(skills.ErrUnavailable, detail)
 	}
 	if !response.OK {
 		details := strings.TrimSpace(response.Error)
