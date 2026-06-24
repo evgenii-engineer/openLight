@@ -83,6 +83,7 @@ type Manager interface {
 type LocalManager struct {
 	enabled            bool
 	roots              []string
+	defaultDir         string
 	maxReadBytes       int
 	listLimit          int
 	allowWrite         bool
@@ -91,6 +92,10 @@ type LocalManager struct {
 }
 
 func NewLocalManager(enabled bool, allowed []string, maxReadBytes, listLimit int, allowWrite, redactSecrets, allowSensitiveRead bool) (*LocalManager, error) {
+	return NewLocalManagerWithDefault(enabled, allowed, "", maxReadBytes, listLimit, allowWrite, redactSecrets, allowSensitiveRead)
+}
+
+func NewLocalManagerWithDefault(enabled bool, allowed []string, defaultDir string, maxReadBytes, listLimit int, allowWrite, redactSecrets, allowSensitiveRead bool) (*LocalManager, error) {
 	roots := make([]string, 0, len(allowed))
 	for _, root := range allowed {
 		normalized, err := normalizeRoot(root)
@@ -105,9 +110,18 @@ func NewLocalManager(enabled bool, allowed []string, maxReadBytes, listLimit int
 
 	sort.Strings(roots)
 
+	var normDefault string
+	if d := strings.TrimSpace(defaultDir); d != "" {
+		expanded, err := expandPath(d)
+		if err == nil {
+			normDefault = filepath.Clean(expanded)
+		}
+	}
+
 	return &LocalManager{
 		enabled:            enabled,
 		roots:              dedupeStrings(roots),
+		defaultDir:         normDefault,
 		maxReadBytes:       maxReadBytes,
 		listLimit:          listLimit,
 		allowWrite:         allowWrite,
@@ -489,7 +503,7 @@ func (m *LocalManager) searchRoots(path string) ([]string, string, error) {
 }
 
 func (m *LocalManager) resolveExistingPath(path string) (string, error) {
-	resolved, err := resolveInputPath(path)
+	resolved, err := resolveInputPathWithDefault(path, m.defaultDir)
 	if err != nil {
 		return "", err
 	}
@@ -505,7 +519,7 @@ func (m *LocalManager) resolveExistingPath(path string) (string, error) {
 }
 
 func (m *LocalManager) resolveWritablePath(path string) (string, bool, os.FileMode, error) {
-	resolved, err := resolveInputPath(path)
+	resolved, err := resolveInputPathWithDefault(path, m.defaultDir)
 	if err != nil {
 		return "", false, 0, err
 	}
@@ -601,6 +615,10 @@ func normalizeRoot(root string) (string, error) {
 }
 
 func resolveInputPath(path string) (string, error) {
+	return resolveInputPathWithDefault(path, "")
+}
+
+func resolveInputPathWithDefault(path, defaultDir string) (string, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return "", fmt.Errorf("%w: file path is required", skills.ErrInvalidArguments)
@@ -609,6 +627,11 @@ func resolveInputPath(path string) (string, error) {
 	expanded, err := expandPath(path)
 	if err != nil {
 		return "", fmt.Errorf("%w: resolve path %q: %v", skills.ErrInvalidArguments, path, err)
+	}
+
+	// Relative paths are anchored to defaultDir when set.
+	if !filepath.IsAbs(expanded) && defaultDir != "" {
+		expanded = filepath.Join(defaultDir, expanded)
 	}
 
 	absolute, err := filepath.Abs(expanded)

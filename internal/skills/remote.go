@@ -91,14 +91,44 @@ func (s *RemoteSkill) UI() UIDescriptor {
 	return UIDescriptor{Inputs: s.inputs}
 }
 
+// inputAttachment carries a local file to the brain inline as base64.
+type inputAttachment struct {
+	ArgName  string `json:"arg_name"`  // which args key holds the path
+	Filename string `json:"filename"`  // original basename for temp-file naming
+	Data     string `json:"data"`      // base64-encoded file contents
+}
+
 func (s *RemoteSkill) Execute(ctx context.Context, input Input) (Result, error) {
+	// Encode any local file paths as inline attachments so the brain can
+	// materialise them on its own filesystem before executing the skill.
+	args := make(map[string]string, len(input.Args))
+	var attachments []inputAttachment
+	for k, v := range input.Args {
+		if isLocalFilePath(v) {
+			data, err := os.ReadFile(v)
+			if err == nil {
+				attachments = append(attachments, inputAttachment{
+					ArgName:  k,
+					Filename: filepath.Base(v),
+					Data:     base64.StdEncoding.EncodeToString(data),
+				})
+				args[k] = "" // brain will substitute the real path
+				continue
+			}
+		}
+		args[k] = v
+	}
+
 	payload := map[string]any{
 		"skill":    s.def.Name,
 		"raw_text": input.RawText,
-		"args":     input.Args,
+		"args":     args,
 		"user_id":  input.UserID,
 		"chat_id":  input.ChatID,
 		"source":   input.Source,
+	}
+	if len(attachments) > 0 {
+		payload["input_attachments"] = attachments
 	}
 	body, _ := json.Marshal(payload)
 
@@ -165,6 +195,15 @@ func FetchRemoteSkillDefinitions(brainURL string, timeout time.Duration) ([]Remo
 		return nil, fmt.Errorf("fetch remote skills: decode: %w", err)
 	}
 	return defs, nil
+}
+
+// isLocalFilePath reports whether v looks like an absolute path to an existing file.
+func isLocalFilePath(v string) bool {
+	if !filepath.IsAbs(v) {
+		return false
+	}
+	info, err := os.Stat(v)
+	return err == nil && !info.IsDir()
 }
 
 func isConnErr(err error) bool {

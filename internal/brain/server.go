@@ -61,6 +61,7 @@ func NewServer(provider llm.Provider, listenAddr, nodeID, model string, logger *
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.HandleFunc("GET /system", s.handleSystem)
+	mux.HandleFunc("GET /models", s.handleModels)
 	mux.HandleFunc("GET /network/status", s.handleNetworkStatus)
 	mux.HandleFunc("GET /skills", s.handleSkillsList)
 	mux.HandleFunc("POST /llm/generate", s.handleLLMGenerate)
@@ -128,6 +129,25 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		resp["deep_latency_ms"] = float64(us) / 1000.0
 	}
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// handleModels proxies Ollama's /api/ps to edge nodes so they can display
+// which models are currently loaded in VRAM on the brain.
+func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	lister, ok := s.provider.(llm.PsLister)
+	if !ok {
+		_ = json.NewEncoder(w).Encode(map[string]any{"models": []any{}})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	loaded, err := lister.ListLoadedModels(ctx)
+	if err != nil {
+		_ = json.NewEncoder(w).Encode(map[string]any{"models": []any{}, "error": err.Error()})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"models": loaded})
 }
 
 // handleSystem returns host resource metrics (CPU, memory, uptime).
@@ -445,11 +465,46 @@ func (s *Server) handleSkillsInvoke(w http.ResponseWriter, r *http.Request) {
 		UserID  int64             `json:"user_id"`
 		ChatID  int64             `json:"chat_id"`
 		Source  string            `json:"source"`
+		InputAttachments []struct {
+			ArgName  string `json:"arg_name"`
+			Filename string `json:"filename"`
+			Data     string `json:"data"`
+		} `json:"input_attachments,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+
+	// Materialise any inline file attachments from the edge node into local
+	// temp files and substitute their paths into args before execution.
+	args := req.Args
+	if args == nil {
+		args = make(map[string]string)
+	}
+	var tempFiles []string
+	for _, att := range req.InputAttachments {
+		data, decErr := base64.StdEncoding.DecodeString(att.Data)
+		if decErr != nil {
+			continue
+		}
+		tmp, tmpErr := os.CreateTemp("", "brain-input-*-"+att.Filename)
+		if tmpErr != nil {
+			continue
+		}
+		if _, writeErr := tmp.Write(data); writeErr != nil {
+			tmp.Close()
+			continue
+		}
+		tmp.Close()
+		args[att.ArgName] = tmp.Name()
+		tempFiles = append(tempFiles, tmp.Name())
+	}
+	defer func() {
+		for _, f := range tempFiles {
+			_ = os.Remove(f)
+		}
+	}()
 
 	skill, ok := s.registry.ResolveIdentifier(req.Skill)
 	if !ok {
@@ -459,7 +514,7 @@ func (s *Server) handleSkillsInvoke(w http.ResponseWriter, r *http.Request) {
 
 	result, err := skill.Execute(r.Context(), skills.Input{
 		RawText: req.RawText,
-		Args:    req.Args,
+		Args:    args,
 		UserID:  req.UserID,
 		ChatID:  req.ChatID,
 		Source:  req.Source,

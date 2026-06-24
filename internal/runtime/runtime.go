@@ -410,9 +410,10 @@ func BuildRegistryWithWatch(
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
-	fileManager, err := fileskills.NewLocalManager(
+	fileManager, err := fileskills.NewLocalManagerWithDefault(
 		cfg.Files.Enabled,
 		cfg.Files.Allowed,
+		cfg.Files.DefaultDir,
 		cfg.Files.MaxReadBytes,
 		cfg.Files.ListLimit,
 		cfg.Files.AllowWrite,
@@ -475,7 +476,7 @@ func BuildRegistryWithWatch(
 	}
 	systemHooks := buildSystemHooks(tier.SmartProviderInstance, tier.LatencyStore, tier.TelegramHealth, os.Getpid(), brainURL)
 	modules := []skills.Module{
-		systemskills.NewModule(systemProvider, buildSystemModelsInfo(cfg, tier, tier.SmartProviderInstance, systemHooks), systemHooks),
+		systemskills.NewModule(systemProvider, buildSystemModelsInfo(cfg, tier, tier.SmartProviderInstance, systemHooks, registry, brainURL), systemHooks),
 		fileskills.NewModule(fileManager),
 		serviceskills.NewModule(serviceManager, cfg.Services.LogLines, cfg.Services.MaxLogChars),
 		memoryskills.NewModule(memoryStore, cfg.Memory.ListLimit, cfg.Memory.Enabled),
@@ -608,7 +609,7 @@ func buildOCRManager(cfg config.Config) (ocrskills.Manager, error) {
 	}), nil
 }
 
-func buildSystemModelsInfo(cfg config.Config, tier ProviderTier, smartProvider basellm.Provider, hooks systemskills.Hooks) systemskills.ModelsInfo {
+func buildSystemModelsInfo(cfg config.Config, tier ProviderTier, smartProvider basellm.Provider, hooks systemskills.Hooks, _ *skills.Registry, brainURL string) systemskills.ModelsInfo {
 	info := systemskills.ModelsInfo{
 		LLMProfile:      cfg.LLM.Profile,
 		LLMProvider:     cfg.LLM.Provider,
@@ -634,10 +635,10 @@ func buildSystemModelsInfo(cfg config.Config, tier ProviderTier, smartProvider b
 		WarmupProfiles:  append([]string(nil), cfg.LLM.Warmup.Profiles...),
 		WarmupKeepAlive: cfg.LLM.Warmup.KeepAliveString(),
 		WarmupPrompt:    cfg.LLM.Warmup.PromptOrDefault(),
-		VisionEnabled:   cfg.Vision.Enabled,
+		VisionEnabled:   cfg.Vision.Enabled || strings.TrimSpace(brainURL) != "",
 		VisionProvider:  cfg.Vision.Provider,
 		VisionModel:     cfg.Vision.Model,
-		OCREnabled:      cfg.OCR.Enabled,
+		OCREnabled:      cfg.OCR.Enabled || strings.TrimSpace(brainURL) != "",
 		OCRProvider:     cfg.OCR.Provider,
 		OCRLanguages:    append([]string(nil), cfg.OCR.Languages...),
 		VoiceEnabled:    cfg.Voice.Enabled,

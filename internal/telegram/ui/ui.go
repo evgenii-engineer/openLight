@@ -159,7 +159,8 @@ func (u *UI) StartSkillInput(ctx context.Context, chatID, userID int64, skill sk
 		Target: "g",
 		Extra:  def.Group.Key,
 	})
-	if err := u.transport.SendTextWithButtons(ctx, chatID, prompt(field), cancel); err != nil {
+	text := skillHeader(def) + prompt(field)
+	if err := u.transport.SendTextWithButtons(ctx, chatID, text, cancel); err != nil {
 		return true, fmt.Errorf("send skill input prompt: %w", err)
 	}
 	return true, nil
@@ -484,7 +485,8 @@ func (u *UI) startSkill(ctx context.Context, m callback.Message, skill skills.Sk
 			break
 		}
 		field := hints.Inputs[flow.StepIndex]
-		return u.editText(ctx, m, prompt(field), keyboards.CancelOnly(callback.Action{
+		text := skillHeader(def) + prompt(field)
+		return u.editText(ctx, m, text, keyboards.CancelOnly(callback.Action{
 			Kind:   callback.KindBack,
 			Target: "g",
 			Extra:  def.Group.Key,
@@ -494,11 +496,22 @@ func (u *UI) startSkill(ctx context.Context, m callback.Message, skill skills.Sk
 	if def.Mutating || strings.TrimSpace(hints.Confirm) != "" {
 		message := strings.TrimSpace(hints.Confirm)
 		if message == "" {
-			message = fmt.Sprintf("Run %s?", humanReadable(def.Name))
+			message = skillHeader(def) + "Run " + humanReadable(def.Name) + "?"
 		}
 		return u.confirmAndRun(ctx, m, skill, args, message)
 	}
 	return u.runSkill(ctx, m, skill, args, true)
+}
+
+// skillHeader returns a two-line header with the skill title and description,
+// suitable for prepending to an input prompt or confirm dialog.
+func skillHeader(def skills.Definition) string {
+	title := humanReadable(def.Name)
+	desc := strings.TrimSpace(def.Description)
+	if desc == "" {
+		return title + "\n\n"
+	}
+	return title + "\n" + desc + "\n\n"
 }
 
 func (u *UI) confirmAndRun(ctx context.Context, m callback.Message, skill skills.Skill, args map[string]string, prompt string) error {

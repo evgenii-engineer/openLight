@@ -114,6 +114,22 @@ var (
 	}
 )
 
+// wellKnownGroups maps key → canonical Group so RemoteSkills (which only carry
+// the Key) still render with a proper Title, Description, and Order.
+var wellKnownGroups = func() map[string]Group {
+	all := []Group{
+		GroupChat, GroupNotes, GroupMemory, GroupFiles, GroupBrowser,
+		GroupVision, GroupOCR, GroupVisualWatch, GroupWorkbench,
+		GroupServices, GroupWatch, GroupAccounts, GroupSystem,
+		GroupCore, GroupNetwork, GroupMCP, GroupOther,
+	}
+	m := make(map[string]Group, len(all))
+	for _, g := range all {
+		m[g.Key] = g
+	}
+	return m
+}()
+
 func normalizeGroup(group Group) Group {
 	group.Key = strings.ToLower(strings.TrimSpace(group.Key))
 	group.Title = strings.TrimSpace(group.Title)
@@ -121,6 +137,18 @@ func normalizeGroup(group Group) Group {
 
 	if group.Key == "" {
 		return GroupOther
+	}
+	// Fill missing Title/Description/Order from the canonical definition when known.
+	if canonical, ok := wellKnownGroups[group.Key]; ok {
+		if group.Title == "" {
+			group.Title = canonical.Title
+		}
+		if group.Description == "" {
+			group.Description = canonical.Description
+		}
+		if group.Order == 0 {
+			group.Order = canonical.Order
+		}
 	}
 	if group.Title == "" {
 		group.Title = group.Key

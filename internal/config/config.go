@@ -139,6 +139,7 @@ type FilesConfig struct {
 	Enabled            bool     `yaml:"enabled"`
 	Allowed            []string `yaml:"allowed"`
 	AllowedRoots       []string `yaml:"allowed_roots"`
+	DefaultDir         string   `yaml:"default_dir"`
 	MaxReadBytes       int      `yaml:"max_read_bytes"`
 	ListLimit          int      `yaml:"list_limit"`
 	AllowWrite         bool     `yaml:"allow_write"`

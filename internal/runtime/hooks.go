@@ -142,6 +142,10 @@ func buildSystemHooks(
 
 	if url := strings.TrimSpace(brainURL); url != "" {
 		hooks.BrainStatus = buildBrainStatusProbe(url)
+		// Edge node: loaded models live on brain, not locally.
+		hooks.LoadedModels = buildBrainModelsProbe(url)
+		hooks.OllamaAvailable = func(ctx context.Context) bool { return true }
+		return hooks
 	}
 
 	lister, ok := smartProvider.(basellm.PsLister)
@@ -329,5 +333,52 @@ func buildBrainStatusProbe(brainURL string) func(ctx context.Context) systemskil
 		}
 
 		return info
+	}
+}
+
+// buildBrainModelsProbe returns a LoadedModels hook that fetches the list of
+// currently loaded Ollama models from the brain's GET /models endpoint.
+func buildBrainModelsProbe(brainURL string) func(ctx context.Context) []systemskills.LoadedModelInfo {
+	base := strings.TrimRight(brainURL, "/")
+	return func(ctx context.Context) []systemskills.LoadedModelInfo {
+		probeCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
+		defer cancel()
+
+		req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, base+"/models", nil)
+		if err != nil {
+			return nil
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return nil
+		}
+		defer resp.Body.Close()
+
+		var body struct {
+			Models []struct {
+				Name       string    `json:"name"`
+				Size       int64     `json:"size"`
+				SizeVRAM   int64     `json:"size_vram"`
+				Processor  string    `json:"processor"`
+				ContextLen int       `json:"context_length"`
+				ExpiresAt  time.Time `json:"expires_at"`
+			} `json:"models"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil || len(body.Models) == 0 {
+			return nil
+		}
+
+		out := make([]systemskills.LoadedModelInfo, 0, len(body.Models))
+		for _, m := range body.Models {
+			out = append(out, systemskills.LoadedModelInfo{
+				Name:      strings.TrimSpace(m.Name),
+				Size:      m.Size,
+				SizeVRAM:  m.SizeVRAM,
+				Processor: strings.TrimSpace(m.Processor),
+				Context:   m.ContextLen,
+				ExpiresAt: formatExpiry(m.ExpiresAt, time.Now()),
+			})
+		}
+		return out
 	}
 }

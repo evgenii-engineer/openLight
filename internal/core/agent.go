@@ -232,6 +232,20 @@ func (a *Agent) preprocessAttachments(ctx context.Context, message *telegram.Inc
 	}
 
 	if message.Image != nil {
+		// If the UI is waiting for an image path from the user, download the
+		// photo to a temp file and inject its path as the text reply so the
+		// conversational input flow can consume it normally.
+		if a.ui != nil && a.ui.HasPendingInput(message.ChatID) {
+			downloader, _ := a.transport.(voice.Downloader)
+			if downloader != nil {
+				if downloaded, dlErr := downloader.DownloadFile(ctx, message.Image.FileID); dlErr == nil {
+					message.Text = downloaded.Path
+					message.Image = nil
+					return replyPrefix, false, nil
+				}
+			}
+		}
+
 		if a.imageInbox == nil || !a.imageInbox.Enabled() {
 			return "", true, a.reply(ctx, message.ChatID, message.UserID, "image input is disabled (enable vision or ocr)")
 		}

@@ -125,10 +125,12 @@ func runAgent(args []string) error {
 			cfg.Voice.ReplyWithTranscript,
 		)
 	}
-	if cfg.Vision.Enabled || cfg.OCR.Enabled {
+	_, visionInRegistry := rt.Registry.Get("vision_analyze")
+	_, ocrInRegistry := rt.Registry.Get("ocr_extract")
+	if cfg.Vision.Enabled || cfg.OCR.Enabled || visionInRegistry || ocrInRegistry {
 		agent.SetImageInbox(core.NewImageInbox(rt.Registry, core.ImageInboxOptions{
-			VisionEnabled: cfg.Vision.Enabled,
-			OCREnabled:    cfg.OCR.Enabled,
+			VisionEnabled: cfg.Vision.Enabled || visionInRegistry,
+			OCREnabled:    cfg.OCR.Enabled || ocrInRegistry,
 			DefaultPrompt: cfg.Vision.DefaultPrompt,
 		}))
 	}
