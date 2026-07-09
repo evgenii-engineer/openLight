@@ -10,3 +10,15 @@ configs/*.local.yaml
 .idea
 .DS_store
 cmd/.DS_Store
+
+# Local private modules — see docs and local_modules.example/.
+# The directory is fully local and must never be committed. The example
+# scaffold in local_modules.example/ is committable.
+local_modules/
+# Blank-import hook that compiles local modules into the binary. Copied from
+# local_modules.example/localmodules_local.go.example. Must stay local so that
+# fresh clones (which have no local_modules/) still build.
+cmd/openlight/localmodules_local.go
+.env
+*.sqlite
+*.db

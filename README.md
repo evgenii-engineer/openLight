@@ -333,6 +333,73 @@ Useful env overrides: `TELEGRAM_BOT_TOKEN`, `ALLOWED_USER_IDS`,
 `VISION_ENABLED`, `VISION_PROVIDER`, `VISION_MODEL`, `OCR_ENABLED`,
 `VISUAL_WATCH_ENABLED`, `WORKBENCH_ENABLED`.
 
+## Local private modules
+
+openLight can be extended with **local private modules** — machine-specific code
+that lives on your box but **never enters this repository**. Core openLight stays
+universal; your private logic (custom alerts, cost monitoring, business metrics,
+integrations you can't open-source) lives under `local_modules/`, which is
+gitignored.
+
+A module gets a small, stable extension surface (`localmod.AppContext`): a
+scoped logger, an env/config reader, a scheduler (interval + daily jobs), the
+Telegram sender, the command registry, and a private storage directory. It never
+receives the whole internal app object.
+
+**Why it's safe**
+
+- Nothing runs unless `OPENLIGHT_LOCAL_MODULES_ENABLED=true`.
+- A module that's listed but not compiled in produces a warning, not a crash.
+- A module that errors or panics during registration is contained and logged —
+  a broken private module never brings down openLight core.
+- `local_modules/` and the local build hook (`cmd/openlight/localmodules_local.go`)
+  are gitignored. Core has no knowledge of any specific module.
+
+**Enable one**
+
+```bash
+# 1. Copy the example (or your own module) into local_modules/
+cp -r local_modules.example/example_module local_modules/example_module
+
+# 2. Copy the build hook and point its blank imports at your module(s)
+cp local_modules.example/localmodules_local.go.example \
+   cmd/openlight/localmodules_local.go
+
+# 3. Rebuild
+go build ./cmd/openlight
+```
+
+Then enable it either via **environment** or via the **`local_modules:` block in
+`agent.yaml`** — whichever fits your setup. Real environment variables take
+precedence over config-file values, so you can keep everything in the config and
+override individual keys at runtime.
+
+```bash
+# via environment
+export OPENLIGHT_LOCAL_MODULES_ENABLED=true
+export OPENLIGHT_LOCAL_MODULES_PATH=./local_modules
+export OPENLIGHT_LOCAL_MODULES=example_module   # comma-separated for several
+```
+
+```yaml
+# via agent.yaml (settings is an opaque passthrough; core never reads its keys)
+local_modules:
+  enabled: true
+  path: ./local_modules
+  modules: [example_module]
+  settings:
+    EXAMPLE_SETTING: "value"
+```
+
+Because Go is statically compiled, "loading a module" means the gitignored
+`cmd/openlight/localmodules_local.go` blank-imports it (baking it into the
+binary via `init()` self-registration); the env vars above then decide which
+compiled-in modules actually activate. Fresh clones with no `local_modules/`
+build and run exactly as before.
+
+See [`local_modules.example/example_module/README.md`](local_modules.example/example_module/README.md)
+for a complete walkthrough.
+
 ## Project structure
 
 ```
@@ -354,6 +421,9 @@ docs/                 architecture, nodes, watches, skills
 scripts/              install + remote-deploy helpers (Pi, Mac mini)
 tools/browser-agent/  Node.js Playwright helper invoked by the browser skill
 testdata/skills/      example external skill (echo)
+internal/localmod/    local private module loader + AppContext extension point
+local_modules.example/ committable example module + build-hook template
+local_modules/        your private modules (gitignored, not committed)
 ```
 
 ## Good fit / Not a fit

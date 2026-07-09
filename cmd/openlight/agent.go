@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"openlight/internal/auth"
 	"openlight/internal/config"
 	"openlight/internal/core"
+	"openlight/internal/localmod"
 	"openlight/internal/logging"
 	"openlight/internal/router"
 	"openlight/internal/runtime"
@@ -151,6 +153,27 @@ func runAgent(args []string) error {
 		}()
 	}
 
+	// Activate local private modules (gitignored, opt-in). This is a no-op
+	// unless enabled, and any module error is contained so it never blocks
+	// startup. Modules register their commands before we publish the command
+	// list below.
+	//
+	// Settings may come from the `local_modules:` block in agent.yaml or from
+	// the OPENLIGHT_LOCAL_MODULES_* environment; real environment variables win
+	// over config-file values.
+	var defaultChatID int64
+	if len(cfg.Auth.AllowedChatIDs) > 0 {
+		defaultChatID = cfg.Auth.AllowedChatIDs[0]
+	}
+	localmod.Load(runCtx, localmod.Deps{
+		Logger:        logger,
+		Env:           localModuleEnv(cfg),
+		Telegram:      bot,
+		Commands:      rt.Registry,
+		StorageDir:    filepath.Dir(cfg.Storage.SQLitePath),
+		DefaultChatID: defaultChatID,
+	})
+
 	publishCtx, publishCancel := context.WithTimeout(runCtx, 10*time.Second)
 	if err := bot.SetMyCommands(publishCtx, telegramCommandsFromRegistry(rt.Registry)); err != nil {
 		logger.Warn("publish telegram commands", "error", err)
@@ -217,6 +240,28 @@ func telegramCommandsFromRegistry(registry *skills.Registry) []telegram.BotComma
 		})
 	}
 	return commands
+}
+
+// localModuleEnv builds the env reader for local modules. It overlays the
+// `local_modules:` config block (settings + the enabled/path/modules controls)
+// underneath the real OS environment, so config-file values act as defaults and
+// environment variables can override any of them.
+func localModuleEnv(cfg config.Config) localmod.EnvReader {
+	lm := cfg.LocalModules
+	overlay := make(map[string]string, len(lm.Settings)+3)
+	for k, v := range lm.Settings {
+		overlay[k] = v
+	}
+	if lm.Enabled {
+		overlay[localmod.EnvEnabled] = "true"
+	}
+	if strings.TrimSpace(lm.Path) != "" {
+		overlay[localmod.EnvPath] = lm.Path
+	}
+	if len(lm.Modules) > 0 {
+		overlay[localmod.EnvModules] = strings.Join(lm.Modules, ",")
+	}
+	return localmod.NewOverlayEnv(localmod.OSEnv(), overlay)
 }
 
 func resolveConfigPath(flagValue string) string {
