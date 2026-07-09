@@ -47,6 +47,11 @@ type Config struct {
 	VisualWatch VisualWatchConfig     `yaml:"visual_watch"`
 	Agent       AgentConfig           `yaml:"agent"`
 	Log         LogConfig             `yaml:"log"`
+	// LocalModules configures optional local private modules. Generic: core
+	// does not interpret Settings, it only passes them through to modules as
+	// environment-style key/values. See internal/localmod and the README
+	// "Local private modules" section.
+	LocalModules LocalModulesConfig `yaml:"local_modules"`
 
 	// Deprecations is populated at load time. It lists keys the user is
 	// still using that have a preferred replacement. The runtime logs
@@ -90,6 +95,21 @@ type WebhookConfig struct {
 type AuthConfig struct {
 	AllowedUserIDs []int64 `yaml:"allowed_user_ids"`
 	AllowedChatIDs []int64 `yaml:"allowed_chat_ids"`
+}
+
+// LocalModulesConfig is the YAML counterpart of the OPENLIGHT_LOCAL_MODULES_*
+// environment variables. It stays generic on purpose: Settings is an opaque
+// string map that the loader exposes to modules as environment values, so
+// module secrets can live in the same config file without core knowing any
+// module-specific keys. Real environment variables take precedence over
+// Settings at load time.
+type LocalModulesConfig struct {
+	Enabled bool     `yaml:"enabled"`
+	Path    string   `yaml:"path"`
+	Modules []string `yaml:"modules"`
+	// Settings are passed through to modules as env-style key/values, e.g.
+	// MUNCH_MONITOR_ENABLED, FLY_API_TOKEN. Core never interprets them.
+	Settings map[string]string `yaml:"settings"`
 }
 
 type StorageConfig struct {

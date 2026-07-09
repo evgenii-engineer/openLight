@@ -904,6 +904,50 @@ func writeConfig(t *testing.T, path, content string) {
 	}
 }
 
+func TestLoadLocalModulesConfig(t *testing.T) {
+	clearConfigEnv(t)
+
+	configPath := filepath.Join(t.TempDir(), "agent.yaml")
+	writeConfig(t, configPath, `
+telegram:
+  bot_token: "token"
+
+auth:
+  allowed_user_ids: [1]
+  allowed_chat_ids: [2]
+
+storage:
+  sqlite_path: "./agent.db"
+
+local_modules:
+  enabled: true
+  path: "./local_modules"
+  modules: ["munch_monitor"]
+  settings:
+    MUNCH_MONITOR_ENABLED: "true"
+    MUNCH_FLY_APP: "munch-api,munch-worker"
+`)
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	lm := cfg.LocalModules
+	if !lm.Enabled {
+		t.Fatal("expected local_modules.enabled true")
+	}
+	if lm.Path != "./local_modules" {
+		t.Fatalf("unexpected path: %q", lm.Path)
+	}
+	if len(lm.Modules) != 1 || lm.Modules[0] != "munch_monitor" {
+		t.Fatalf("unexpected modules: %v", lm.Modules)
+	}
+	if lm.Settings["MUNCH_MONITOR_ENABLED"] != "true" ||
+		lm.Settings["MUNCH_FLY_APP"] != "munch-api,munch-worker" {
+		t.Fatalf("unexpected settings: %v", lm.Settings)
+	}
+}
+
 func TestLLMConfigResolveProfileInheritsTopLevel(t *testing.T) {
 	t.Parallel()
 
