@@ -1,6 +1,9 @@
 data/
 /agent
 /openlight-agent
+# Stray binary from `go build ./cmd/openlight` (no -o); the real build goes to
+# /build/. Ignored so it doesn't show up as an untracked file at the root.
+/openlight
 /build/
 Makefile.local
 /agent.yaml
