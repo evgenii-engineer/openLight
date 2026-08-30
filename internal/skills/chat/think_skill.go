@@ -20,6 +20,7 @@ type ThinkSkill struct {
 	historyChars     int
 	maxResponseChars int
 	systemPrompt     string
+	memory           MemoryProvider
 }
 
 func NewThinkSkill(provider llm.Provider, store HistoryStore, opts Options) skills.Skill {
@@ -42,6 +43,7 @@ func NewThinkSkill(provider llm.Provider, store HistoryStore, opts Options) skil
 		historyChars:     opts.HistoryChars,
 		maxResponseChars: opts.MaxResponseChars,
 		systemPrompt:     strings.TrimSpace(opts.SystemPrompt),
+		memory:           opts.Memory,
 	}
 }
 
@@ -103,6 +105,14 @@ func (s *ThinkSkill) buildMessages(ctx context.Context, chatID int64, rawText, n
 		Role:    "system",
 		Content: s.systemPrompt,
 	}}
+
+	// Same contract as /chat: memory is a separate, clearly framed
+	// system message so it can never read as an instruction.
+	if s.memory != nil {
+		if block := strings.TrimSpace(s.memory.MemoryPrompt(ctx, chatID, normalizedText)); block != "" {
+			messages = append(messages, llm.ChatMessage{Role: "system", Content: block})
+		}
+	}
 
 	history, err := s.store.ListMessagesByChat(ctx, chatID, s.historyLimit*3+6)
 	if err != nil {

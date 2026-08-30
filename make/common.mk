@@ -38,12 +38,26 @@ IMAGE_REF         ?= $(DOCKER_IMAGE):$(DOCKER_TAG)
 
 OPENLIGHT_COMPOSE_FILE ?= openlight-compose.yaml
 OLLAMA_COMPOSE_FILE    ?= deployments/docker/ollama-compose.yaml
+QDRANT_COMPOSE_FILE    ?= deployments/docker/qdrant-compose.yaml
 
 # ---- LLM / Ollama --------------------------------------------------------
 
 OLLAMA_ENDPOINT      ?= http://127.0.0.1:11434
 OLLAMA_MODEL         ?= qwen2.5:0.5b
 OLLAMA_VISION_MODEL  ?= qwen2.5vl:3b
+
+# ---- Long-term memory ----------------------------------------------------
+#
+# MEMORY_ROOT must match memory.rag.storage.root in agent.yaml, and
+# QDRANT_STORAGE must match the bind mount in qdrant-compose.yaml.
+
+MEMORY_ROOT           ?= /mnt/openlight/memory
+QDRANT_STORAGE        ?= $(MEMORY_ROOT)/qdrant
+QDRANT_REST_ENDPOINT  ?= http://127.0.0.1:6333
+QDRANT_GRPC_ENDPOINT  ?= http://127.0.0.1:6334
+MEMORY_EMBED_MODEL    ?= bge-m3
+MEMORY_EMBED_ENDPOINT ?= $(OLLAMA_ENDPOINT)
+OPENLIGHT_BIN         ?= openlight
 
 # ---- Host tooling --------------------------------------------------------
 
@@ -90,6 +104,7 @@ SMOKE_LLM_PROFILE  ?=
 # commands (e.g. `go run` invoked by `make smoke-cli`).
 
 export OLLAMA_ENDPOINT OLLAMA_VISION_MODEL
+export MEMORY_ROOT QDRANT_STORAGE MEMORY_EMBED_MODEL MEMORY_EMBED_ENDPOINT
 export BREW NPM NPX BROWSER_AGENT_DIR PLAYWRIGHT_BROWSER TESSERACT_LANG_PACK
 export PI_USER PI_HOST PI_DEST_DIR PI_BIN_DIR PI_BIN_PATH
 export SSH_USER SSH_HOST SSH_TARGET USER_HOME PROJECT_DIR RUNTIME_DIR

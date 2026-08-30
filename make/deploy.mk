@@ -21,7 +21,7 @@ check-config: ## Fail if $(CONFIG_LOCAL) is missing
 ##@ Deploy: Raspberry Pi
 
 .PHONY: deploy-rpi deploy-rpi-service deploy-rpi-config deploy-rpi-display \
-        deploy-rpi-all deploy-rpi-full deploy-pi
+        deploy-rpi-memory deploy-rpi-all deploy-rpi-full deploy-pi
 
 # openlight is a single binary: `openlight agent`, `openlight cli`,
 # `openlight doctor`. There is no separate CLI binary to deploy, so the
@@ -39,7 +39,15 @@ deploy-rpi-config: ## Push the local Pi config to the Pi
 deploy-rpi-display: ## Upload display-dashboard.py + install openlight-display.service on the Pi
 	./scripts/deploy-rpi-display.sh
 
-deploy-rpi-all: deploy-rpi-config deploy-rpi deploy-rpi-service deploy-rpi-display ## config + binary + agent service + display service
+# Reads memory.rag.enabled out of configs/agent.rpi.yaml and does
+# nothing when it is off, so it is safe inside the default deploy chain.
+# MEMORY_PROVISION=always|never overrides.
+deploy-rpi-memory: ## Provision long-term memory on the Pi (SSD dirs, pdftotext, Qdrant)
+	./scripts/deploy-rpi-memory.sh
+
+# Memory is provisioned before the binary and the service so Qdrant is
+# already listening when the new agent starts and runs its bootstrap.
+deploy-rpi-all: deploy-rpi-config deploy-rpi-memory deploy-rpi deploy-rpi-service deploy-rpi-display ## config + memory + binary + agent service + display service
 
 deploy-rpi-full: deploy-rpi-all ## Alias for deploy-rpi-all (the CLI ships in the same binary)
 

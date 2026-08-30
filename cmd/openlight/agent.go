@@ -52,11 +52,31 @@ func runAgent(args []string) error {
 	}
 	defer runtime.CloseRuntime(rt)
 
+	// Memory's background workers: bootstrap (embedding model + vector
+	// collection), the ingestion queue, the conversation consolidator,
+	// and the turn writer. Bounded concurrency, and every failure inside
+	// stays inside — nothing below ever waits on it.
+	//
+	// Started before the brain-only branch on purpose: a node with no
+	// Telegram token still has to drain whatever `memory reindex` queued.
+	var memoryErrCh chan error
+	if rt.Memory != nil {
+		memoryErrCh = make(chan error, 1)
+		go func() {
+			memoryErrCh <- rt.Memory.Run(runCtx)
+		}()
+	}
+
 	// Brain-only mode: no Telegram token configured. The brain API server
 	// is already running (started by BuildRuntime). Just wait for shutdown.
 	if strings.TrimSpace(cfg.Telegram.BotToken) == "" {
 		logger.Info("brain-only mode: Telegram disabled, serving brain API only")
 		<-runCtx.Done()
+		if memoryErrCh != nil {
+			if memErr := <-memoryErrCh; !isExpectedShutdown(memErr) {
+				return memErr
+			}
+		}
 		return nil
 	}
 
@@ -101,6 +121,11 @@ func runAgent(args []string) error {
 		Logger:       logger.With("component", "telegram-ui"),
 	})
 	agent.SetUI(ui)
+	// Long-term memory. Installed before the voice and image inboxes so
+	// their archivers see a live subsystem from the first message.
+	if rt.Memory != nil {
+		agent.SetMemory(runtime.NewCoreMemory(rt.Memory))
+	}
 	if cfg.Voice.Enabled {
 		var transcriber voice.Transcriber
 		if cfg.Node.IsEdge() && cfg.Node.BrainURL != "" {
@@ -126,6 +151,15 @@ func runAgent(args []string) error {
 			),
 			cfg.Voice.ReplyWithTranscript,
 		)
+		// Memory reuses the same transcriber when it has to re-derive
+		// text from an archived recording (reindex, or a voice note that
+		// arrived while the brain was offline).
+		if rt.MemoryTranscriber != nil {
+			memoryTranscriber := transcriber
+			rt.MemoryTranscriber.Bind(func(ctx context.Context, path string) (string, error) {
+				return memoryTranscriber.Transcribe(ctx, path)
+			})
+		}
 	}
 	_, visionInRegistry := rt.Registry.Get("vision_analyze")
 	_, ocrInRegistry := rt.Registry.Get("ocr_extract")
@@ -194,6 +228,11 @@ func runAgent(args []string) error {
 	if visualWatchErrCh != nil {
 		if vwErr := <-visualWatchErrCh; !isExpectedShutdown(vwErr) {
 			return vwErr
+		}
+	}
+	if memoryErrCh != nil {
+		if memErr := <-memoryErrCh; !isExpectedShutdown(memErr) {
+			return memErr
 		}
 	}
 

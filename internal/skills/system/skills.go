@@ -144,6 +144,9 @@ func (s *statusSkill) Execute(ctx context.Context, _ skills.Input) (skills.Resul
 	if latency := s.renderLatencySection(); len(latency) > 0 {
 		sections = append(sections, latency)
 	}
+	if memory := s.renderMemorySection(ctx); len(memory) > 0 {
+		sections = append(sections, memory)
+	}
 
 	if len(sections) == 0 {
 		return skills.Result{}, fmt.Errorf("%w: no system metrics available", skills.ErrUnavailable)
@@ -310,6 +313,57 @@ func (s *statusSkill) renderLatencySection() []string {
 		lines = append(lines, fmt.Sprintf("- %s: %d ms", key, d.Milliseconds()))
 	}
 	return lines
+}
+
+// renderMemorySection shows the long-term memory subsystem. It is
+// omitted entirely when memory is disabled, so /status looks exactly as
+// it did before on installs that never turned it on.
+func (s *statusSkill) renderMemorySection(ctx context.Context) []string {
+	if s.hooks.Memory == nil {
+		return nil
+	}
+	info := s.hooks.Memory(ctx)
+	if !info.Enabled {
+		return nil
+	}
+
+	state := "online"
+	// Memory is "degraded" rather than "offline" when a backend is down:
+	// raw archiving and the queue keep working, only indexing and
+	// retrieval pause. Saying "offline" would misdescribe what happens
+	// to the user's data.
+	if !info.VectorOnline || !info.EmbeddingsOnline {
+		state = "degraded"
+	}
+
+	lines := []string{
+		"Memory: " + state,
+		fmt.Sprintf("- sources: %d", info.Sources),
+		fmt.Sprintf("- chunks: %d", info.Chunks),
+		fmt.Sprintf("- facts: %d", info.Facts),
+		fmt.Sprintf("- queue: %d", info.QueueDepth),
+	}
+	if info.FailedJobs > 0 {
+		lines = append(lines, fmt.Sprintf("- failed: %d", info.FailedJobs))
+	}
+	lines = append(lines,
+		"- qdrant: "+onlineLabel(info.VectorOnline),
+		"- embeddings: "+onlineLabel(info.EmbeddingsOnline),
+	)
+	if info.RawBytes > 0 {
+		lines = append(lines, "- raw: "+utils.FormatBytes(uint64(info.RawBytes)))
+	}
+	if strings.TrimSpace(info.Error) != "" {
+		lines = append(lines, "- last error: "+info.Error)
+	}
+	return lines
+}
+
+func onlineLabel(online bool) string {
+	if online {
+		return "online"
+	}
+	return "offline"
 }
 
 // formatUptimeShort drops the seconds suffix from FormatDuration so the

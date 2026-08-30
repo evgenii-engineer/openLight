@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -49,6 +50,7 @@ func runDoctor(args []string) error {
 	checkNodes(report, cfg)
 	checkFiles(report, cfg)
 	checkWatch(report, cfg)
+	checkMemory(report, cfg)
 	checkOptional(report, cfg)
 	checkVoice(report, cfg)
 	checkSecurity(report, cfg)
@@ -207,6 +209,143 @@ func checkWatch(r *doctorReport, cfg config.Config) {
 	}
 	r.ok("watch", fmt.Sprintf("enabled (poll %s, ask_ttl %s)",
 		cfg.Watch.PollInterval, cfg.Watch.AskTTL))
+}
+
+// checkMemory validates the long-term memory subsystem's prerequisites:
+// a writable archive root, a reachable Qdrant, and an embeddings
+// endpoint that actually serves the configured model.
+//
+// Everything here is a warning rather than a failure, deliberately.
+// Memory is designed to run degraded — archiving and queueing while a
+// backend is down — so a sleeping Mac mini should not make `doctor`
+// exit non-zero and fail a deploy.
+func checkMemory(r *doctorReport, cfg config.Config) {
+	rag := cfg.Memory.RAG
+	if !rag.Enabled {
+		r.skip("memory", "memory.rag.enabled is false")
+		return
+	}
+
+	root := strings.TrimSpace(rag.Storage.Root)
+	if info, err := os.Stat(root); err != nil {
+		r.warn("memory:storage", fmt.Sprintf("%s: %v (it is created on first start)", root, err))
+	} else if !info.IsDir() {
+		r.fail("memory:storage", root+" exists but is not a directory")
+	} else if err := checkWritable(root); err != nil {
+		r.fail("memory:storage", root+" is not writable: "+err.Error())
+	} else {
+		r.ok("memory:storage", root)
+	}
+
+	switch strings.ToLower(strings.TrimSpace(rag.Vector.Provider)) {
+	case "none":
+		r.warn("memory:qdrant", "vector.provider is none — nothing will be searchable")
+	default:
+		// Probe the REST port next to the configured gRPC one: Qdrant
+		// serves health on 6333 and gRPC on 6334, and a plain TCP dial is
+		// the cheapest thing that proves the container is up.
+		if err := probeTCP(vectorDialAddr(rag.Vector.URL), 2*time.Second); err != nil {
+			r.warn("memory:qdrant", rag.Vector.URL+": "+err.Error()+" (ingestion will queue until it is up)")
+		} else {
+			r.ok("memory:qdrant", rag.Vector.URL+" / "+rag.Vector.Collection)
+		}
+	}
+
+	// Embeddings reach either the brain API or an Ollama endpoint. On an
+	// edge node only the former can work — Ollama binds to loopback on
+	// the brain — so probe whichever route is actually configured.
+	if rag.Embeddings.EmbeddingsViaBrain() {
+		brainURL := strings.TrimRight(strings.TrimSpace(cfg.Node.BrainURL), "/")
+		if brainURL == "" {
+			r.fail("memory:embeddings", "provider is brain but node.brain_url is empty")
+			return
+		}
+		if err := probeHTTP(brainURL+"/health", 3*time.Second); err != nil {
+			r.warn("memory:embeddings", brainURL+": "+err.Error()+" (ingestion will retry)")
+			return
+		}
+		// /health only proves the brain is up. Ask /embed whether it can
+		// actually serve vectors: an older brain build has no such route,
+		// and a brain with no embedder answers 503.
+		if err := probeEmbedRoute(brainURL, 5*time.Second); err != nil {
+			r.warn("memory:embeddings", "brain "+brainURL+" is up but "+err.Error())
+			return
+		}
+		r.ok("memory:embeddings", "via brain "+brainURL+" / "+rag.Embeddings.Model)
+	} else {
+		embeddingsURL := strings.TrimRight(strings.TrimSpace(rag.Embeddings.URL), "/")
+		if embeddingsURL == "" {
+			r.fail("memory:embeddings", "memory.rag.embeddings.url is empty")
+			return
+		}
+		if err := probeHTTP(embeddingsURL+"/api/tags", 3*time.Second); err != nil {
+			r.warn("memory:embeddings", embeddingsURL+": "+err.Error()+" (ingestion will retry)")
+			return
+		}
+		r.ok("memory:embeddings", embeddingsURL+" / "+rag.Embeddings.Model)
+	}
+
+	if rag.Extraction.PDFToTextPath != "" {
+		if resolved, err := resolveBinary(rag.Extraction.PDFToTextPath); err != nil {
+			r.warn("memory:pdftotext", err.Error()+" (falling back to the built-in PDF parser)")
+		} else {
+			r.ok("memory:pdftotext", resolved)
+		}
+	}
+}
+
+// probeEmbedRoute asks the brain for a one-token embedding. Cheap, and
+// it distinguishes the two failures that matter: a brain too old to have
+// the route (404) from one that has it but no model wired (503).
+func probeEmbedRoute(brainURL string, timeout time.Duration) error {
+	client := &http.Client{Timeout: timeout}
+	response, err := client.Post(brainURL+"/embed", "application/json",
+		strings.NewReader(`{"input":["probe"]}`))
+	if err != nil {
+		return fmt.Errorf("/embed unreachable: %w", err)
+	}
+	defer response.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 1<<20))
+
+	switch response.StatusCode {
+	case http.StatusOK:
+		return nil
+	case http.StatusNotFound:
+		return fmt.Errorf("has no /embed route — redeploy the brain node with this build")
+	default:
+		return fmt.Errorf("/embed returned %d — check the brain's embedding model", response.StatusCode)
+	}
+}
+
+// checkWritable verifies the process can actually create files in dir.
+// A read-only mount is the classic way an SSD-backed archive silently
+// fails on a Pi.
+func checkWritable(dir string) error {
+	file, err := os.CreateTemp(dir, ".openlight-doctor-*")
+	if err != nil {
+		return err
+	}
+	name := file.Name()
+	_ = file.Close()
+	return os.Remove(name)
+}
+
+// vectorDialAddr extracts host:port from the configured vector URL,
+// defaulting to Qdrant's gRPC port.
+func vectorDialAddr(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if !strings.Contains(raw, "://") {
+		raw = "http://" + raw
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Hostname() == "" {
+		return raw
+	}
+	port := parsed.Port()
+	if port == "" {
+		port = "6334"
+	}
+	return net.JoinHostPort(parsed.Hostname(), port)
 }
 
 func checkOptional(r *doctorReport, cfg config.Config) {

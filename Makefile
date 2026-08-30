@@ -12,6 +12,7 @@
 #   make/test.mk     test / smoke-cli / regression / host smoke
 #   make/docker.mk   docker build/push and openlight-compose lifecycle
 #   make/llm.mk      Ollama lifecycle + OCR / vision deps
+#   make/memory.mk   Qdrant lifecycle + embedding model for long-term memory
 #   make/deploy.mk   Raspberry Pi + Mac mini deploys, remote helpers
 #   make/dev.mk      run-local, run-agent, host install-* deps
 #   make/release.mk  release artifact bundle
@@ -28,6 +29,7 @@ include make/build.mk
 include make/test.mk
 include make/docker.mk
 include make/llm.mk
+include make/memory.mk
 include make/deploy.mk
 include make/dev.mk
 include make/release.mk

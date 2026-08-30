@@ -31,6 +31,7 @@ type Server struct {
 	deepProvider llm.Provider // deep profile (think=true); falls back to provider when nil
 	registry     *skills.Registry
 	transcriber  voice.Transcriber
+	embedder     Embedder
 	listenAddr   string
 	nodeID       string
 	model        string
@@ -68,6 +69,8 @@ func NewServer(provider llm.Provider, listenAddr, nodeID, model string, logger *
 	mux.HandleFunc("POST /chat", s.handleChat)
 	mux.HandleFunc("POST /skills/invoke", s.handleSkillsInvoke)
 	mux.HandleFunc("POST /voice/transcribe", s.handleVoiceTranscribe)
+	mux.HandleFunc("POST /embed", s.handleEmbed)
+	mux.HandleFunc("POST /embed/pull", s.handleEmbedPull)
 	mux.HandleFunc("POST /tasks", s.handleTasks)
 
 	s.httpServer = &http.Server{
@@ -276,10 +279,17 @@ func (s *Server) handleLLMGenerate(w http.ResponseWriter, r *http.Request) {
 
 	case "chat":
 		var messages []llm.ChatMessage
+		var opts llm.ChatOptions
 		if raw, ok := body["messages"]; ok {
 			_ = json.Unmarshal(raw, &messages)
 		}
-		result, err := provider.Chat(ctx, messages)
+		if raw, ok := body["num_predict"]; ok {
+			_ = json.Unmarshal(raw, &opts.NumPredict)
+		}
+		if raw, ok := body["num_ctx"]; ok {
+			_ = json.Unmarshal(raw, &opts.NumCtx)
+		}
+		result, err := llm.ChatWith(ctx, provider, messages, opts)
 		callErr = err
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -606,6 +616,87 @@ func (s *Server) handleVoiceTranscribe(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"transcript": transcript})
+}
+
+// Embedder is the slice of the memory subsystem's embedder that the
+// brain exposes to edge nodes. Declared here rather than imported so
+// internal/brain keeps no dependency on internal/memory.
+type Embedder interface {
+	Embed(ctx context.Context, inputs []string) ([][]float32, error)
+	EnsureModel(ctx context.Context) (bool, error)
+	Model() string
+}
+
+// SetEmbedder wires the embedding model so edge nodes can compute
+// vectors here.
+//
+// This exists because Ollama normally binds to loopback: an edge node
+// cannot reach it directly, and opening it to the tailnet just to serve
+// embeddings would widen the brain's exposure for no reason. Routing
+// through this API is the same path LLM inference and whisper already
+// take.
+func (s *Server) SetEmbedder(e Embedder) {
+	s.embedder = e
+}
+
+// handleEmbed returns one vector per input string.
+func (s *Server) handleEmbed(w http.ResponseWriter, r *http.Request) {
+	if s.embedder == nil {
+		http.Error(w, "embeddings not configured on this brain node", http.StatusServiceUnavailable)
+		return
+	}
+	var req struct {
+		Input []string `json:"input"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if len(req.Input) == 0 {
+		http.Error(w, "bad request: input is required", http.StatusBadRequest)
+		return
+	}
+
+	vectors, err := s.embedder.Embed(r.Context(), req.Input)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+
+	dimensions := 0
+	if len(vectors) > 0 {
+		dimensions = len(vectors[0])
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"embeddings": vectors,
+		"model":      s.embedder.Model(),
+		"dimensions": dimensions,
+	})
+}
+
+// handleEmbedPull makes the embedding model available locally, so an
+// edge node's memory bootstrap can provision the brain without shell
+// access to it. Pulling a model is a long download; the caller's context
+// bounds it.
+func (s *Server) handleEmbedPull(w http.ResponseWriter, r *http.Request) {
+	if s.embedder == nil {
+		http.Error(w, "embeddings not configured on this brain node", http.StatusServiceUnavailable)
+		return
+	}
+	pulled, err := s.embedder.EnsureModel(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	if pulled && s.logger != nil {
+		s.logger.Info("brain pulled embedding model", "model", s.embedder.Model())
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"pulled": pulled,
+		"model":  s.embedder.Model(),
+	})
 }
 
 func min(a, b int) int {

@@ -22,11 +22,29 @@ type HistoryStore interface {
 	ListMessagesByChat(ctx context.Context, chatID int64, limit int) ([]models.Message, error)
 }
 
+// MemoryProvider supplies long-term memory context for a question. It
+// returns a complete, already-budgeted system message (preamble plus a
+// delimited <memory> block), or an empty string when the question does
+// not warrant a lookup or memory has nothing to offer.
+//
+// The interface is stated in terms of a finished string rather than
+// structured results on purpose: deciding whether to retrieve, how many
+// chunks fit, and how the untrusted-data warning is worded all belong to
+// the memory subsystem, and the chat skill should not be able to get
+// any of it subtly wrong.
+type MemoryProvider interface {
+	MemoryPrompt(ctx context.Context, chatID int64, query string) string
+}
+
 type Options struct {
 	HistoryLimit     int
 	HistoryChars     int
 	MaxResponseChars int
 	SystemPrompt     string
+
+	// Memory is optional. Nil disables the retrieval stage entirely and
+	// the prompt is byte-identical to what it was before memory existed.
+	Memory MemoryProvider
 }
 
 type Skill struct {
@@ -36,6 +54,7 @@ type Skill struct {
 	historyChars     int
 	maxResponseChars int
 	systemPrompt     string
+	memory           MemoryProvider
 }
 
 func NewSkill(provider llm.Provider, store HistoryStore, historyLimit int) skills.Skill {
@@ -63,6 +82,7 @@ func NewSkillWithOptions(provider llm.Provider, store HistoryStore, options Opti
 		historyChars:     options.HistoryChars,
 		maxResponseChars: options.MaxResponseChars,
 		systemPrompt:     strings.TrimSpace(options.SystemPrompt),
+		memory:           options.Memory,
 	}
 }
 
@@ -119,6 +139,18 @@ func (s *Skill) buildMessages(ctx context.Context, chatID int64, rawText, normal
 		Role:    "system",
 		Content: s.systemPrompt,
 	}}
+
+	// Retrieved memory goes in its own system message, after the agent's
+	// own instructions and before any conversation. Keeping it separate
+	// is what lets the preamble frame it as untrusted data: merged into
+	// the main system prompt, a document saying "ignore previous
+	// instructions" would sit at the same level of authority as the
+	// instructions themselves.
+	if s.memory != nil {
+		if block := strings.TrimSpace(s.memory.MemoryPrompt(ctx, chatID, normalizedText)); block != "" {
+			messages = append(messages, llm.ChatMessage{Role: "system", Content: block})
+		}
+	}
 
 	if shouldResetHistory(normalizedText) {
 		messages = append(messages, llm.ChatMessage{

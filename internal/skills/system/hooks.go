@@ -42,6 +42,27 @@ type Hooks struct {
 	// When nil the brain section is omitted — on brain-role nodes this
 	// should always be nil (the node IS the brain).
 	BrainStatus func(ctx context.Context) BrainStatusInfo
+
+	// Memory returns a snapshot of the long-term memory subsystem. Nil
+	// (or a snapshot with Enabled=false) omits the section. The hook
+	// must be cheap: /status is called often and the implementation
+	// serves cached counters and health probes rather than hitting
+	// Qdrant or the brain node on every render.
+	Memory func(ctx context.Context) MemoryStatusInfo
+}
+
+// MemoryStatusInfo is the /status view of the memory subsystem.
+type MemoryStatusInfo struct {
+	Enabled          bool
+	VectorOnline     bool
+	EmbeddingsOnline bool
+	Sources          int64
+	Chunks           int64
+	Facts            int64
+	QueueDepth       int64
+	FailedJobs       int64
+	RawBytes         int64
+	Error            string
 }
 
 // AgentInfo is a minimal snapshot of the openLight process itself.

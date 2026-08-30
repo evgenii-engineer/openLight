@@ -12,13 +12,14 @@ import (
 	"openlight/internal/brain"
 	"openlight/internal/config"
 	basellm "openlight/internal/llm"
+	memoryengine "openlight/internal/memory"
 	"openlight/internal/router"
 	routerllm "openlight/internal/router/llm"
 	"openlight/internal/skills"
 	accountskills "openlight/internal/skills/accounts"
 	browserskills "openlight/internal/skills/browser"
-	displayskills "openlight/internal/skills/display"
 	chatskills "openlight/internal/skills/chat"
+	displayskills "openlight/internal/skills/display"
 	externalskills "openlight/internal/skills/external"
 	fileskills "openlight/internal/skills/files"
 	mcpskills "openlight/internal/skills/mcp"
@@ -46,6 +47,14 @@ type Runtime struct {
 	VisualWatch *visualwatch.Service
 	Closer      io.Closer
 	BrainServer *brain.Server
+
+	// Memory is the long-term memory subsystem. Nil when
+	// memory.rag.enabled is false; every consumer tolerates nil.
+	Memory *memoryengine.Service
+
+	// MemoryTranscriber lets the agent entrypoint bind the voice
+	// transcriber into memory's extractor chain once it has built one.
+	MemoryTranscriber *TranscriberHolder
 
 	// TelegramHealth carries the Telegram connectivity probe used by the
 	// /status skill. The entrypoint binds a live probe once the bot has
@@ -226,6 +235,10 @@ func BuildRuntimeWithOptions(ctx context.Context, cfg config.Config, logger *slo
 				brainSrv.SetDeepProvider(deepProvider)
 				brainSrv.SetDeepModel(deepProfile.Model)
 			}
+			// Serve embeddings to edge nodes. Registered regardless of
+			// this node's own memory settings — the brain lends its GPU
+			// to whichever node runs memory.
+			brainSrv.SetEmbedder(BuildBrainEmbedder(cfg, logger))
 			go func() {
 				if startErr := brainSrv.Start(ctx); startErr != nil {
 					logger.Error("brain API server exited", "error", startErr)
@@ -278,7 +291,39 @@ func BuildRuntimeWithOptions(ctx context.Context, cfg config.Config, logger *slo
 		runVisionWarmup(ctx, visionManager, cfg.Vision.Model, cfg.LLM.Warmup, logger)
 	}
 
-	registry, watchService, visualWatchService, allowedServiceNames, err := BuildRegistryWithWatch(cfg, repository, memoryStore, logger, llmProvider, systemProvider, serviceManager, mcpManager, visionManager, ProviderTier{
+	// Long-term memory. Built before the registry so the chat skill can
+	// take a retriever, and after vision/OCR so image extraction reuses
+	// the managers the agent already configured.
+	//
+	// Distillation runs on the SMART provider — on an edge node that is
+	// the remote provider pointing at the brain, which is exactly where
+	// this work belongs.
+	memoryTranscriber := NewTranscriberHolder()
+	var memoryChat memoryengine.Chatter
+	if smartProvider != nil {
+		memoryChat = memoryChatter{provider: smartProvider}
+	}
+	// A second OCR manager: BuildRegistryWithWatch builds its own, and
+	// buildOCRManager is pure struct assembly with no resources behind
+	// it, so sharing one would cost a twelfth parameter on an already
+	// overlong signature for no benefit.
+	ocrManagerForMemory, err := buildOCRManager(cfg)
+	if err != nil {
+		_ = closers.Close()
+		return Runtime{}, err
+	}
+	memoryService, err := buildMemory(ctx, cfg, logger, visionManager, ocrManagerForMemory, memoryTranscriber.Transcribe, memoryChat)
+	if err != nil {
+		// Memory is an enhancement; a broken memory config must not stop
+		// the agent from answering messages.
+		logger.Error("memory subsystem disabled after initialisation error", "error", err)
+		memoryService = nil
+	}
+	if memoryService != nil {
+		closers = append(closers, memoryService)
+	}
+
+	registry, watchService, visualWatchService, allowedServiceNames, err := BuildRegistryWithWatch(cfg, repository, memoryStore, memoryService, logger, llmProvider, systemProvider, serviceManager, mcpManager, visionManager, ProviderTier{
 		FastProvider:          fastProfile.Provider,
 		FastModel:             fastProfile.Model,
 		FastEndpoint:          fastProfile.Endpoint,
@@ -352,14 +397,16 @@ func BuildRuntimeWithOptions(ctx context.Context, cfg config.Config, logger *slo
 	}
 
 	return Runtime{
-		Registry:       registry,
-		Classifier:     classifier,
-		Repository:     repository,
-		Watch:          watchService,
-		VisualWatch:    visualWatchService,
-		Closer:         closers,
-		BrainServer:    brainSrv,
-		TelegramHealth: telegramHealth,
+		Registry:          registry,
+		Classifier:        classifier,
+		Repository:        repository,
+		Watch:             watchService,
+		VisualWatch:       visualWatchService,
+		Closer:            closers,
+		BrainServer:       brainSrv,
+		Memory:            memoryService,
+		MemoryTranscriber: memoryTranscriber,
+		TelegramHealth:    telegramHealth,
 	}, nil
 }
 
@@ -380,7 +427,7 @@ func BuildRegistry(
 		return nil, nil, err
 	}
 
-	registry, _, _, allowedServiceNames, err := BuildRegistryWithWatch(cfg, repository, repository, logger, llmProvider, systemProvider, serviceManager, nil, visionManager, ProviderTier{
+	registry, _, _, allowedServiceNames, err := BuildRegistryWithWatch(cfg, repository, repository, nil, logger, llmProvider, systemProvider, serviceManager, nil, visionManager, ProviderTier{
 		SmartProvider: cfg.LLM.Provider,
 		SmartModel:    cfg.LLM.Model,
 		SmartEndpoint: cfg.LLM.Endpoint,
@@ -396,6 +443,7 @@ func BuildRegistryWithWatch(
 	cfg config.Config,
 	repository storage.Repository,
 	memoryStore memoryskills.Store,
+	memoryService *memoryengine.Service,
 	logger *slog.Logger,
 	llmProvider basellm.Provider,
 	systemProvider systemskills.Provider,
@@ -475,11 +523,12 @@ func BuildRegistryWithWatch(
 		brainURL = cfg.Node.BrainURL
 	}
 	systemHooks := buildSystemHooks(tier.SmartProviderInstance, tier.LatencyStore, tier.TelegramHealth, os.Getpid(), brainURL)
+	systemHooks.Memory = memoryStatusHook(memoryService)
 	modules := []skills.Module{
 		systemskills.NewModule(systemProvider, buildSystemModelsInfo(cfg, tier, tier.SmartProviderInstance, systemHooks, registry, brainURL), systemHooks),
 		fileskills.NewModule(fileManager),
 		serviceskills.NewModule(serviceManager, cfg.Services.LogLines, cfg.Services.MaxLogChars),
-		memoryskills.NewModule(memoryStore, cfg.Memory.ListLimit, cfg.Memory.Enabled),
+		memoryskills.NewModuleWithLongTerm(memoryStore, NewLongTermMemory(memoryService), cfg.Memory.ListLimit, cfg.Memory.Enabled),
 		notes.NewModule(repository, cfg.Notes.ListLimit),
 		watchskills.NewModule(watchService),
 	}
@@ -539,11 +588,18 @@ func BuildRegistryWithWatch(
 		modules = append(modules, workbenchskills.NewModule(workbenchManager))
 	}
 	if llmProvider != nil {
-		modules = append(modules, chatskills.NewModuleWithDeep(llmProvider, tier.DeepProviderInstance, repository, chatskills.Options{
+		chatOptions := chatskills.Options{
 			HistoryLimit:     cfg.Chat.HistoryLimit,
 			HistoryChars:     cfg.Chat.HistoryChars,
 			MaxResponseChars: cfg.Chat.MaxResponseChars,
-		}))
+		}
+		if memoryService != nil {
+			chatOptions.Memory = memoryPromptAdapter{
+				service: memoryService,
+				timeout: cfg.Agent.RequestTimeout,
+			}
+		}
+		modules = append(modules, chatskills.NewModuleWithDeep(llmProvider, tier.DeepProviderInstance, repository, chatOptions))
 	}
 	// External (user-defined) skills register last so a builtin module
 	// can never be shadowed by a same-named manifest on disk — that

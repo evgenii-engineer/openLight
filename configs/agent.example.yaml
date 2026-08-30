@@ -190,6 +190,129 @@ memory:
   db_path: ""
   list_limit: 20
 
+  # ---------------------------------------------------------------------
+  # Automatic long-term memory + local RAG.
+  #
+  # Off by default. `memory.enabled` above is a different switch: it
+  # gates the manual /remember, /memories, /forget skills and has always
+  # defaulted to true. Everything below is the automatic subsystem —
+  # RAW archive on disk, SQLite metadata and structured facts, and a
+  # local Qdrant index — and it only turns on when you say so here.
+  #
+  # With `rag.enabled: false` the agent behaves exactly as it did before
+  # this feature existed: no directories, no second database, no
+  # background workers, no retrieval stage.
+  rag:
+    enabled: false
+
+    storage:
+      # RAW archive root. Put this on durable storage (an SSD), not on
+      # the SD card. Originals are kept forever; the vector index is
+      # derived data and is always rebuildable from here.
+      root: /mnt/openlight/memory
+
+    sqlite:
+      # Defaults to <storage.root>/memory.db.
+      path: ""
+
+    vector:
+      # "qdrant" or "none". With "none" the agent still archives and
+      # queues everything, it just cannot search yet.
+      provider: qdrant
+      # Qdrant's gRPC port is 6334 (6333 is the REST/dashboard port).
+      url: "http://127.0.0.1:6334"
+      collection: "openlight_memory"
+      api_key: ""
+      # Keep vectors on the SSD rather than in the Pi's RAM.
+      on_disk: true
+      timeout: 30s
+
+    embeddings:
+      # Embeddings run on the brain node, never on the Pi, and always on
+      # a dedicated embedding model — never the fast or smart
+      # generative model.
+      #
+      # provider "brain" routes them through openLight's own brain API
+      # (the same path LLM inference and whisper take) and is the default
+      # on edge nodes. That is usually the only thing that works: Ollama
+      # binds to 127.0.0.1 on the brain node, so an edge node cannot
+      # reach :11434 at all, and opening it to the network purely to
+      # serve embeddings would widen the brain's exposure for nothing.
+      #
+      # provider "ollama" talks to an Ollama endpoint directly, and is
+      # the default on single-node and brain deployments where Ollama is
+      # local. `url` applies only to this provider and defaults to the
+      # node's own llm.endpoint.
+      provider: ollama
+      url: "http://127.0.0.1:11434"
+      # bge-m3 is multilingual (strong on Russian and English alike) and
+      # 1024-dimensional.
+      model: "bge-m3"
+      # The agent pulls the model onto the brain node itself on first
+      # start, and creates the Qdrant collection once it knows the
+      # vector width — no `ollama pull` step to remember. It retries in
+      # the background, so a brain node that is asleep at boot just
+      # delays the first index. Set false to provision by hand.
+      auto_pull: true
+      keep_alive: "30m"
+      batch: 16
+      timeout: 2m
+
+    ingestion:
+      # One worker is right for a Pi: the expensive step is a network
+      # call to the brain, and more workers mostly contend on SQLite.
+      workers: 1
+      poll_interval: 5s
+      retry_base: 5s
+      retry_max_interval: 10m
+      # Only non-transient failures count towards this. A backend that
+      # is merely offline retries forever rather than losing data.
+      max_attempts: 12
+
+    chunking:
+      target_tokens: 350
+      overlap_tokens: 50
+
+    retrieval:
+      # "heuristic" (default) only looks things up for recall-shaped
+      # questions, so "включи свет" never pays for a round trip to the
+      # brain. "always" retrieves for every free-form message;
+      # "off" keeps ingesting but stops injecting context.
+      mode: heuristic
+      candidates: 8
+      max_results: 5
+      # Hard cap on the whole <memory> block. Keep it small: local
+      # models here run with modest context windows.
+      max_context_tokens: 500
+      max_facts: 5
+
+    conversations:
+      # Record turns and distil them into one searchable summary per
+      # episode, instead of indexing every "ага" separately.
+      auto_memory: true
+      summarize: true
+      idle_timeout: 10m
+      max_turns: 40
+      min_turns: 2
+      check_interval: 1m
+
+    facts:
+      # Promote durable statements (hardware, project state,
+      # preferences, decisions) into structured memory with validity
+      # intervals, so a changed value supersedes the old one instead of
+      # erasing it.
+      enabled: true
+
+    extraction:
+      # poppler-utils. Empty disables it and falls back to the built-in
+      # PDF parser, which handles ordinary text PDFs but not scans.
+      pdftotext_path: "pdftotext"
+      # Reuse the agent's existing vision / OCR / whisper pipelines.
+      vision: true
+      ocr: true
+      voice: true
+      max_text_bytes: 2097152
+
 # Telegram voice-note transcription: when a voice note arrives in chat, ffmpeg
 # converts it and whisper transcribes it locally.
 voice:

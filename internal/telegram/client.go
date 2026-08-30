@@ -30,6 +30,7 @@ type IncomingMessage struct {
 	Source     string
 	Audio      *AudioAttachment
 	Image      *ImageAttachment
+	Document   *DocumentAttachment
 	CallbackID string
 	IsCallback bool
 }
@@ -49,6 +50,19 @@ type ImageAttachment struct {
 	FileID   string
 	FileName string
 	MimeType string
+	Caption  string
+}
+
+// DocumentAttachment captures a non-image file the user sent (PDF,
+// Markdown, JSON, logs). Images are surfaced as ImageAttachment instead
+// so the existing vision/OCR inbox keeps handling them; everything else
+// used to be dropped on the floor and now reaches the memory ingestion
+// path.
+type DocumentAttachment struct {
+	FileID   string
+	FileName string
+	MimeType string
+	FileSize int64
 	Caption  string
 }
 
@@ -451,6 +465,7 @@ type tgFile struct {
 	FileID   string `json:"file_id"`
 	FileName string `json:"file_name"`
 	MimeType string `json:"mime_type"`
+	FileSize int64  `json:"file_size"`
 }
 
 type tgRemoteFile struct {
@@ -702,6 +717,23 @@ func (u update) incomingMessage() (IncomingMessage, bool) {
 		}
 	}
 
+	if u.Message != nil {
+		if document := u.Message.documentAttachment(); document != nil {
+			text := strings.TrimSpace(u.Message.Caption)
+			if text == "" {
+				text = strings.TrimSpace(u.Message.Text)
+			}
+			return IncomingMessage{
+				MessageID: u.Message.MessageID,
+				ChatID:    u.Message.Chat.ID,
+				UserID:    u.Message.From.ID,
+				Text:      text,
+				Source:    "telegram_document",
+				Document:  document,
+			}, true
+		}
+	}
+
 	if u.Message != nil && strings.TrimSpace(u.Message.Text) != "" {
 		return IncomingMessage{
 			MessageID: u.Message.MessageID,
@@ -776,6 +808,34 @@ func (m *tgMessage) imageAttachment() *ImageAttachment {
 		}
 	}
 	return nil
+}
+
+// documentAttachment returns non-image document uploads. Image
+// documents are deliberately excluded: imageAttachment already claims
+// them, and routing one file to both inboxes would analyse it twice.
+func (m *tgMessage) documentAttachment() *DocumentAttachment {
+	if m == nil || m.Document == nil {
+		return nil
+	}
+	fileID := strings.TrimSpace(m.Document.FileID)
+	if fileID == "" {
+		return nil
+	}
+	mime := strings.ToLower(strings.TrimSpace(m.Document.MimeType))
+	if strings.HasPrefix(mime, "image/") {
+		return nil
+	}
+	name := strings.TrimSpace(m.Document.FileName)
+	if name == "" {
+		name = "document"
+	}
+	return &DocumentAttachment{
+		FileID:   fileID,
+		FileName: name,
+		MimeType: mime,
+		FileSize: m.Document.FileSize,
+		Caption:  strings.TrimSpace(m.Caption),
+	}
 }
 
 func (m *tgMessage) audioAttachment() *AudioAttachment {

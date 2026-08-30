@@ -8,6 +8,8 @@ services:
         condition: service_healthy
       ollama-pull:
         condition: service_completed_successfully
+      qdrant:
+        condition: service_started
     environment:
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?set TELEGRAM_BOT_TOKEN}
       ALLOWED_USER_IDS: ${ALLOWED_USER_IDS:?set ALLOWED_USER_IDS}
@@ -15,8 +17,18 @@ services:
       LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
       LLM_ENDPOINT: ${LLM_ENDPOINT:-http://ollama:11434}
       LLM_MODEL: ${LLM_MODEL:-qwen2.5:0.5b}
+      # Long-term memory. Off unless MEMORY_RAG_ENABLED=true. When on,
+      # the agent creates its own directories, pulls the embedding model
+      # into the ollama service, and creates the Qdrant collection — no
+      # manual provisioning step.
+      MEMORY_RAG_ENABLED: ${MEMORY_RAG_ENABLED:-false}
+      MEMORY_RAG_STORAGE_ROOT: /var/lib/openlight/memory
+      MEMORY_RAG_VECTOR_URL: http://qdrant:6334
+      MEMORY_RAG_EMBEDDINGS_URL: ${MEMORY_RAG_EMBEDDINGS_URL:-http://ollama:11434}
+      MEMORY_RAG_EMBEDDINGS_MODEL: ${MEMORY_EMBED_MODEL:-bge-m3}
     volumes:
       - ./data:/var/lib/openlight/data
+      - ./data/memory:/var/lib/openlight/memory
       # Uncomment to override the embedded minimal container config.
       # - ./agent.yaml:/etc/openlight/agent.yaml:ro
     ports:
@@ -49,6 +61,38 @@ services:
       - -lc
     command:
       - ollama pull "$$OLLAMA_MODEL"
+
+  # Vector database for long-term memory. Always started so enabling
+  # memory is a single env var rather than a second compose file; it
+  # idles at a few MB when nothing is indexed.
+  qdrant:
+    image: qdrant/qdrant:v1.15.1
+    container_name: openlight-qdrant
+    restart: unless-stopped
+    volumes:
+      # A bind mount, not a named volume: the index must survive
+      # `docker system prune` and live wherever the operator's durable
+      # storage is.
+      - ${QDRANT_STORAGE:-./data/qdrant}:/qdrant/storage
+    environment:
+      - QDRANT__SERVICE__GRPC_PORT=6334
+      - QDRANT__SERVICE__HTTP_PORT=6333
+      - QDRANT__STORAGE__WAL__WAL_CAPACITY_MB=8
+      # Bare name, no value: Compose passes QDRANT_API_KEY through from
+      # the host only when it is actually set. Writing
+      # `QDRANT__SERVICE__API_KEY: "${QDRANT_API_KEY:-}"` instead would
+      # define the variable as an empty string, which Qdrant reads as
+      # "auth enabled with an empty key" and answers 401 to everything.
+      - QDRANT__SERVICE__API_KEY
+    ports:
+      # Loopback only: Qdrant ships with no authentication by default.
+      - "127.0.0.1:6333:6333"
+      - "127.0.0.1:6334:6334"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   ollama_data:

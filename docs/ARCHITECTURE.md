@@ -439,11 +439,43 @@ cutoff.
 
 Default container database path: `/var/lib/openlight/data/agent.db`.
 
+When `memory.rag.enabled` is true, the long-term memory subsystem opens a
+**second, independent** SQLite database on the SSD (default
+`<memory.rag.storage.root>/memory.db`) with its own embedded migrations in
+`internal/memory/migrations/`. It holds `memory_sources`, `memory_chunks`,
+`memory_jobs`, `memory_facts`, `memory_episodes`, and
+`memory_episode_turns`. Keeping it separate means the whole memory
+subsystem is one movable directory, and a memory write storm never
+contends with the agent's message log on a Pi.
+
 Relevant files:
 
 - [internal/storage/storage.go](../internal/storage/storage.go)
 - [internal/storage/sqlite/sqlite.go](../internal/storage/sqlite/sqlite.go)
 - [migrations/](../migrations)
+- [internal/memory/store.go](../internal/memory/store.go)
+- [internal/memory/migrations/](../internal/memory/migrations)
+
+## Long-term memory
+
+Optional, off by default (`memory.rag.enabled`). Three levels: a
+content-addressed RAW archive on the SSD, a Qdrant vector index behind the
+`vectorstore.Store` interface, and distilled memory (episode summaries plus
+structured facts with validity intervals) in SQLite.
+
+The split follows the node topology: the Pi owns durable state and
+orchestration, the brain node owns compute (embeddings, summarisation,
+vision). Embeddings reach the brain through its HTTP API (`POST /embed`,
+`POST /embed/pull`), not by dialling Ollama directly — Ollama binds to
+loopback there, and the API is the same route LLM inference and whisper
+already use. Ingestion is asynchronous through a persistent SQLite queue, so an
+offline brain delays indexing without losing data and without touching the
+reply path. Retrieval is gated by a deterministic classifier so trivial
+commands never pay for a round trip, and the retrieved block is injected as
+a separate, explicitly-untrusted system message.
+
+See [docs/MEMORY.md](./MEMORY.md) for the full design, and
+[internal/memory/](../internal/memory) for the code.
 
 ## LLM integration
 
@@ -559,12 +591,14 @@ If you want to read the code in roughly the right order:
 8. [internal/watch/service.go](../internal/watch/service.go)
 9. [internal/visualwatch/service.go](../internal/visualwatch/service.go)
 10. [internal/storage/sqlite/sqlite.go](../internal/storage/sqlite/sqlite.go)
+11. [internal/memory/service.go](../internal/memory/service.go)
 
 Related docs:
 
 - [README.md](../README.md)
 - [CHANGELOG.md](../CHANGELOG.md)
 - [docs/SKILLS.md](./SKILLS.md)
+- [docs/MEMORY.md](./MEMORY.md)
 - [docs/WATCHES.md](./WATCHES.md)
 - [docs/NODES.md](./NODES.md)
 - [docs/skills/EXTERNAL.md](./skills/EXTERNAL.md)

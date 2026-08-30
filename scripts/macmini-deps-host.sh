@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Install host-side dependencies (ffmpeg, whisper, node, tesseract,
-# ollama, browser-agent npm deps + Playwright, optional vision model)
-# on the remote Mac mini.
+# ollama, browser-agent npm deps + Playwright, optional vision and
+# embedding models) on the remote Mac mini.
 #
 # Idempotent: every step skips its work if already done. Run after
 # `push-browser-agent.sh` so the npm prefix exists.
@@ -16,6 +16,7 @@ set -euo pipefail
 : "${PLAYWRIGHT_BROWSER:?PLAYWRIGHT_BROWSER must be set}"
 : "${TESSERACT_LANG_PACK:?TESSERACT_LANG_PACK must be set}"
 : "${OLLAMA_VISION_MODEL:?OLLAMA_VISION_MODEL must be set}"
+: "${MEMORY_EMBED_MODEL:?MEMORY_EMBED_MODEL must be set}"
 
 ssh "${SSH_TARGET}" bash -se <<EOF
 set -e
@@ -68,5 +69,20 @@ elif "\${OLLAMA_BIN}" list 2>/dev/null | awk 'NR>1 {print \$1}' | grep -qx "${OL
 else
   echo "pulling vision model ${OLLAMA_VISION_MODEL}"
   "\${OLLAMA_BIN}" pull ${OLLAMA_VISION_MODEL} || true
+fi
+
+# Embedding model for long-term memory. The agent pulls this itself on
+# first start, so this is purely a head start: doing it at deploy time
+# means the first document indexes immediately instead of waiting on a
+# gigabyte download. Failure is ignored for the same reason.
+if [ -z "\${OLLAMA_BIN}" ]; then
+  echo "ollama binary still not on PATH; skip embedding model pull"
+elif ! curl -fsS http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
+  echo "ollama daemon not reachable; openLight will pull ${MEMORY_EMBED_MODEL} itself once memory is enabled"
+elif "\${OLLAMA_BIN}" list 2>/dev/null | awk 'NR>1 {print \$1}' | grep -qE "^${MEMORY_EMBED_MODEL}(:latest)?\$"; then
+  echo "embedding model ${MEMORY_EMBED_MODEL} already pulled"
+else
+  echo "pulling embedding model ${MEMORY_EMBED_MODEL}"
+  "\${OLLAMA_BIN}" pull ${MEMORY_EMBED_MODEL} || true
 fi
 EOF

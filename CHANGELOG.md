@@ -2,6 +2,67 @@
 
 This file tracks released tags and summarizes what each release added or changed.
 
+## Unreleased
+
+### Added
+
+- Automatic long-term memory and a fully local RAG pipeline
+  (`internal/memory/`, `docs/MEMORY.md`). Inbound documents, voice notes,
+  images, and conversations are archived verbatim to an SSD-backed RAW store,
+  indexed asynchronously through a persistent SQLite-backed queue, and used to
+  answer later questions. Embeddings run on the brain node (Ollama, `bge-m3`
+  by default); the vector index is a local Qdrant instance behind a
+  `vectorstore.Store` interface. No cloud dependency.
+- Conversation episodes with background distillation: turns accumulate, and one
+  smart-model call per idle episode produces a searchable summary plus durable
+  structured facts. Individual "ок"/"ага" turns are never indexed on their own,
+  and nothing runs on the reply path.
+- Structured facts with validity intervals. Updating a fact supersedes it
+  (`valid_to` + `superseded_by`) rather than overwriting, so history stays
+  answerable and a bad extraction stays auditable.
+- `openlight memory` subcommand: `status`, `stats`, `pending`, `retry`,
+  `reindex [--all|--source ID|--failed]`, `search`, `facts`. A Memory block in
+  `/status`, and `memory:*` probes in `openlight doctor`.
+- Telegram now surfaces non-image document uploads (PDF, Markdown, JSON, logs),
+  which were previously dropped without a reply. They reach the memory
+  ingestion path; with memory disabled they are ignored exactly as before.
+- Embeddings route through the brain API (`POST /embed`, `POST /embed/pull` on
+  the brain server; `RemoteEmbedder` on the edge), matching how LLM inference
+  and whisper already work. Ollama binds to loopback on a brain node, so an
+  edge node cannot reach `:11434`; `memory.rag.embeddings.provider` now selects
+  `brain` (default on edge) or `ollama` (default elsewhere, endpoint defaulting
+  to the node's own `llm.endpoint`).
+- `/remember` (aliases `remember`, `запомни`) now also writes into long-term
+  memory: free text is archived, indexed, and queued for fact extraction, while
+  the explicit `subject.predicate = value` form writes a structured fact with no
+  model involved. Slash commands and aliases resolve before the LLM classifier,
+  so this is the one input path a misrouting fast model cannot break. The
+  existing note behaviour is unchanged.
+- Chat output limits are configurable per call (`llm.ChatOptions`, forwarded
+  through the brain API). The hardcoded 64-token cap is sized for Telegram
+  replies and silently truncated memory distillation's JSON mid-object; the
+  distiller now asks for the room it needs.
+- Self-provisioning: on first start the agent creates its directories and
+  schema, asks the brain to pull the embedding model, and creates the Qdrant
+  collection — retrying with backoff if the brain node is asleep. Disable with
+  `memory.rag.embeddings.auto_pull: false`.
+- `deployments/docker/qdrant-compose.yaml`, a Qdrant service in the bundled
+  `openlight-compose.yaml` (enable memory there with `MEMORY_RAG_ENABLED=true`),
+  `scripts/install-memory-deps.sh`, and `make install-memory-deps` /
+  `make deploy-rpi-memory` / `make memory-*` for the parts a process cannot
+  provision for itself: the root directory on the SSD, `poppler-utils`, and the
+  Qdrant container. `deploy-rpi-memory` runs as part of `deploy-rpi-all`, gated
+  on `memory.rag.enabled` in the Pi config so an unrelated deploy never installs
+  a package or starts a container, and it follows `memory.rag.storage.root`
+  rather than a Make variable so the archive cannot land on the wrong disk.
+
+### Notes
+
+- The whole subsystem is opt-in via `memory.rag.enabled` (default `false`).
+  With it off, behaviour is unchanged. `memory.enabled` is a separate, older
+  switch for the manual `/remember` skills and keeps defaulting to `true`.
+- New dependency: `github.com/qdrant/go-client` (pulls gRPC and protobuf).
+
 ## v0.3.0 - 2026-06-22
 
 Compared with `v0.2.0`, this release introduces an edge/brain network topology

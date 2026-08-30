@@ -183,15 +183,32 @@ func (p *OllamaProvider) Summarize(ctx context.Context, text string) (string, er
 	return strings.TrimSpace(response.Summary), nil
 }
 
+// defaultChatNumPredict is sized for Telegram replies, which the chat
+// skill trims to a few hundred characters anyway. Callers needing a
+// longer answer pass ChatOptions.NumPredict.
+const defaultChatNumPredict = 64
+
 func (p *OllamaProvider) Chat(ctx context.Context, messages []ChatMessage) (string, error) {
+	return p.ChatWithOptions(ctx, messages, ChatOptions{})
+}
+
+func (p *OllamaProvider) ChatWithOptions(ctx context.Context, messages []ChatMessage, opts ChatOptions) (string, error) {
+	numPredict := opts.NumPredict
+	if numPredict <= 0 {
+		numPredict = defaultChatNumPredict
+	}
 	options := map[string]any{
 		"temperature":    0.2,
 		"top_p":          0.9,
 		"repeat_penalty": 1.05,
-		"num_predict":    64,
+		"num_predict":    numPredict,
 	}
-	if p.numCtx > 0 {
-		options["num_ctx"] = p.numCtx
+	numCtx := opts.NumCtx
+	if numCtx <= 0 {
+		numCtx = p.numCtx
+	}
+	if numCtx > 0 {
+		options["num_ctx"] = numCtx
 	}
 	payload := map[string]any{
 		"model":      p.model,

@@ -11,17 +11,32 @@ import (
 	"openlight/internal/voice"
 )
 
+// ImageArchiver receives the downloaded image plus whatever text was
+// derived from it, just before the temporary file is deleted. Long-term
+// memory uses it to keep the original on durable storage and to reuse
+// the vision/OCR output instead of paying for it twice.
+type ImageArchiver func(ctx context.Context, message telegram.IncomingMessage, imagePath, description, ocrText string)
+
 // ImageInbox processes images uploaded to the bot. It downloads the file
 // using the transport's Downloader, then dispatches it to vision_analyze or
 // ocr_extract depending on the caption. The caller registers the relevant
 // skills in the registry; this type stays free of provider details.
 type ImageInbox struct {
-	registry           *skills.Registry
-	visionAvailable    bool
-	ocrAvailable       bool
-	defaultPrompt      string
-	persistArtifacts   bool
-	artifactsDir       string
+	registry         *skills.Registry
+	visionAvailable  bool
+	ocrAvailable     bool
+	defaultPrompt    string
+	persistArtifacts bool
+	artifactsDir     string
+	archiver         ImageArchiver
+}
+
+// SetArchiver installs the optional original-image archiver.
+func (i *ImageInbox) SetArchiver(archiver ImageArchiver) {
+	if i == nil {
+		return
+	}
+	i.archiver = archiver
 }
 
 // ImageInboxOptions describes how the inbound image router should behave.
@@ -99,13 +114,30 @@ func (i *ImageInbox) Process(ctx context.Context, message telegram.IncomingMessa
 		args["prompt"] = prompt
 	}
 
-	return skill.Execute(ctx, skills.Input{
+	result, err := skill.Execute(ctx, skills.Input{
 		RawText: message.Text,
 		Args:    args,
 		UserID:  message.UserID,
 		ChatID:  message.ChatID,
 		Source:  message.Source,
 	})
+
+	// Archive before the deferred cleanup removes the download. This
+	// runs even when the skill failed: the picture itself is still worth
+	// keeping, and a later reindex can derive the text.
+	if i.archiver != nil {
+		description, ocrText := "", ""
+		if err == nil {
+			if skillName == "ocr_extract" {
+				ocrText = result.Text
+			} else {
+				description = result.Text
+			}
+		}
+		i.archiver(ctx, message, downloaded.Path, description, ocrText)
+	}
+
+	return result, err
 }
 
 // routeCaption picks a skill and prompt for the supplied caption. Captions

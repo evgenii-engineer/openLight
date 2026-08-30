@@ -56,6 +56,11 @@ func (p *RemoteLLMProvider) Chat(ctx context.Context, messages []ChatMessage) (s
 	return result, p.wrapErr(err)
 }
 
+func (p *RemoteLLMProvider) ChatWithOptions(ctx context.Context, messages []ChatMessage, opts ChatOptions) (string, error) {
+	result, err := p.inner.ChatWithOptions(ctx, messages, opts)
+	return result, p.wrapErr(err)
+}
+
 // wrapErr converts network-level errors into ErrBrainOffline so callers
 // see a clear degraded-mode message instead of a raw dial error. Other
 // errors (HTTP 4xx/5xx, JSON parse failures) are passed through unchanged.

@@ -5,6 +5,7 @@
 //	openlight agent    - run the Telegram bot (production)
 //	openlight cli      - run a local CLI session against the same runtime
 //	openlight doctor   - validate config, allowlists, dependencies
+//	openlight memory   - inspect and maintain long-term memory
 //	openlight version  - print build version
 //
 // All subcommands share the same config loader, runtime wiring, and skills.
@@ -33,6 +34,8 @@ func main() {
 		runOrExit(runDoctor(args))
 	case "skills":
 		runOrExit(runSkills(args))
+	case "memory":
+		runOrExit(runMemory(args))
 	case "version", "-v", "--version":
 		fmt.Println(version())
 	case "help", "-h", "--help":
@@ -63,6 +66,7 @@ Commands:
   cli       Run a one-shot or interactive CLI session
   doctor    Validate config, allowlists, and dependencies
   skills    Inspect and validate builtin + external skills
+  memory    Inspect and maintain long-term memory (status, search, reindex)
   version   Print version
   help      Show this message
 

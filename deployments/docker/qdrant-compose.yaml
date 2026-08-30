@@ -1,0 +1,73 @@
+# Qdrant for openLight's long-term memory.
+#
+# Runs on the Raspberry Pi, next to the agent. There is no cloud
+# component and no external vector API: the whole index lives on the
+# SSD, and the agent talks to it over loopback.
+#
+#   docker compose -f deployments/docker/qdrant-compose.yaml up -d
+#
+# Storage is a BIND MOUNT onto the SSD, not a named Docker volume. This
+# is deliberate: a named volume lives under /var/lib/docker (the SD
+# card on a stock Pi image) and is easy to lose to a `docker system
+# prune`. The bind mount survives container recreation, image upgrades,
+# and a full Docker reinstall — which is what makes "delete the
+# container, keep the index" true.
+#
+# Override the host path with QDRANT_STORAGE if your SSD is mounted
+# elsewhere:
+#   QDRANT_STORAGE=/srv/openlight/memory/qdrant docker compose -f ... up -d
+
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.15.1
+    container_name: openlight-qdrant
+    restart: unless-stopped
+
+    ports:
+      # 6333 REST + dashboard, 6334 gRPC (what the Go client uses).
+      # Bound to loopback only: memory is local, and Qdrant ships with
+      # no authentication enabled.
+      - "127.0.0.1:6333:6333"
+      - "127.0.0.1:6334:6334"
+
+    volumes:
+      - ${QDRANT_STORAGE:-/mnt/openlight/memory/qdrant}:/qdrant/storage
+
+    environment:
+      - QDRANT__SERVICE__GRPC_PORT=6334
+      - QDRANT__SERVICE__HTTP_PORT=6333
+      # Keep the write-ahead log small; a Pi does not need 32 MiB
+      # segments for a few thousand chunks.
+      - QDRANT__STORAGE__WAL__WAL_CAPACITY_MB=8
+      - QDRANT__LOG_LEVEL=INFO
+      # Optional authentication: export QDRANT_API_KEY and mirror it in
+      # memory.rag.vector.api_key.
+      # Bare name, no value: Compose passes QDRANT_API_KEY through from
+      # the host only when it is actually set. Writing
+      # `QDRANT__SERVICE__API_KEY: "${QDRANT_API_KEY:-}"` instead would
+      # define the variable as an empty string, which Qdrant reads as
+      # "auth enabled with an empty key" and answers 401 to everything.
+      - QDRANT__SERVICE__API_KEY
+
+    healthcheck:
+      # The image is distroless — no curl, no wget. Qdrant ships its own
+      # readiness probe binary for exactly this.
+      test: ["CMD", "/qdrant/qdrant", "--version"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+    # A Pi shares 8 GiB across everything. Vectors are configured
+    # on-disk by default (memory.rag.vector.on_disk), so Qdrant mostly
+    # needs room for the HNSW graph and the page cache.
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -79,13 +79,14 @@ try:
 For deterministic-only mode (no LLM at all), set `LLM_ENABLED=false` before
 running the installer.
 
-## Single binary, four subcommands
+## Single binary, five subcommands
 
 ```
 openlight agent     # run the Telegram bot (production)
 openlight cli       # run a one-shot or interactive CLI session
 openlight doctor    # validate config, allowlists, and dependencies
 openlight skills    # list, validate, reload builtin + external skills
+openlight memory    # inspect and maintain long-term memory
 ```
 
 `openlight doctor` is the fast feedback loop. It loads your config,
@@ -135,12 +136,48 @@ them.
 
 **Optional (off by default):** `chat`, `vision`, `ocr`,
 `visual_watch`, `network`, `accounts`, `workbench`, `voice`, `mcp`,
-`external_skills`.
+`external_skills`, `memory.rag` (automatic long-term memory).
 
 If you never enable any optional module, openLight stays a
 deterministic, no-LLM, no-extra-deps Telegram bot for safe service
 ops. That is the default posture and the recommended starting point.
 See [docs/SKILLS.md](./docs/SKILLS.md).
+
+## Long-term memory (optional, local)
+
+With `memory.rag.enabled: true`, openLight remembers automatically. Every
+document, voice note, image, and conversation is archived verbatim to an
+SSD-backed store, indexed in the background, and used to answer later
+questions — you never ask it to "save this".
+
+```
+RAW archive       originals on disk, never deleted, the source of truth
+      ↓
+searchable RAG    chunks + embeddings in a local Qdrant, fully rebuildable
+      ↓
+distilled memory  episode summaries and structured facts with validity intervals
+```
+
+Nothing leaves the local network: the vector database runs next to the
+agent, and embeddings run on your own brain node over the same API that
+already serves LLM inference and voice — Ollama never has to leave
+loopback. Ingestion is
+asynchronous through a persistent queue, so a sleeping brain node delays
+indexing without losing anything and without slowing a single reply.
+Retrieval is gated so `включи свет` never pays for a lookup.
+
+Setup rides along with the normal deploy — `deploy-rpi-full` provisions
+Qdrant on the Pi when `memory.rag.enabled` is true and skips entirely
+when it is not, and the agent provisions the rest of itself (embedding
+model, vector collection, directories, schema).
+
+```bash
+openlight memory status
+openlight memory search "какой диск подключен к raspberry"
+openlight memory reindex --all
+```
+
+See [docs/MEMORY.md](./docs/MEMORY.md).
 
 ## Nodes
 
@@ -412,12 +449,14 @@ internal/watch/       watch rules, incidents, alert actions, packs
 internal/visualwatch/ periodic screenshot diff + keyword scan
 internal/mcp/         stdio JSON-RPC client for Model Context Protocol servers
 internal/voice/       voice-note pipeline (ffmpeg + whisper-cli)
+internal/memory/      long-term memory: RAW archive, queue, chunking, retrieval
+internal/memory/vectorstore/ vector DB interface + Qdrant adapter
 internal/storage/     SQLite repository + embedded migrations
 internal/telegram/    bot transport + UI (callbacks, sessions, keyboards)
 configs/              example YAMLs
 deployments/          systemd, launchd, docker
 migrations/           embedded SQLite migrations
-docs/                 architecture, nodes, watches, skills
+docs/                 architecture, memory, nodes, watches, skills
 scripts/              install + remote-deploy helpers (Pi, Mac mini)
 tools/browser-agent/  Node.js Playwright helper invoked by the browser skill
 testdata/skills/      example external skill (echo)

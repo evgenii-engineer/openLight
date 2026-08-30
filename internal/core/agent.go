@@ -56,6 +56,7 @@ type Agent struct {
 	watchService    *watchengine.Service
 	voiceProcessor  *voice.Processor
 	imageInbox      *ImageInbox
+	memory          Memory
 	ui              UI
 	replyTranscript bool
 	logger          *slog.Logger
@@ -111,6 +112,9 @@ func NewAgent(
 func (a *Agent) SetVoiceProcessor(processor *voice.Processor, replyTranscript bool) {
 	a.voiceProcessor = processor
 	a.replyTranscript = replyTranscript
+	// The archiver is a no-op until SetMemory runs, so installation
+	// order between the two does not matter.
+	processor.SetArchiver(a.archiveVoiceNote)
 }
 
 // SetImageInbox installs the optional inbound image processor. When enabled,
@@ -118,6 +122,7 @@ func (a *Agent) SetVoiceProcessor(processor *voice.Processor, replyTranscript bo
 // caption.
 func (a *Agent) SetImageInbox(inbox *ImageInbox) {
 	a.imageInbox = inbox
+	inbox.SetArchiver(a.archiveImage)
 }
 
 // SetUI installs the optional Telegram button-driven UI layer.
@@ -156,6 +161,10 @@ func (a *Agent) HandleMessage(ctx context.Context, message telegram.IncomingMess
 		Role:           models.RoleUser,
 		Text:           sanitizedMessageText,
 	})
+	// Long-term memory sees exactly the redacted text the message log
+	// sees — never the raw input. Memory outlives the conversation, so
+	// it must never be the laxer of the two sinks.
+	a.recordTurn(message.ChatID, models.RoleUser, sanitizedMessageText)
 
 	if err := a.authorizer.Error(message.UserID, message.ChatID); err != nil {
 		a.logWarn("blocked unauthorized message", "error", err)
@@ -229,6 +238,10 @@ func (a *Agent) preprocessAttachments(ctx context.Context, message *telegram.Inc
 		if a.replyTranscript {
 			replyPrefix = "Transcript: " + result.Transcript
 		}
+	}
+
+	if message.Document != nil {
+		return "", true, a.handleInboundDocument(ctx, *message)
 	}
 
 	if message.Image != nil {
@@ -603,6 +616,7 @@ func (a *Agent) replyResult(ctx context.Context, chatID, userID int64, result sk
 		Role:           models.RoleAssistant,
 		Text:           textForLog,
 	})
+	a.recordTurn(chatID, models.RoleAssistant, textForLog)
 
 	return nil
 }

@@ -58,6 +58,40 @@ type ChatMessage struct {
 	Content string `json:"content"`
 }
 
+// ChatOptions tunes a single Chat call.
+type ChatOptions struct {
+	// NumPredict caps the generated tokens. Zero keeps the provider's
+	// default, which is sized for short Telegram replies.
+	NumPredict int
+
+	// NumCtx overrides the context window for this call. Zero keeps the
+	// profile's configured value. A caller asking for a long answer has
+	// to widen the window too, or the prompt gets squeezed out to make
+	// room for the output.
+	NumCtx int
+}
+
+// OptionChatter is implemented by providers that accept per-call chat
+// options.
+//
+// It exists because the default output cap is deliberately small — chat
+// replies are trimmed to a few hundred characters anyway — but callers
+// that need a long structured answer (memory distillation asking for a
+// JSON object) would otherwise get silently truncated output. Optional
+// interface so providers that cannot honour it keep working unchanged.
+type OptionChatter interface {
+	ChatWithOptions(ctx context.Context, messages []ChatMessage, opts ChatOptions) (string, error)
+}
+
+// ChatWith calls ChatWithOptions when the provider supports it and falls
+// back to plain Chat otherwise.
+func ChatWith(ctx context.Context, provider Provider, messages []ChatMessage, opts ChatOptions) (string, error) {
+	if optioned, ok := provider.(OptionChatter); ok {
+		return optioned.ChatWithOptions(ctx, messages, opts)
+	}
+	return provider.Chat(ctx, messages)
+}
+
 type Provider interface {
 	ClassifyRoute(ctx context.Context, text string, request RouteClassificationRequest) (RouteClassification, error)
 	ClassifySkill(ctx context.Context, text string, request SkillClassificationRequest) (Classification, error)
@@ -159,15 +193,28 @@ func (p *HTTPProvider) Summarize(ctx context.Context, text string) (string, erro
 }
 
 func (p *HTTPProvider) Chat(ctx context.Context, messages []ChatMessage) (string, error) {
+	return p.ChatWithOptions(ctx, messages, ChatOptions{})
+}
+
+// ChatWithOptions forwards the output cap to the brain, which applies it
+// to its local provider.
+func (p *HTTPProvider) ChatWithOptions(ctx context.Context, messages []ChatMessage, opts ChatOptions) (string, error) {
 	var response struct {
 		Response string `json:"response"`
 		Answer   string `json:"answer"`
 		Text     string `json:"text"`
 	}
-	if err := p.do(ctx, map[string]any{
+	payload := map[string]any{
 		"task":     "chat",
 		"messages": messages,
-	}, &response); err != nil {
+	}
+	if opts.NumPredict > 0 {
+		payload["num_predict"] = opts.NumPredict
+	}
+	if opts.NumCtx > 0 {
+		payload["num_ctx"] = opts.NumCtx
+	}
+	if err := p.do(ctx, payload, &response); err != nil {
 		return "", err
 	}
 

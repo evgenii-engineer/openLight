@@ -46,7 +46,7 @@ type Config struct {
 	OCR         OCRConfig             `yaml:"ocr"`
 	VisualWatch VisualWatchConfig     `yaml:"visual_watch"`
 	Agent       AgentConfig           `yaml:"agent"`
-	Log         LogConfig             `yaml:"log"`
+	Log         LogConfig            `yaml:"log"`
 	// LocalModules configures optional local private modules. Generic: core
 	// does not interpret Settings, it only passes them through to modules as
 	// environment-style key/values. See internal/localmod and the README
@@ -408,6 +408,176 @@ type MemoryConfig struct {
 	Enabled   bool   `yaml:"enabled"`
 	DBPath    string `yaml:"db_path"`
 	ListLimit int    `yaml:"list_limit"`
+
+	// RAG is the automatic long-term memory subsystem: RAW archive on
+	// the SSD, SQLite metadata and structured facts, and a local vector
+	// index.
+	//
+	// It is nested under its own key, and defaults to disabled, on
+	// purpose. `memory.enabled` above already means something else —
+	// it gates the manual /remember, /memories, /forget skills and has
+	// shipped defaulting to true — so hanging the RAG switch off it
+	// would silently turn the whole subsystem on for every existing
+	// deployment during an upgrade. One explicit opt-in key keeps
+	// `memory.rag.enabled: false` an exact restoration of the previous
+	// behaviour.
+	RAG MemoryRAGConfig `yaml:"rag"`
+}
+
+// MemoryRAGConfig configures automatic long-term memory. Every stage is
+// individually switchable so a degraded or unwanted piece (facts,
+// summarisation, retrieval) can be turned off without losing the rest.
+type MemoryRAGConfig struct {
+	Enabled bool `yaml:"enabled"`
+
+	Storage       MemoryStorageConfig       `yaml:"storage"`
+	SQLite        MemorySQLiteConfig        `yaml:"sqlite"`
+	Vector        MemoryVectorConfig        `yaml:"vector"`
+	Embeddings    MemoryEmbeddingsConfig    `yaml:"embeddings"`
+	Ingestion     MemoryIngestionConfig     `yaml:"ingestion"`
+	Chunking      MemoryChunkingConfig      `yaml:"chunking"`
+	Retrieval     MemoryRetrievalConfig     `yaml:"retrieval"`
+	Conversations MemoryConversationsConfig `yaml:"conversations"`
+	Facts         MemoryFactsConfig         `yaml:"facts"`
+	Extraction    MemoryExtractionConfig    `yaml:"extraction"`
+}
+
+type MemoryStorageConfig struct {
+	// Root holds the RAW archive and, by default, the SQLite database.
+	// Point it at the SSD.
+	Root string `yaml:"root"`
+}
+
+type MemorySQLiteConfig struct {
+	// Path defaults to <storage.root>/memory.db.
+	Path string `yaml:"path"`
+
+	// derived records that Path was computed from storage.root rather
+	// than set by the user. normalize() runs twice — once before env
+	// overrides and once after — so without this the first pass would
+	// freeze the default path and a later MEMORY_RAG_STORAGE_ROOT
+	// override would silently leave the database behind in the old
+	// directory.
+	derived bool
+}
+
+type MemoryVectorConfig struct {
+	// Provider is "qdrant" or "none". "none" keeps ingestion archiving
+	// and queueing while the index is unavailable.
+	Provider string `yaml:"provider"`
+
+	// URL is the Qdrant gRPC endpoint (port 6334, not the 6333 REST port).
+	URL string `yaml:"url"`
+
+	Collection string `yaml:"collection"`
+	APIKey     string `yaml:"api_key"`
+
+	// OnDisk keeps vectors on the SSD rather than in the Pi's RAM.
+	OnDisk *bool `yaml:"on_disk"`
+
+	Timeout time.Duration `yaml:"timeout"`
+}
+
+type MemoryEmbeddingsConfig struct {
+	// Provider is "brain" or "ollama".
+	//
+	// "brain" routes embeddings through openLight's own brain API — the
+	// only path that works on the normal edge/brain topology, because
+	// Ollama binds to loopback on the brain node and an edge node cannot
+	// reach :11434. It is the default on edge nodes for that reason.
+	//
+	// "ollama" talks to an Ollama endpoint directly; the default on
+	// single-node and brain deployments, where Ollama is local.
+	Provider string `yaml:"provider"`
+
+	// URL is the Ollama endpoint. Used by provider "ollama"; ignored by
+	// provider "brain", which uses node.brain_url.
+	URL string `yaml:"url"`
+
+	// Endpoint is a legacy alias for URL.
+	Endpoint string `yaml:"endpoint"`
+
+	// Model must be a dedicated embedding model, never the fast or
+	// smart generative model.
+	Model     string        `yaml:"model"`
+	KeepAlive string        `yaml:"keep_alive"`
+	Batch     int           `yaml:"batch"`
+	Timeout   time.Duration `yaml:"timeout"`
+
+	// AutoPull lets the agent pull the embedding model onto the brain
+	// node on first start, instead of requiring a manual `ollama pull`.
+	// Pointer so an explicit `false` is distinguishable from "unset".
+	AutoPull *bool `yaml:"auto_pull"`
+
+	// urlDerived records that URL was filled in from the node's own LLM
+	// endpoint rather than configured. normalize() runs twice — before
+	// and after env overrides and LLM profile resolution — so without
+	// this the first pass would freeze a default and a later endpoint
+	// change would leave embeddings pointing at the wrong Ollama.
+	urlDerived bool
+}
+
+// ShouldAutoPull reports whether the agent may fetch the embedding model
+// itself. Defaults to true: the whole point is that a fresh install
+// works without a provisioning checklist.
+func (c MemoryEmbeddingsConfig) ShouldAutoPull() bool {
+	return c.AutoPull == nil || *c.AutoPull
+}
+
+type MemoryIngestionConfig struct {
+	Workers          int           `yaml:"workers"`
+	PollInterval     time.Duration `yaml:"poll_interval"`
+	RetryBase        time.Duration `yaml:"retry_base"`
+	RetryMaxInterval time.Duration `yaml:"retry_max_interval"`
+	MaxAttempts      int           `yaml:"max_attempts"`
+}
+
+type MemoryChunkingConfig struct {
+	TargetTokens  int `yaml:"target_tokens"`
+	OverlapTokens int `yaml:"overlap_tokens"`
+}
+
+type MemoryRetrievalConfig struct {
+	// Mode is "heuristic" (default), "always", or "off".
+	Mode             string `yaml:"mode"`
+	Candidates       int    `yaml:"candidates"`
+	MaxResults       int    `yaml:"max_results"`
+	MaxContextTokens int    `yaml:"max_context_tokens"`
+	MaxFacts         int    `yaml:"max_facts"`
+}
+
+type MemoryConversationsConfig struct {
+	AutoMemory    bool          `yaml:"auto_memory"`
+	Summarize     bool          `yaml:"summarize"`
+	IdleTimeout   time.Duration `yaml:"idle_timeout"`
+	MaxTurns      int           `yaml:"max_turns"`
+	MinTurns      int           `yaml:"min_turns"`
+	CheckInterval time.Duration `yaml:"check_interval"`
+}
+
+type MemoryFactsConfig struct {
+	Enabled bool `yaml:"enabled"`
+}
+
+// MemoryExtractionConfig points at the external binaries used to turn
+// non-text sources into text. Empty values fall back to the built-in
+// parsers or to the agent's existing vision/OCR/whisper pipelines.
+type MemoryExtractionConfig struct {
+	// PDFToTextPath is poppler's pdftotext. When absent, the built-in
+	// PDF parser handles ordinary text PDFs.
+	PDFToTextPath string `yaml:"pdftotext_path"`
+
+	// Vision indexes a model-written description of inbound images.
+	Vision bool `yaml:"vision"`
+
+	// OCR indexes text found inside inbound images.
+	OCR bool `yaml:"ocr"`
+
+	// Voice indexes whisper transcripts of inbound voice notes.
+	Voice bool `yaml:"voice"`
+
+	// MaxTextBytes caps how much of a single text file is indexed.
+	MaxTextBytes int `yaml:"max_text_bytes"`
 }
 
 // VoiceConfig configures the Telegram voice-note transcription path: when a
@@ -663,6 +833,66 @@ func defaultConfig() Config {
 		Memory: MemoryConfig{
 			Enabled:   true,
 			ListLimit: 20,
+			RAG: MemoryRAGConfig{
+				// Off by default: enabling it provisions directories,
+				// a second database, and a background queue. Existing
+				// installs must upgrade without any of that appearing.
+				Enabled: false,
+				Vector: MemoryVectorConfig{
+					Provider:   "qdrant",
+					URL:        "http://127.0.0.1:6334",
+					Collection: "openlight_memory",
+					Timeout:    30 * time.Second,
+				},
+				Embeddings: MemoryEmbeddingsConfig{
+					// Provider is intentionally unset here: normalize
+					// picks "brain" on edge nodes and "ollama"
+					// elsewhere, and a default baked in at this level
+					// would win over that and break edge deployments.
+					// bge-m3 is multilingual (strong on Russian and
+					// English alike), 1024-dimensional, and small enough
+					// to sit resident on the Mac mini next to the
+					// generative models.
+					Model:     "bge-m3",
+					KeepAlive: "30m",
+					Batch:     16,
+					Timeout:   2 * time.Minute,
+				},
+				Ingestion: MemoryIngestionConfig{
+					Workers:          1,
+					PollInterval:     5 * time.Second,
+					RetryBase:        5 * time.Second,
+					RetryMaxInterval: 10 * time.Minute,
+					MaxAttempts:      12,
+				},
+				Chunking: MemoryChunkingConfig{
+					TargetTokens:  350,
+					OverlapTokens: 50,
+				},
+				Retrieval: MemoryRetrievalConfig{
+					Mode:             "heuristic",
+					Candidates:       8,
+					MaxResults:       5,
+					MaxContextTokens: 500,
+					MaxFacts:         5,
+				},
+				Conversations: MemoryConversationsConfig{
+					AutoMemory:    true,
+					Summarize:     true,
+					IdleTimeout:   10 * time.Minute,
+					MaxTurns:      40,
+					MinTurns:      2,
+					CheckInterval: time.Minute,
+				},
+				Facts: MemoryFactsConfig{Enabled: true},
+				Extraction: MemoryExtractionConfig{
+					PDFToTextPath: "pdftotext",
+					Vision:        true,
+					OCR:           true,
+					Voice:         true,
+					MaxTextBytes:  2 << 20,
+				},
+			},
 		},
 		Voice: VoiceConfig{
 			Provider:       "whisper_cli",
@@ -754,6 +984,26 @@ func (c Config) Validate() error {
 		return errors.New("files.list_limit must be greater than zero")
 	case c.Memory.ListLimit <= 0:
 		return errors.New("memory.list_limit must be greater than zero")
+	case c.Memory.RAG.Enabled && strings.TrimSpace(c.Memory.RAG.Storage.Root) == "":
+		return errors.New("memory.rag.storage.root is required when memory.rag.enabled is true")
+	case c.Memory.RAG.Enabled && !validEmbeddingsProvider(c.Memory.RAG.Embeddings.Provider):
+		return errors.New("memory.rag.embeddings.provider must be one of: brain, ollama")
+	case c.Memory.RAG.Enabled && embeddingsViaOllama(c.Memory.RAG.Embeddings.Provider) &&
+		strings.TrimSpace(c.Memory.RAG.Embeddings.URL) == "":
+		return errors.New("memory.rag.embeddings.url is required when memory.rag.embeddings.provider is ollama")
+	case c.Memory.RAG.Enabled && !embeddingsViaOllama(c.Memory.RAG.Embeddings.Provider) &&
+		strings.TrimSpace(c.Node.BrainURL) == "":
+		return errors.New("node.brain_url is required when memory.rag.embeddings.provider is brain")
+	case c.Memory.RAG.Enabled && strings.TrimSpace(c.Memory.RAG.Embeddings.Model) == "":
+		return errors.New("memory.rag.embeddings.model is required when memory.rag.enabled is true")
+	case c.Memory.RAG.Enabled && c.Memory.RAG.Chunking.OverlapTokens >= c.Memory.RAG.Chunking.TargetTokens:
+		return errors.New("memory.rag.chunking.overlap_tokens must be smaller than target_tokens")
+	case c.Memory.RAG.Enabled && c.Memory.RAG.Retrieval.MaxResults > c.Memory.RAG.Retrieval.Candidates:
+		return errors.New("memory.rag.retrieval.max_results must not exceed retrieval.candidates")
+	case c.Memory.RAG.Enabled && !validRetrievalMode(c.Memory.RAG.Retrieval.Mode):
+		return errors.New("memory.rag.retrieval.mode must be one of: heuristic, always, off")
+	case c.Memory.RAG.Enabled && !validVectorProvider(c.Memory.RAG.Vector.Provider):
+		return errors.New("memory.rag.vector.provider must be one of: qdrant, none")
 	case c.Voice.Enabled && strings.TrimSpace(c.Voice.Provider) == "":
 		return errors.New("voice.provider is required when voice.enabled is true")
 	case c.Voice.Enabled && strings.EqualFold(strings.TrimSpace(c.Voice.Provider), "whisper_cli") && strings.TrimSpace(c.Voice.ModelPath) == "" && !c.Node.IsEdge():
@@ -1007,6 +1257,46 @@ func overrideFromEnv(cfg *Config) {
 	if value := strings.TrimSpace(os.Getenv("MEMORY_LIST_LIMIT")); value != "" {
 		cfg.Memory.ListLimit = parseInt(value, cfg.Memory.ListLimit)
 	}
+	if value := strings.TrimSpace(os.Getenv("MEMORY_RAG_ENABLED")); value != "" {
+		cfg.Memory.RAG.Enabled = parseBool(value)
+	}
+	if value := strings.TrimSpace(os.Getenv("MEMORY_RAG_STORAGE_ROOT")); value != "" {
+		cfg.Memory.RAG.Storage.Root = value
+	}
+	if value := strings.TrimSpace(os.Getenv("MEMORY_RAG_SQLITE_PATH")); value != "" {
+		cfg.Memory.RAG.SQLite.Path = value
+	}
+	if value := strings.TrimSpace(os.Getenv("MEMORY_RAG_VECTOR_URL")); value != "" {
+		cfg.Memory.RAG.Vector.URL = value
+	}
+	if value := strings.TrimSpace(os.Getenv("MEMORY_RAG_VECTOR_PROVIDER")); value != "" {
+		cfg.Memory.RAG.Vector.Provider = value
+	}
+	if value := strings.TrimSpace(os.Getenv("MEMORY_RAG_VECTOR_COLLECTION")); value != "" {
+		cfg.Memory.RAG.Vector.Collection = value
+	}
+	if value := strings.TrimSpace(os.Getenv("MEMORY_RAG_VECTOR_API_KEY")); value != "" {
+		cfg.Memory.RAG.Vector.APIKey = value
+	}
+	if value := strings.TrimSpace(os.Getenv("MEMORY_RAG_EMBEDDINGS_URL")); value != "" {
+		cfg.Memory.RAG.Embeddings.URL = value
+	}
+	if value := strings.TrimSpace(os.Getenv("MEMORY_RAG_EMBEDDINGS_MODEL")); value != "" {
+		cfg.Memory.RAG.Embeddings.Model = value
+	}
+	if value := strings.TrimSpace(os.Getenv("MEMORY_RAG_EMBEDDINGS_AUTO_PULL")); value != "" {
+		autoPull := parseBool(value)
+		cfg.Memory.RAG.Embeddings.AutoPull = &autoPull
+	}
+	if value := strings.TrimSpace(os.Getenv("MEMORY_RAG_RETRIEVAL_MODE")); value != "" {
+		cfg.Memory.RAG.Retrieval.Mode = value
+	}
+	if value := strings.TrimSpace(os.Getenv("MEMORY_RAG_MAX_CONTEXT_TOKENS")); value != "" {
+		cfg.Memory.RAG.Retrieval.MaxContextTokens = parseInt(value, cfg.Memory.RAG.Retrieval.MaxContextTokens)
+	}
+	if value := strings.TrimSpace(os.Getenv("MEMORY_RAG_INGESTION_WORKERS")); value != "" {
+		cfg.Memory.RAG.Ingestion.Workers = parseInt(value, cfg.Memory.RAG.Ingestion.Workers)
+	}
 	if value := strings.TrimSpace(os.Getenv("VOICE_ENABLED")); value != "" {
 		cfg.Voice.Enabled = parseBool(value)
 	}
@@ -1182,6 +1472,7 @@ func normalize(cfg *Config) {
 	if cfg.Memory.ListLimit <= 0 {
 		cfg.Memory.ListLimit = 20
 	}
+	normalizeMemoryRAG(&cfg.Memory.RAG, cfg.Node.IsEdge(), localOllamaEndpoint(cfg))
 	cfg.Voice.Provider = strings.ToLower(strings.TrimSpace(cfg.Voice.Provider))
 	if cfg.Voice.Provider == "" {
 		cfg.Voice.Provider = "whisper_cli"
@@ -1333,6 +1624,196 @@ func normalize(cfg *Config) {
 	cfg.Log.Level = strings.TrimSpace(cfg.Log.Level)
 	if cfg.Log.Level == "" {
 		cfg.Log.Level = "info"
+	}
+}
+
+// normalizeMemoryRAG fills in defaults and derives paths. Runs on every
+// normalize pass (before and after env overrides), so it must stay
+// idempotent.
+func validRetrievalMode(mode string) bool {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "heuristic", "always", "off":
+		return true
+	default:
+		return false
+	}
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func validEmbeddingsProvider(provider string) bool {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "brain", "ollama":
+		return true
+	default:
+		return false
+	}
+}
+
+// EmbeddingsViaBrain reports whether embeddings are routed through the
+// brain API rather than straight to an Ollama endpoint.
+func (c MemoryEmbeddingsConfig) EmbeddingsViaBrain() bool {
+	return !embeddingsViaOllama(c.Provider)
+}
+
+func embeddingsViaOllama(provider string) bool {
+	return strings.EqualFold(strings.TrimSpace(provider), "ollama")
+}
+
+func validVectorProvider(provider string) bool {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "qdrant", "none":
+		return true
+	default:
+		return false
+	}
+}
+
+// localOllamaEndpoint returns this node's own Ollama endpoint, or "" when
+// it does not run one. Memory embeddings default to the same daemon the
+// node already uses for inference rather than to a fixed port, so a
+// non-standard Ollama port does not silently split the two.
+func localOllamaEndpoint(cfg *Config) string {
+	if !strings.EqualFold(strings.TrimSpace(cfg.LLM.Provider), "ollama") {
+		return ""
+	}
+	return strings.TrimRight(strings.TrimSpace(cfg.LLM.Endpoint), "/")
+}
+
+func normalizeMemoryRAG(cfg *MemoryRAGConfig, isEdge bool, localOllama string) {
+	cfg.Storage.Root = expandHomePath(strings.TrimSpace(cfg.Storage.Root))
+	if cfg.Storage.Root == "" {
+		cfg.Storage.Root = "./data/memory"
+	}
+
+	cfg.SQLite.Path = expandHomePath(strings.TrimSpace(cfg.SQLite.Path))
+	if cfg.SQLite.Path == "" || cfg.SQLite.derived {
+		cfg.SQLite.Path = filepath.Join(cfg.Storage.Root, "memory.db")
+		cfg.SQLite.derived = true
+	}
+
+	cfg.Vector.Provider = strings.ToLower(strings.TrimSpace(cfg.Vector.Provider))
+	if cfg.Vector.Provider == "" {
+		cfg.Vector.Provider = "qdrant"
+	}
+	cfg.Vector.URL = strings.TrimSpace(cfg.Vector.URL)
+	if cfg.Vector.URL == "" {
+		cfg.Vector.URL = "http://127.0.0.1:6334"
+	}
+	cfg.Vector.Collection = strings.TrimSpace(cfg.Vector.Collection)
+	if cfg.Vector.Collection == "" {
+		cfg.Vector.Collection = "openlight_memory"
+	}
+	cfg.Vector.APIKey = strings.TrimSpace(cfg.Vector.APIKey)
+	if cfg.Vector.Timeout <= 0 {
+		cfg.Vector.Timeout = 30 * time.Second
+	}
+	if cfg.Vector.OnDisk == nil {
+		// Vectors on the SSD by default: the Pi's 8 GiB is shared with
+		// the agent, Telegram, and everything else on the box.
+		onDisk := true
+		cfg.Vector.OnDisk = &onDisk
+	}
+
+	cfg.Embeddings.Provider = strings.ToLower(strings.TrimSpace(cfg.Embeddings.Provider))
+	if cfg.Embeddings.Provider == "" {
+		// An edge node cannot reach the brain's Ollama directly, so
+		// routing through the brain API is the only default that can
+		// actually work there.
+		if isEdge {
+			cfg.Embeddings.Provider = "brain"
+		} else {
+			cfg.Embeddings.Provider = "ollama"
+		}
+	}
+	cfg.Embeddings.URL = strings.TrimRight(strings.TrimSpace(cfg.Embeddings.URL), "/")
+	cfg.Embeddings.Endpoint = strings.TrimRight(strings.TrimSpace(cfg.Embeddings.Endpoint), "/")
+	if cfg.Embeddings.URL == "" {
+		cfg.Embeddings.URL = cfg.Embeddings.Endpoint
+	}
+	if cfg.Embeddings.Provider == "ollama" && (cfg.Embeddings.URL == "" || cfg.Embeddings.urlDerived) {
+		cfg.Embeddings.URL = firstNonEmptyString(localOllama, "http://127.0.0.1:11434")
+		cfg.Embeddings.urlDerived = true
+	}
+	cfg.Embeddings.Model = strings.TrimSpace(cfg.Embeddings.Model)
+	if cfg.Embeddings.Model == "" {
+		cfg.Embeddings.Model = "bge-m3"
+	}
+	if cfg.Embeddings.AutoPull == nil {
+		autoPull := true
+		cfg.Embeddings.AutoPull = &autoPull
+	}
+	cfg.Embeddings.KeepAlive = strings.TrimSpace(cfg.Embeddings.KeepAlive)
+	if cfg.Embeddings.Batch <= 0 {
+		cfg.Embeddings.Batch = 16
+	}
+	if cfg.Embeddings.Timeout <= 0 {
+		cfg.Embeddings.Timeout = 2 * time.Minute
+	}
+
+	if cfg.Ingestion.Workers <= 0 {
+		cfg.Ingestion.Workers = 1
+	}
+	if cfg.Ingestion.PollInterval <= 0 {
+		cfg.Ingestion.PollInterval = 5 * time.Second
+	}
+	if cfg.Ingestion.RetryBase <= 0 {
+		cfg.Ingestion.RetryBase = 5 * time.Second
+	}
+	if cfg.Ingestion.RetryMaxInterval <= 0 {
+		cfg.Ingestion.RetryMaxInterval = 10 * time.Minute
+	}
+	if cfg.Ingestion.MaxAttempts <= 0 {
+		cfg.Ingestion.MaxAttempts = 12
+	}
+
+	if cfg.Chunking.TargetTokens <= 0 {
+		cfg.Chunking.TargetTokens = 350
+	}
+	if cfg.Chunking.OverlapTokens < 0 {
+		cfg.Chunking.OverlapTokens = 0
+	}
+
+	cfg.Retrieval.Mode = strings.ToLower(strings.TrimSpace(cfg.Retrieval.Mode))
+	if cfg.Retrieval.Mode == "" {
+		cfg.Retrieval.Mode = "heuristic"
+	}
+	if cfg.Retrieval.Candidates <= 0 {
+		cfg.Retrieval.Candidates = 8
+	}
+	if cfg.Retrieval.MaxResults <= 0 {
+		cfg.Retrieval.MaxResults = 5
+	}
+	if cfg.Retrieval.MaxContextTokens <= 0 {
+		cfg.Retrieval.MaxContextTokens = 500
+	}
+	if cfg.Retrieval.MaxFacts <= 0 {
+		cfg.Retrieval.MaxFacts = 5
+	}
+
+	if cfg.Conversations.IdleTimeout <= 0 {
+		cfg.Conversations.IdleTimeout = 10 * time.Minute
+	}
+	if cfg.Conversations.MaxTurns <= 0 {
+		cfg.Conversations.MaxTurns = 40
+	}
+	if cfg.Conversations.MinTurns <= 0 {
+		cfg.Conversations.MinTurns = 2
+	}
+	if cfg.Conversations.CheckInterval <= 0 {
+		cfg.Conversations.CheckInterval = time.Minute
+	}
+
+	cfg.Extraction.PDFToTextPath = expandHomePath(strings.TrimSpace(cfg.Extraction.PDFToTextPath))
+	if cfg.Extraction.MaxTextBytes <= 0 {
+		cfg.Extraction.MaxTextBytes = 2 << 20
 	}
 }
 

@@ -30,11 +30,30 @@ type Result struct {
 	RoutedText string
 }
 
+// Archiver receives the downloaded original audio and its transcript
+// just before the temporary file is deleted. It exists so long-term
+// memory can keep the original recording on durable storage without the
+// voice pipeline having to know anything about memory, and without
+// downloading the file a second time.
+//
+// Implementations must not block for long: they run inside the reply
+// path, ahead of the user's answer.
+type Archiver func(ctx context.Context, message telegram.IncomingMessage, audioPath, transcript string)
+
 type Processor struct {
 	enabled bool
 
 	converter   Converter
 	transcriber Transcriber
+	archiver    Archiver
+}
+
+// SetArchiver installs the optional original-audio archiver.
+func (p *Processor) SetArchiver(archiver Archiver) {
+	if p == nil {
+		return
+	}
+	p.archiver = archiver
 }
 
 func NewProcessor(enabled bool, converter Converter, transcriber Transcriber) *Processor {
@@ -90,6 +109,11 @@ func (p *Processor) Process(ctx context.Context, message telegram.IncomingMessag
 	transcript = strings.TrimSpace(transcript)
 	if transcript == "" {
 		return Result{}, skills.NewUserError(skills.ErrUnavailable, "could not transcribe voice message")
+	}
+
+	// Archive before the deferred cleanups delete the download.
+	if p.archiver != nil {
+		p.archiver(ctx, message, downloaded.Path, transcript)
 	}
 
 	return Result{
