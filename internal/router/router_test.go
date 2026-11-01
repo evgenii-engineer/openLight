@@ -753,3 +753,36 @@ func TestRouterRegistryGeneric_UnknownFirstWordFallsThrough(t *testing.T) {
 		t.Fatalf("expected ModeUnknown, got %#v", decision)
 	}
 }
+
+// IsCommand answers the question the agent asks on every message while an
+// input flow is open: would this text be dispatched as a command? It has to
+// cover module skills, which reach the agent through the generic registry
+// lookup rather than the hardcoded slash table, and it has to say no to a
+// path, which is a legitimate answer to a prompt.
+func TestRouterIsCommand(t *testing.T) {
+	t.Parallel()
+
+	registry := skills.NewRegistry()
+	registry.MustRegister(testSkill{name: "cpu"})
+	registry.MustRegister(testSkill{name: "vendor_report"})
+	r := router.New(registry, nil)
+
+	cases := map[string]bool{
+		"/cpu":                             true,
+		"/help":                            true, // builtin slash table
+		"/vendor_report":                   true, // module skill, no args
+		"/vendor_report @nick, ad mistake": true,
+		"/vendor_report@openlight_bot days=14 @nick": true,
+		"/home/damk/shot.png":                        false, // path answering a prompt
+		"/tmp/out.png":                               false,
+		"/not_a_registered_skill":                    false,
+		"mistake with ad":                            false,
+		"cpu":                                        false, // no slash: not a command here
+		"":                                           false,
+	}
+	for text, want := range cases {
+		if got := r.IsCommand(text); got != want {
+			t.Fatalf("IsCommand(%q) = %v, want %v", text, got, want)
+		}
+	}
+}

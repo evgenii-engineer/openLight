@@ -195,6 +195,28 @@ func shortTextForLog(value string) string {
 	return strings.TrimSpace(string(runes[:maxLoggedTextChars])) + "..."
 }
 
+// IsCommand reports whether text opens with a slash command this router would
+// dispatch. Only the deterministic stages run — no classifier, no LLM — so the
+// question is cheap enough to ask about every incoming message. The agent uses
+// it to let a new command cancel an open input flow instead of being swallowed
+// as the answer to it.
+func (r *Router) IsCommand(text string) bool {
+	text = strings.TrimSpace(text)
+	if !strings.HasPrefix(text, "/") {
+		return false
+	}
+	if _, ok := routeSlash(text); ok {
+		return true
+	}
+	if r.registry == nil {
+		return false
+	}
+	// Covers every registered skill, module skills included: they reach the
+	// agent through this same lookup.
+	_, ok := routeRegistryGeneric(text, r.registry)
+	return ok
+}
+
 func routeSlash(text string) (Decision, bool) {
 	if !strings.HasPrefix(text, "/") {
 		return Decision{}, false

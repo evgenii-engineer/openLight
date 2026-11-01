@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"openlight/internal/auth"
@@ -311,6 +312,13 @@ func (a *Agent) handleUIPipeline(ctx context.Context, message telegram.IncomingM
 			return true, a.reply(ctx, message.ChatID, message.UserID, withReplyPrefix(replyPrefix, "internal error"))
 		}
 		return true, nil
+	}
+	// A new command cancels an open input flow rather than being swallowed
+	// by it. Without this the prompt wins: the command never runs, and its
+	// whole text ("/note buy milk") is filed as the answer
+	// to a question the user had already moved on from.
+	if a.ui.HasPendingInput(message.ChatID) && a.isCommand(message.Text) {
+		a.ui.CancelPending(message.ChatID)
 	}
 	if a.ui.HasPendingInput(message.ChatID) {
 		handled, err := a.ui.HandlePendingInput(ctx, message)
@@ -862,11 +870,56 @@ func normalizeIncomingSource(source string, fromAudio bool) string {
 }
 
 func isMenuCommand(text string) bool {
-	switch strings.ToLower(strings.TrimSpace(text)) {
+	value := strings.ToLower(strings.TrimSpace(text))
+	// In a group Telegram clients send "/menu@openlight_bot"; the escape
+	// hatch has to work there too, which is where people get stuck.
+	if len(strings.Fields(value)) == 1 {
+		if command := commandToken(value); command != "" {
+			value = "/" + command
+		}
+	}
+	switch value {
 	case "/menu", "menu", "/home", "home":
 		return true
 	}
 	return false
+}
+
+// commandToken extracts the bot command a message opens with: the leading
+// "/name", lowercased, with Telegram's "@botname" suffix stripped. It returns
+// "" when the message is not a command — notably for an absolute path like
+// /home/damk/shot.png, which is a legitimate answer to an "Image path?"
+// prompt and must never be mistaken for one.
+func commandToken(text string) string {
+	trimmed := strings.TrimSpace(text)
+	if !strings.HasPrefix(trimmed, "/") {
+		return ""
+	}
+	word := strings.TrimPrefix(strings.Fields(trimmed)[0], "/")
+	if index := strings.Index(word, "@"); index >= 0 {
+		word = word[:index]
+	}
+	if word == "" {
+		return ""
+	}
+	for _, r := range word {
+		if r != '_' && !unicode.IsLetter(r) && !unicode.IsDigit(r) {
+			return ""
+		}
+	}
+	return strings.ToLower(word)
+}
+
+// isCommand reports whether the message opens with a command the router would
+// dispatch. Two independent checks have to agree, and that is what keeps the
+// cancel above honest: the text must look like a command rather than a path,
+// and the router must actually know it. An answer like /tmp/out.png fails the
+// first, an unregistered /whatever the second, and both stay answers.
+func (a *Agent) isCommand(text string) bool {
+	if a.router == nil || commandToken(text) == "" {
+		return false
+	}
+	return a.router.IsCommand(text)
 }
 
 // isBareSlashCommand reports whether the message is just `/skill_name`
