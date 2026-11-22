@@ -108,7 +108,7 @@ type LocalModulesConfig struct {
 	Path    string   `yaml:"path"`
 	Modules []string `yaml:"modules"`
 	// Settings are passed through to modules as env-style key/values, e.g.
-	// MUNCH_MONITOR_ENABLED, FLY_API_TOKEN. Core never interprets them.
+	// MY_MONITOR_ENABLED, MY_FLY_TOKEN. Core never interprets them.
 	Settings map[string]string `yaml:"settings"`
 }
 

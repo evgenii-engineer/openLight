@@ -145,7 +145,7 @@ func TestParseStructuredFact(t *testing.T) {
 		ok                   bool
 	}{
 		{"raspberry.storage = 4 TB SSD", "raspberry", "storage", "4 TB SSD", true},
-		{"  frame37.neon.project_id=sparkling-queen-39963007  ", "frame37.neon", "project_id", "sparkling-queen-39963007", true},
+		{"  myapp.neon.project_id=quiet-meadow-12345678  ", "myapp.neon", "project_id", "quiet-meadow-12345678", true},
 		// No dot: ambiguous subject/predicate, so it falls through to the
 		// model-extracted path rather than inventing a key.
 		{"цена = 25", "", "", "", false},

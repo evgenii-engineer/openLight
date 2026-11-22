@@ -922,10 +922,10 @@ storage:
 local_modules:
   enabled: true
   path: "./local_modules"
-  modules: ["munch_monitor"]
+  modules: ["my_monitor"]
   settings:
-    MUNCH_MONITOR_ENABLED: "true"
-    MUNCH_FLY_APP: "munch-api,munch-worker"
+    MY_MONITOR_ENABLED: "true"
+    MY_FLY_APP: "my-api,my-worker"
 `)
 
 	cfg, err := Load(configPath)
@@ -939,11 +939,11 @@ local_modules:
 	if lm.Path != "./local_modules" {
 		t.Fatalf("unexpected path: %q", lm.Path)
 	}
-	if len(lm.Modules) != 1 || lm.Modules[0] != "munch_monitor" {
+	if len(lm.Modules) != 1 || lm.Modules[0] != "my_monitor" {
 		t.Fatalf("unexpected modules: %v", lm.Modules)
 	}
-	if lm.Settings["MUNCH_MONITOR_ENABLED"] != "true" ||
-		lm.Settings["MUNCH_FLY_APP"] != "munch-api,munch-worker" {
+	if lm.Settings["MY_MONITOR_ENABLED"] != "true" ||
+		lm.Settings["MY_FLY_APP"] != "my-api,my-worker" {
 		t.Fatalf("unexpected settings: %v", lm.Settings)
 	}
 }

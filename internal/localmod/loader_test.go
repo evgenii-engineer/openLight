@@ -175,12 +175,12 @@ func TestLoadMissingPathWarnsButContinues(t *testing.T) {
 
 func TestParseModuleList(t *testing.T) {
 	cases := map[string][]string{
-		"":                nil,
-		"  ":              nil,
-		"a":               {"a"},
-		"a,b,c":           {"a", "b", "c"},
-		" a , b ,, c ":    {"a", "b", "c"},
-		"munch_monitor,x": {"munch_monitor", "x"},
+		"":             nil,
+		"  ":           nil,
+		"a":            {"a"},
+		"a,b,c":        {"a", "b", "c"},
+		" a , b ,, c ": {"a", "b", "c"},
+		"my_monitor,x": {"my_monitor", "x"},
 	}
 	for in, want := range cases {
 		got := parseModuleList(in)

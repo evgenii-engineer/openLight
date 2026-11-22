@@ -6,13 +6,13 @@
 // which have no local_modules/, still build.
 //
 // SETUP
-//   1. Copy your module into local_modules/<name>/ (e.g. local_modules/munch_monitor).
+//   1. Copy your module into local_modules/<name>/ (e.g. local_modules/my_monitor).
 //   2. Copy this file to cmd/openlight/localmodules_local.go
 //   3. Uncomment / edit the blank imports below to point at your module(s).
 //   4. Rebuild: `go build ./cmd/openlight`.
 //   5. Enable at runtime with:
 //        OPENLIGHT_LOCAL_MODULES_ENABLED=true
-//        OPENLIGHT_LOCAL_MODULES=munch_monitor
+//        OPENLIGHT_LOCAL_MODULES=my_monitor
 //
 // Each imported package registers itself with internal/localmod from its
 // init(); the env vars above decide which registered modules actually activate.
@@ -23,6 +23,6 @@ import (
 	// The committable example module (safe to keep while you experiment):
 	_ "openlight/local_modules.example/example_module"
 
-	// Your private module(s). Uncomment once local_modules/munch_monitor exists:
-	// _ "openlight/local_modules/munch_monitor"
+	// Your private module(s). Uncomment once local_modules/my_monitor exists:
+	// _ "openlight/local_modules/my_monitor"
 )
